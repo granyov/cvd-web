@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Python tests
+        run: python -m unittest discover -s tests -v
+      - name: JavaScript tests
+        run: node tests/test_patient_transfer.js
+      - name: Static checks
+        run: |
+          python -m compileall -q cvd_web
+          node --check cvd_web/static/js/app.js
+          node --check cvd_web/static/js/admin.js
+          bash -n install.sh
+      - name: Installer smoke test
+        run: |
+          install_dir="$(mktemp -d)/cvd-web"
+          ./install.sh \
+            --target local \
+            --install-dir "$install_dir" \
+            --port 18080 \
+            --admin-email ci@cvd.local \
+            --admin-password CI-Beta-Install-2026 \
+            --no-service \
+            --unattended
+          test -x "$install_dir/bin/cvd-web"
+          test "$(stat -c '%a' "$install_dir/config/cvd-web.env")" = "600"
+          test ! -e "$install_dir/data/cvd.sqlite3"

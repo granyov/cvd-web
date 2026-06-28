@@ -1,0 +1,6 @@
+APP_VERSION = "v0.6.0-beta.1"
+PATIENT_SCHEMA_VERSION = "cvd-schema-2026-06-27"
+MODEL_PROMPT_VERSION = "cvd-cds-prompt-v3"
+MODEL_OUTPUT_SCHEMA_VERSION = "cvd-cds-output-v3"
+FHIR_PROFILE_VERSION = "cvd-fhir-r4-v1"
+IMPORT_MAPPING_VERSION = "cvd-import-map-2026-06-29-v1"

@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="{{csrf_token}}">
+  <title>{{app_name}} - админка</title>
+  <link rel="stylesheet" href="/static/css/styles.css">
+</head>
+<body data-theme="{{default_theme}}">
+  <div class="emoji-layer" aria-hidden="true">
+    <span>🫀</span><span>🩺</span><span>💊</span><span>💉</span><span>🧬</span>
+    <span>🧪</span><span>🩹</span><span>🩻</span><span>⚕️</span><span>🩸</span>
+    <span>🧫</span><span>🌡️</span><span>🧠</span><span>🫁</span><span>🦷</span>
+    <span>👩‍⚕️</span><span>👨‍⚕️</span><span>🏥</span><span>🚑</span><span>🧑‍⚕️</span>
+  </div>
+  <header class="topbar">
+    <div>
+      <div class="brand">{{app_name}} - админка <span class="pill">{{app_version}}</span></div>
+    </div>
+    <nav class="nav">
+      <a class="button" href="/app">Рабочее место</a>
+      <button type="button" data-theme-toggle>Тема</button>
+      <button id="logoutButton" type="button">Выйти</button>
+    </nav>
+  </header>
+
+  <main class="container">
+    <div id="stats" class="hidden"></div>
+
+    <section class="panel admin-dashboard">
+      <div class="panel-header">
+        <div>
+          <p class="eyebrow">Контроль системы</p>
+          <h2>Операционный дашборд</h2>
+        </div>
+        <div class="toolbar">
+          <span id="dashboardUpdated" class="pill">обновление...</span>
+          <button type="button" id="refreshDashboardButton">Обновить</button>
+        </div>
+      </div>
+      <div class="panel-body dashboard-body">
+        <div id="dashboardMetrics" class="dashboard-metrics"></div>
+        <div class="dashboard-columns">
+          <div>
+            <h3>Запросы за 7 дней</h3>
+            <div id="activityChart" class="activity-chart"></div>
+          </div>
+          <div>
+            <h3>Работоспособность</h3>
+            <div id="systemHealthGrid" class="system-health-grid"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel admin-section">
+      <div class="panel-header">
+        <div>
+          <p class="eyebrow">Пакетный режим</p>
+          <h2>Массовая обработка кейсов</h2>
+        </div>
+        <div class="toolbar">
+          <span id="batchSelectionStatus" class="pill">выбрано: 0</span>
+          <button type="button" id="refreshBatchButton">Обновить</button>
+          <button type="button" id="startBatchButton" class="primary" disabled>Запустить обработку</button>
+        </div>
+      </div>
+      <div class="panel-body">
+        <div class="toolbar batch-toolbar">
+          <button type="button" id="selectUnprocessedButton">Выбрать без успешного ответа</button>
+          <button type="button" id="clearBatchSelectionButton">Снять выбор</button>
+        </div>
+        <div class="table-wrap batch-cases-wrap">
+          <table>
+            <thead>
+              <tr><th></th><th>Кейс</th><th>Владелец</th><th>Запросы</th><th>Обновлён</th></tr>
+            </thead>
+            <tbody id="batchCasesTable"></tbody>
+          </table>
+        </div>
+        <h3 class="subsection-title">Последние задания</h3>
+        <div id="batchJobs" class="batch-jobs"></div>
+      </div>
+    </section>
+
+    <section class="panel admin-section">
+      <div class="panel-header">
+        <h2>Настройки системы</h2>
+        <div class="toolbar">
+          <span id="modelHealthStatus" class="pill">LM Studio: не проверено</span>
+          <button type="button" id="testModelButton">Проверить LM Studio</button>
+          <button type="button" id="refreshSettingsButton">Обновить</button>
+        </div>
+      </div>
+      <div class="panel-body">
+        <form id="settingsForm" class="settings-grid">
+          <div class="field">
+            <label>Название приложения<span class="key">app_name</span></label>
+            <input name="app_name" type="text" required>
+          </div>
+          <div class="field">
+            <label>Организация / проект<span class="key">organization_name</span></label>
+            <input name="organization_name" type="text">
+          </div>
+          <div class="field full">
+            <label>Описание системы<span class="key">system_description</span></label>
+            <textarea name="system_description"></textarea>
+          </div>
+          <div class="field full">
+            <label>Предупреждение пользователям<span class="key">usage_notice</span></label>
+            <textarea name="usage_notice"></textarea>
+          </div>
+          <div class="field">
+            <label>Контакт поддержки<span class="key">support_contact</span></label>
+            <input name="support_contact" type="text">
+          </div>
+          <div class="field">
+            <label>Тема по умолчанию<span class="key">default_theme</span></label>
+            <select name="default_theme">
+              <option value="light">Светлая</option>
+              <option value="dark">Тёмная</option>
+            </select>
+          </div>
+          <div class="field full">
+            <label>LM Studio API URL<span class="key">lm_studio_api_url</span></label>
+            <input name="lm_studio_api_url" type="url" placeholder="http://10.8.0.2:1234/v1/chat/completions" required>
+          </div>
+          <div class="field">
+            <label>Модель<span class="key">lm_studio_model</span></label>
+            <input name="lm_studio_model" type="text" required>
+          </div>
+          <div class="field">
+            <label>Таймаут, сек<span class="key">lm_studio_timeout_seconds</span></label>
+            <input name="lm_studio_timeout_seconds" type="number" min="5" max="1800" required>
+          </div>
+          <div class="field">
+            <label>max_tokens<span class="key">lm_studio_max_tokens</span></label>
+            <input name="lm_studio_max_tokens" type="number" min="64" max="32768" required>
+          </div>
+          <div class="field">
+            <label>Temperature<span class="key">lm_studio_temperature</span></label>
+            <input name="lm_studio_temperature" type="number" min="0" max="2" step="0.1" required>
+          </div>
+          <div class="field">
+            <label>Деидентификация перед моделью<span class="key">deidentify_before_model</span></label>
+            <select name="deidentify_before_model">
+              <option value="1">Включена</option>
+              <option value="0">Выключена</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Structured output<span class="key">lm_studio_structured_output</span></label>
+            <select name="lm_studio_structured_output">
+              <option value="1">JSON Schema включена</option>
+              <option value="0">Обычный JSON prompt</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Версия prompt<span class="key">active_prompt_version</span></label>
+            <input name="active_prompt_version" type="text" required>
+          </div>
+          <div class="field">
+            <label>Макс. размер запроса, bytes<span class="key">max_request_bytes</span></label>
+            <input name="max_request_bytes" type="number" min="1024" max="20971520" required>
+          </div>
+          <div class="field full">
+            <label>Prompt template<span class="key">active_prompt_template, обязателен {{PATIENT_JSON}}</span></label>
+            <textarea name="active_prompt_template" style="min-height: 260px;" required></textarea>
+          </div>
+          <div class="field full">
+            <button class="primary" type="submit">Сохранить настройки</button>
+          </div>
+        </form>
+      </div>
+    </section>
+
+    <div class="admin-grid">
+      <section class="panel">
+        <div class="panel-header"><h2>Создать пользователя</h2></div>
+        <div class="panel-body">
+          <form id="createUserForm">
+            <div class="field">
+              <label>Email</label>
+              <input name="email" type="email" required>
+            </div>
+            <div class="field">
+              <label>Имя</label>
+              <input name="full_name" type="text">
+            </div>
+            <div class="field">
+              <label>Роль</label>
+              <select name="role">
+                <option value="user">user</option>
+                <option value="admin">admin</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>Временный пароль</label>
+              <input name="password" type="text" minlength="15" required>
+            </div>
+            <button class="primary" type="submit">Создать</button>
+          </form>
+        </div>
+      </section>
+
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Пользователи</h2>
+          <button type="button" id="refreshUsersButton">Обновить</button>
+        </div>
+        <div class="panel-body table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Email</th>
+                <th>Имя</th>
+                <th>Роль</th>
+                <th>Активен</th>
+                <th>Действия</th>
+              </tr>
+            </thead>
+            <tbody id="usersTable"></tbody>
+          </table>
+        </div>
+      </section>
+    </div>
+
+    <section class="panel" style="margin-top: 16px;">
+      <div class="panel-header">
+        <h2>История запросов к модели</h2>
+        <button type="button" id="refreshRequestsButton">Обновить</button>
+      </div>
+      <div class="panel-body table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Пользователь</th>
+              <th>Статус</th>
+              <th>Модель</th>
+              <th>Время</th>
+              <th>Ошибка / диагноз</th>
+            </tr>
+          </thead>
+          <tbody id="requestsTable"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel" style="margin-top: 16px;">
+      <div class="panel-header">
+        <h2>Качество данных</h2>
+        <button type="button" id="refreshQualityButton">Обновить</button>
+      </div>
+      <div class="panel-body">
+        <div id="qualitySummary" class="toolbar" style="margin-bottom: 12px;"></div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Кейс</th>
+                <th>Заполненность</th>
+                <th>Готовность</th>
+                <th>Сигналы</th>
+                <th>Не хватает</th>
+              </tr>
+            </thead>
+            <tbody id="qualityTable"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel" style="margin-top: 16px;">
+      <div class="panel-header">
+        <h2>Журнал аудита</h2>
+        <button type="button" id="refreshAuditButton">Обновить</button>
+      </div>
+      <div class="panel-body table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Пользователь</th>
+              <th>Действие</th>
+              <th>Объект</th>
+              <th>Время</th>
+              <th>Детали</th>
+            </tr>
+          </thead>
+          <tbody id="auditTable"></tbody>
+        </table>
+      </div>
+    </section>
+
+    <section class="panel" style="margin-top: 16px;">
+      <div class="panel-header">
+        <h2>Оценки ответов модели</h2>
+        <button type="button" id="refreshReviewsButton">Обновить</button>
+      </div>
+      <div class="panel-body table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Запрос</th>
+              <th>Оценка</th>
+              <th>Ошибки</th>
+              <th>Комментарий</th>
+              <th>Ревьюер</th>
+            </tr>
+          </thead>
+          <tbody id="reviewsTable"></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script>window.CURRENT_USER = {{user_json}}; window.APP_SETTINGS = {{settings_json}};</script>
+  <script src="/static/js/theme.js"></script>
+  <script src="/static/js/admin.js"></script>
+</body>
+</html>

@@ -1,0 +1,21 @@
+[Unit]
+Description=CVD Web
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/cvd-web
+EnvironmentFile=/etc/cvd-web/cvd-web.env
+ExecStart=/usr/bin/python3 -m cvd_web
+Restart=on-failure
+RestartSec=5
+User=cvd-web
+Group=cvd-web
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=/var/lib/cvd-web /var/backups/cvd-web
+
+[Install]
+WantedBy=multi-user.target

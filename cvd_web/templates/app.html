@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="{{csrf_token}}">
+  <title>{{app_name}}</title>
+  <link rel="stylesheet" href="/static/css/styles.css">
+</head>
+<body data-theme="{{default_theme}}">
+  <div class="emoji-layer" aria-hidden="true">
+    <span>🫀</span><span>🩺</span><span>💊</span><span>💉</span><span>🧬</span>
+    <span>🧪</span><span>🩹</span><span>🩻</span><span>⚕️</span><span>🩸</span>
+    <span>🧫</span><span>🌡️</span><span>🧠</span><span>🫁</span><span>🦷</span>
+    <span>👩‍⚕️</span><span>👨‍⚕️</span><span>🏥</span><span>🚑</span><span>🧑‍⚕️</span>
+  </div>
+  <header class="topbar">
+    <div>
+      <div class="brand">{{app_name}} <span class="pill">{{app_version}}</span></div>
+    </div>
+    <nav class="nav">
+      <span id="userLabel" class="pill"></span>
+      <a id="adminLink" class="button hidden" href="/admin">Админка</a>
+      <button type="button" data-theme-toggle>Тема</button>
+      <button id="changePasswordButton" type="button">Сменить пароль</button>
+      <button id="logoutButton" type="button">Выйти</button>
+    </nav>
+  </header>
+
+  <main class="container">
+    <div class="clinical-hero">
+      <div>
+        <p class="eyebrow">{{organization_name}}</p>
+        <h1>Кардиологический кейс</h1>
+      </div>
+      <div class="hero-metrics">
+        <div><strong id="filledMetric">0%</strong><span>заполнено</span></div>
+        <div><strong id="readinessMetric">0%</strong><span>готовность</span></div>
+        <div><strong id="icdMetric">0</strong><span>кодов МКБ</span></div>
+        <div><strong id="requestMetric">0</strong><span>запросов</span></div>
+      </div>
+    </div>
+
+    <div class="layout">
+      <section class="panel">
+        <div class="panel-header">
+          <h2>Данные пациента</h2>
+          <div class="toolbar">
+            <button type="button" id="newCaseButton">Новый кейс</button>
+            <button type="button" id="importJsonButton">Импорт данных</button>
+            <button type="button" id="structureTextButton">Подготовить текст с AI</button>
+            <button type="button" id="downloadJsonButton">Экспорт JSON</button>
+            <button type="button" id="saveCaseButton">Сохранить</button>
+            <button type="button" id="reviewButton">Проверить перед AI</button>
+            <button type="button" id="diagnoseButton" class="primary">Отправить в модель</button>
+            <input id="importJsonInput" class="hidden" type="file" accept="application/json,application/xml,text/xml,.json,.xml">
+          </div>
+        </div>
+        <div class="panel-body">
+          <div class="status-line" style="margin-bottom: 12px;">
+            <span id="saveStatus" class="pill">не сохранено</span>
+            <span id="modelStatus" class="pill">модель не вызывалась</span>
+          </div>
+          <form id="caseForm"></form>
+        </div>
+      </section>
+
+      <aside class="panel">
+        <div class="tabs">
+          <button type="button" class="tab active" data-tab="quality">Проверка</button>
+          <button type="button" class="tab" data-tab="json">JSON</button>
+          <button type="button" class="tab" data-tab="model">Ответ</button>
+          <button type="button" class="tab" data-tab="history">История</button>
+        </div>
+        <div class="panel-body">
+          <section id="tab-quality">
+            <div id="patientSnapshot" class="clinical-cards"></div>
+            <div class="quality-section">
+              <h3>Готовность к анализу</h3>
+              <div id="readinessPanel" class="quality-list"></div>
+            </div>
+            <div class="quality-section">
+              <h3>Сигналы по данным</h3>
+              <div id="signalsPanel" class="quality-list"></div>
+            </div>
+            <div class="notice safety-note">
+              Результат модели требует проверки врачом.
+            </div>
+          </section>
+          <section id="tab-json" class="hidden">
+            <div class="toolbar" style="margin-bottom: 10px;">
+              <button type="button" id="downloadFhirButton">Экспорт FHIR</button>
+            </div>
+            <pre id="jsonPreview">{}</pre>
+          </section>
+          <section id="tab-model" class="hidden">
+            <div id="icdSummary" class="notice">Коды МКБ-10 ещё не сравнивались.</div>
+            <div style="height: 10px;"></div>
+            <div id="modelStructured" class="model-output"></div>
+            <form id="requestReviewForm" class="review-form hidden">
+              <h3>Экспертная оценка ответа</h3>
+              <div class="settings-grid">
+                <div class="field">
+                  <label>Оценка</label>
+                  <select name="rating" required>
+                    <option value="useful">Полезно</option>
+                    <option value="partial">Частично полезно</option>
+                    <option value="wrong">Неверно</option>
+                    <option value="unsafe">Небезопасно</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label>Типы ошибок<span class="key">через ;</span></label>
+                  <input name="issue_types" type="text" placeholder="wrong_icd; missed_red_flag">
+                </div>
+                <div class="field full">
+                  <label>Корректный диагноз</label>
+                  <textarea name="corrected_diagnosis"></textarea>
+                </div>
+                <div class="field">
+                  <label>Корректные МКБ-10<span class="key">через ;</span></label>
+                  <input name="corrected_icd10" type="text" placeholder="I10; I25.1">
+                </div>
+                <div class="field full">
+                  <label>Комментарий</label>
+                  <textarea name="comment"></textarea>
+                </div>
+              </div>
+              <div class="toolbar">
+                <button class="primary" type="submit">Сохранить оценку</button>
+                <span id="reviewStatus" class="pill">не оценено</span>
+              </div>
+            </form>
+            <div style="height: 10px;"></div>
+            <pre id="modelPreview">Ответ модели появится здесь.</pre>
+          </section>
+          <section id="tab-history" class="hidden">
+            <h3>Таймлайн кейса</h3>
+            <div id="caseTimeline" class="timeline-list"></div>
+            <h3>Сохранённые кейсы</h3>
+            <div id="casesList" class="history-list"></div>
+            <h3>Запросы к модели</h3>
+            <div id="requestsList" class="history-list"></div>
+            <h3>Импорты данных</h3>
+            <div id="importsList" class="history-list"></div>
+          </section>
+        </div>
+      </aside>
+    </div>
+  </main>
+
+  <div id="passwordModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="passwordModalTitle">
+    <div class="modal-card">
+      <div class="modal-header">
+        <div>
+          <h2 id="passwordModalTitle">Смена пароля</h2>
+        </div>
+        <button type="button" id="closePasswordModal" aria-label="Закрыть">×</button>
+      </div>
+      <form id="passwordForm" class="modal-body">
+        <div class="field">
+          <label>Текущий пароль</label>
+          <input name="current_password" type="password" autocomplete="current-password" required>
+        </div>
+        <div class="field">
+          <label>Новый пароль<span class="key">минимум 15 символов</span></label>
+          <input name="new_password" type="password" autocomplete="new-password" minlength="15" required>
+        </div>
+        <div id="passwordStrength" class="notice">Используйте фразу или длинный случайный пароль. Не используйте email, имя системы и типовые слова.</div>
+        <div class="toolbar">
+          <button class="primary" type="submit">Сохранить пароль</button>
+          <button type="button" id="cancelPasswordModal">Отмена</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <div id="reviewModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="reviewModalTitle">
+    <div class="modal-card wide">
+      <div class="modal-header">
+        <div>
+          <h2 id="reviewModalTitle">Проверка перед отправкой в AI</h2>
+        </div>
+        <button type="button" id="closeReviewModal" aria-label="Закрыть">×</button>
+      </div>
+      <div class="modal-body">
+        <div id="reviewContent" class="review-content"></div>
+        <div class="notice">
+          Настройки деидентификации применяются перед отправкой.
+        </div>
+        <div class="toolbar">
+          <button class="primary" type="button" id="confirmReviewButton">Отправить в модель</button>
+          <button type="button" id="cancelReviewModal">Отмена</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="importModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="importModalTitle">
+    <div class="modal-card wide import-modal-card">
+      <div class="modal-header">
+        <div>
+          <h2 id="importModalTitle">Предварительный просмотр импорта</h2>
+          <p id="importFileLabel" class="muted"></p>
+        </div>
+        <button type="button" id="closeImportModal" aria-label="Закрыть">×</button>
+      </div>
+      <div class="modal-body">
+        <div id="importSummary" class="hero-metrics import-metrics"></div>
+        <div id="correctedTextBlock" class="corrected-text-block hidden">
+          <div class="corrected-text-head">
+            <strong>Исправленный текст</strong>
+            <button type="button" id="copyCorrectedTextButton">Копировать</button>
+          </div>
+          <div id="correctedTextContent"></div>
+        </div>
+        <div id="importWarnings" class="notice warning-note hidden"></div>
+        <div class="toolbar import-toolbar">
+          <button type="button" id="selectNewImportButton">Выбрать новые</button>
+          <button type="button" id="clearImportSelectionButton">Снять выбор</button>
+          <span id="importSelectionStatus" class="pill">выбрано: 0</span>
+        </div>
+        <div id="importDiff" class="import-diff"></div>
+        <div class="toolbar import-actions">
+          <button class="primary" type="button" id="applyImportButton">Применить выбранное</button>
+          <button type="button" id="cancelImportModal">Отмена</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="structureTextModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="structureTextModalTitle">
+    <div class="modal-card wide">
+      <div class="modal-header">
+        <div>
+          <h2 id="structureTextModalTitle">Подготовка неструктурированных данных</h2>
+          <p class="muted">MedGemma исправит опечатки и предложит распределение фактов по полям CVD.</p>
+        </div>
+        <button type="button" id="closeStructureTextModal" aria-label="Закрыть">×</button>
+      </div>
+      <form id="structureTextForm" class="modal-body">
+        <div class="field">
+          <label for="structureTextInput">Медицинская запись <span id="structureTextCounter" class="key">0 / 30000</span></label>
+          <textarea id="structureTextInput" name="text" class="source-textarea" maxlength="30000" required placeholder="Вставьте жалобы, анамнез, результаты осмотра, исследований и назначения..."></textarea>
+        </div>
+        <div class="notice safety-note">Используйте синтетические или деидентифицированные данные. Перед применением каждое извлечённое поле нужно проверить.</div>
+        <div class="toolbar">
+          <button class="primary" type="submit" id="submitStructureTextButton">Подготовить данные</button>
+          <button type="button" id="cancelStructureTextModal">Отмена</button>
+          <span id="structureTextStatus" class="pill">ожидание</span>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <script>window.CURRENT_USER = {{user_json}}; window.APP_SETTINGS = {{settings_json}}; window.CVD_PATIENT_SCHEMA_VERSION = "{{patient_schema_version}}";</script>
+  <script src="/static/js/theme.js"></script>
+  <script src="/static/js/schema.js"></script>
+  <script src="/static/js/patient-transfer.js"></script>
+  <script src="/static/js/app.js"></script>
+</body>
+</html>
