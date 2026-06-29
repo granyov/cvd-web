@@ -189,6 +189,8 @@ class CVDApplication:
 
         if request.path == "/app" and request.method == "GET":
             return self.render("app.html", user=user, csrf_token=user["csrf_token"])
+        if request.path == "/cases" and request.method == "GET":
+            return self.render("cases.html", user=user, csrf_token=user["csrf_token"])
         if request.path == "/admin" and request.method == "GET":
             self.require_admin(user)
             return self.render("admin.html", user=user, csrf_token=user["csrf_token"])
@@ -205,10 +207,12 @@ class CVDApplication:
             return self.list_cases(request, user)
         if request.path == "/api/cases" and request.method == "POST":
             return self.save_case(request, user)
+        if request.path == "/api/library/summary" and request.method == "GET":
+            return self.library_summary(user)
         if request.path == "/api/import/preview" and request.method == "POST":
             return self.preview_clinical_import(request, user)
         if request.path == "/api/imports" and request.method == "GET":
-            return self.list_clinical_imports(user)
+            return self.list_clinical_imports(request, user)
         if match := re.fullmatch(r"/api/imports/(\d+)/applied", request.path):
             if request.method == "POST":
                 return self.mark_clinical_import_applied(request, user, int(match.group(1)))
@@ -233,7 +237,10 @@ class CVDApplication:
         if request.path == "/api/reports/html" and request.method == "POST":
             return self.export_html_report(request, user)
         if request.path == "/api/requests" and request.method == "GET":
-            return self.list_requests(user)
+            return self.list_requests(request, user)
+        if match := re.fullmatch(r"/api/requests/(\d+)", request.path):
+            if request.method == "GET":
+                return self.get_request_result(user, int(match.group(1)))
         if match := re.fullmatch(r"/api/requests/(\d+)/review", request.path):
             if request.method == "POST":
                 return self.review_model_request(request, user, int(match.group(1)))
@@ -522,6 +529,9 @@ class CVDApplication:
 
     def list_cases(self, request: Request, user: dict[str, Any]):
         query = str(request.query.get("q", [""])[0]).strip()[:200]
+        analysis_filter = str(request.query.get("analysis", [""])[0]).strip().lower()
+        if analysis_filter not in {"", "with", "without"}:
+            raise HTTPError(400, "Некорректный фильтр результатов")
         limit = self.query_int(request, "limit", 100, 1, 200)
         offset = self.query_int(request, "offset", 0, 0, 1_000_000)
         escaped_query = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
@@ -534,8 +544,22 @@ class CVDApplication:
                 WHERE c.user_id = ?
                   AND (? = '' OR c.title LIKE ? ESCAPE '\\' OR c.patient_id LIKE ? ESCAPE '\\'
                        OR CAST(c.id AS TEXT) LIKE ? ESCAPE '\\')
+                  AND (
+                    ? = ''
+                    OR (? = 'with' AND EXISTS (
+                      SELECT 1 FROM model_requests r
+                      WHERE r.case_id = c.id AND r.user_id = c.user_id AND r.status = 'success'
+                    ))
+                    OR (? = 'without' AND NOT EXISTS (
+                      SELECT 1 FROM model_requests r
+                      WHERE r.case_id = c.id AND r.user_id = c.user_id AND r.status = 'success'
+                    ))
+                  )
                 """,
-                (user["id"], query, search, search, search),
+                (
+                    user["id"], query, search, search, search,
+                    analysis_filter, analysis_filter, analysis_filter,
+                ),
             ).fetchone()[0]
             rows = conn.execute(
                 """
@@ -557,10 +581,24 @@ class CVDApplication:
                 WHERE c.user_id = ?
                   AND (? = '' OR c.title LIKE ? ESCAPE '\\' OR c.patient_id LIKE ? ESCAPE '\\'
                        OR CAST(c.id AS TEXT) LIKE ? ESCAPE '\\')
+                  AND (
+                    ? = ''
+                    OR (? = 'with' AND EXISTS (
+                      SELECT 1 FROM model_requests r
+                      WHERE r.case_id = c.id AND r.user_id = c.user_id AND r.status = 'success'
+                    ))
+                    OR (? = 'without' AND NOT EXISTS (
+                      SELECT 1 FROM model_requests r
+                      WHERE r.case_id = c.id AND r.user_id = c.user_id AND r.status = 'success'
+                    ))
+                  )
                 ORDER BY c.updated_at DESC
                 LIMIT ? OFFSET ?
                 """,
-                (user["id"], query, search, search, search, limit, offset),
+                (
+                    user["id"], query, search, search, search,
+                    analysis_filter, analysis_filter, analysis_filter, limit, offset,
+                ),
             ).fetchall()
         return self.json_response({
             "cases": rows_to_dicts(rows),
@@ -569,6 +607,21 @@ class CVDApplication:
             "offset": offset,
             "has_more": offset + len(rows) < int(total),
         })
+
+    def library_summary(self, user: dict[str, Any]):
+        with connect(self.config.db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT
+                  (SELECT COUNT(*) FROM cases WHERE user_id = ?) AS cases_total,
+                  (SELECT COUNT(*) FROM model_requests WHERE user_id = ?) AS requests_total,
+                  (SELECT COUNT(*) FROM model_requests WHERE user_id = ? AND status = 'success') AS requests_success,
+                  (SELECT COUNT(*) FROM model_requests WHERE user_id = ? AND status = 'error') AS requests_error,
+                  (SELECT COUNT(*) FROM data_imports WHERE user_id = ?) AS imports_total
+                """,
+                (user["id"], user["id"], user["id"], user["id"], user["id"]),
+            ).fetchone()
+        return self.json_response({"summary": row_to_dict(row)})
 
     def preview_clinical_import(self, request: Request, user: dict[str, Any]):
         self.ensure_request_size(request)
@@ -681,20 +734,64 @@ class CVDApplication:
             )
         return self.json_response({"ok": True, "import_id": import_id, "selected_count": len(selected_paths)})
 
-    def list_clinical_imports(self, user: dict[str, Any]):
+    def list_clinical_imports(self, request: Request, user: dict[str, Any]):
+        query = str(request.query.get("q", [""])[0]).strip()[:200]
+        status_filter = str(request.query.get("status", [""])[0]).strip().lower()
+        if status_filter not in {"", "previewed", "applied"}:
+            raise HTTPError(400, "Некорректный фильтр статуса импорта")
+        raw_case_id = str(request.query.get("case_id", [""])[0]).strip()
+        if raw_case_id:
+            try:
+                case_id = int(raw_case_id)
+            except ValueError as exc:
+                raise HTTPError(400, "Некорректный case_id") from exc
+        else:
+            case_id = None
+        limit = self.query_int(request, "limit", 50, 1, 200)
+        offset = self.query_int(request, "offset", 0, 0, 1_000_000)
+        escaped_query = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        search = f"%{escaped_query}%"
         with connect(self.config.db_path) as conn:
+            total = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM data_imports d
+                LEFT JOIN cases c ON c.id = d.case_id AND c.user_id = d.user_id
+                WHERE d.user_id = ? AND (? = '' OR d.status = ?) AND (? IS NULL OR d.case_id = ?)
+                  AND (? = '' OR d.filename LIKE ? ESCAPE '\\' OR d.source_format LIKE ? ESCAPE '\\'
+                       OR c.title LIKE ? ESCAPE '\\' OR CAST(d.id AS TEXT) LIKE ? ESCAPE '\\')
+                """,
+                (
+                    user["id"], status_filter, status_filter, case_id, case_id,
+                    query, search, search, search, search,
+                ),
+            ).fetchone()[0]
             rows = conn.execute(
                 """
-                SELECT id, case_id, source_format, mapping_version, filename, mapped_fields, warning_count,
-                       status, created_at, applied_at
-                FROM data_imports
-                WHERE user_id = ?
-                ORDER BY created_at DESC
-                LIMIT 100
+                SELECT d.id, d.case_id, d.source_format, d.mapping_version, d.filename,
+                       d.mapped_fields, d.warning_count, d.status, d.created_at, d.applied_at,
+                       c.title AS case_title
+                FROM data_imports d
+                LEFT JOIN cases c ON c.id = d.case_id AND c.user_id = d.user_id
+                WHERE d.user_id = ? AND (? = '' OR d.status = ?) AND (? IS NULL OR d.case_id = ?)
+                  AND (? = '' OR d.filename LIKE ? ESCAPE '\\' OR d.source_format LIKE ? ESCAPE '\\'
+                       OR c.title LIKE ? ESCAPE '\\' OR CAST(d.id AS TEXT) LIKE ? ESCAPE '\\')
+                ORDER BY d.created_at DESC
+                LIMIT ? OFFSET ?
                 """,
-                (user["id"],),
+                (
+                    user["id"], status_filter, status_filter, case_id, case_id,
+                    query, search, search, search, search,
+                    limit, offset,
+                ),
             ).fetchall()
-        return self.json_response({"imports": rows_to_dicts(rows)})
+        return self.json_response({
+            "imports": rows_to_dicts(rows),
+            "total": int(total),
+            "limit": limit,
+            "offset": offset,
+            "has_more": offset + len(rows) < int(total),
+        })
 
     def get_case(self, user: dict[str, Any], case_id: int):
         with connect(self.config.db_path) as conn:
@@ -1256,7 +1353,77 @@ class CVDApplication:
             **metrics,
         })
 
-    def list_requests(self, user: dict[str, Any]):
+    def list_requests(self, request: Request, user: dict[str, Any]):
+        query = str(request.query.get("q", [""])[0]).strip()[:200]
+        status_filter = str(request.query.get("status", [""])[0]).strip().lower()
+        if status_filter not in {"", "success", "error"}:
+            raise HTTPError(400, "Некорректный фильтр статуса результата")
+        raw_case_id = str(request.query.get("case_id", [""])[0]).strip()
+        if raw_case_id:
+            try:
+                case_id = int(raw_case_id)
+            except ValueError as exc:
+                raise HTTPError(400, "Некорректный case_id") from exc
+        else:
+            case_id = None
+        limit = self.query_int(request, "limit", 50, 1, 200)
+        offset = self.query_int(request, "offset", 0, 0, 1_000_000)
+        escaped_query = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        search = f"%{escaped_query}%"
+        with connect(self.config.db_path) as conn:
+            total = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM model_requests r
+                LEFT JOIN cases c ON c.id = r.case_id AND c.user_id = r.user_id
+                WHERE r.user_id = ? AND (? = '' OR r.status = ?)
+                  AND (? IS NULL OR r.case_id = ?)
+                  AND (? = '' OR CAST(r.id AS TEXT) LIKE ? ESCAPE '\\'
+                       OR c.title LIKE ? ESCAPE '\\' OR c.patient_id LIKE ? ESCAPE '\\'
+                       OR r.parsed_output_json LIKE ? ESCAPE '\\')
+                """,
+                (
+                    user["id"], status_filter, status_filter, case_id, case_id,
+                    query, search, search, search, search,
+                ),
+            ).fetchone()[0]
+            rows = conn.execute(
+                """
+                SELECT r.id, r.case_id, r.status, r.model, r.error, r.duration_ms, r.created_at,
+                       r.parsed_output_json, r.prompt_version, r.schema_version, r.output_schema_version,
+                       r.phi_signals_json, r.prompt_tokens, r.completion_tokens, r.total_tokens,
+                       r.tokens_per_second, r.finish_reason, r.request_source,
+                       c.title AS case_title, c.patient_id,
+                       rv.rating AS review_rating, rv.issue_types_json AS review_issue_types_json,
+                       rv.comment AS review_comment, rv.corrected_diagnosis AS review_corrected_diagnosis,
+                       rv.corrected_icd10_json AS review_corrected_icd10_json
+                FROM model_requests r
+                LEFT JOIN cases c ON c.id = r.case_id AND c.user_id = r.user_id
+                LEFT JOIN model_request_reviews rv
+                  ON rv.model_request_id = r.id AND rv.reviewer_user_id = ?
+                WHERE r.user_id = ? AND (? = '' OR r.status = ?)
+                  AND (? IS NULL OR r.case_id = ?)
+                  AND (? = '' OR CAST(r.id AS TEXT) LIKE ? ESCAPE '\\'
+                       OR c.title LIKE ? ESCAPE '\\' OR c.patient_id LIKE ? ESCAPE '\\'
+                       OR r.parsed_output_json LIKE ? ESCAPE '\\')
+                ORDER BY r.created_at DESC
+                LIMIT ? OFFSET ?
+                """,
+                (
+                    user["id"], user["id"], status_filter, status_filter, case_id, case_id,
+                    query, search, search, search, search, limit, offset,
+                ),
+            ).fetchall()
+        items = self.serialize_request_rows(rows)
+        return self.json_response({
+            "requests": items,
+            "total": int(total),
+            "limit": limit,
+            "offset": offset,
+            "has_more": offset + len(rows) < int(total),
+        })
+
+    def get_request_result(self, user: dict[str, Any], request_id: int):
         with connect(self.config.db_path) as conn:
             rows = conn.execute(
                 """
@@ -1264,18 +1431,23 @@ class CVDApplication:
                        r.parsed_output_json, r.prompt_version, r.schema_version, r.output_schema_version,
                        r.phi_signals_json, r.prompt_tokens, r.completion_tokens, r.total_tokens,
                        r.tokens_per_second, r.finish_reason, r.request_source,
+                       c.title AS case_title, c.patient_id,
                        rv.rating AS review_rating, rv.issue_types_json AS review_issue_types_json,
                        rv.comment AS review_comment, rv.corrected_diagnosis AS review_corrected_diagnosis,
                        rv.corrected_icd10_json AS review_corrected_icd10_json
                 FROM model_requests r
+                LEFT JOIN cases c ON c.id = r.case_id AND c.user_id = r.user_id
                 LEFT JOIN model_request_reviews rv
                   ON rv.model_request_id = r.id AND rv.reviewer_user_id = ?
-                WHERE r.user_id = ?
-                ORDER BY r.created_at DESC
-                LIMIT 100
+                WHERE r.id = ? AND r.user_id = ?
                 """,
-                (user["id"], user["id"]),
+                (user["id"], request_id, user["id"]),
             ).fetchall()
+        if not rows:
+            raise HTTPError(404, "Результат анализа не найден")
+        return self.json_response({"request": self.serialize_request_rows(rows)[0]})
+
+    def serialize_request_rows(self, rows) -> list[dict[str, Any]]:
         items = rows_to_dicts(rows)
         for item in items:
             item["parsed_output"] = json.loads(item.pop("parsed_output_json")) if item.get("parsed_output_json") else None
@@ -1292,7 +1464,7 @@ class CVDApplication:
                 "corrected_diagnosis": review_corrected_diagnosis,
                 "corrected_icd10": json.loads(review_corrected_icd10_json) if review_corrected_icd10_json else [],
             } if review_rating else None
-        return self.json_response({"requests": items})
+        return items
 
     def review_model_request(self, request: Request, user: dict[str, Any], request_id: int):
         data = request.json()

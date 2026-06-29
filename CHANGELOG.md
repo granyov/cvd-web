@@ -1,5 +1,12 @@
 # Changelog
 
+## v0.7.0-beta.8 - 2026-06-29
+
+- Move cases, analysis history, and imports into a dedicated bounded-height medical archive.
+- Add server-side search, status filters, case filters, summaries, and pagination for growing histories.
+- Add case detail navigation with clinical summary, quality metrics, timeline, and linked results.
+- Fix model activation when the configured model differs from the model actually loaded in LM Studio.
+
 ## v0.7.0-beta.7 - 2026-06-29
 
 - Add a prominent result-ready action and an authenticated inline HTML report view.

@@ -240,6 +240,379 @@ body[data-theme="dark"] .notice.error-note {
   backdrop-filter: blur(14px);
 }
 
+.primary-link {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: #fff;
+}
+
+.primary-link:hover {
+  background: var(--accent-dark);
+  color: #fff;
+}
+
+.records-page {
+  display: grid;
+  grid-template-rows: auto minmax(0, 1fr);
+  gap: 14px;
+  height: calc(100vh - 61px);
+  min-height: 680px;
+  overflow: hidden;
+}
+
+.records-hero {
+  display: grid;
+  grid-template-columns: minmax(220px, 1fr) minmax(420px, auto) auto;
+  align-items: center;
+  gap: 18px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 15px 18px;
+  background: var(--hero);
+  box-shadow: var(--shadow);
+}
+
+.records-hero h1 {
+  margin: 0;
+  font-size: 1.55rem;
+}
+
+.records-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(82px, 1fr));
+  gap: 8px;
+}
+
+.records-metrics div {
+  min-width: 0;
+  border-left: 1px solid var(--border);
+  padding: 4px 12px;
+}
+
+.records-metrics strong,
+.records-metrics span {
+  display: block;
+}
+
+.records-metrics strong {
+  color: var(--accent);
+  font-size: 1.2rem;
+}
+
+.records-metrics span {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.records-panel {
+  display: flex;
+  min-height: 0;
+  overflow: hidden;
+  flex-direction: column;
+}
+
+.records-nav {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+  border-bottom: 1px solid var(--border);
+  padding: 8px 12px;
+  background: color-mix(in srgb, var(--panel-2) 55%, var(--panel));
+}
+
+.records-tab {
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  font-weight: 700;
+}
+
+.records-tab.active {
+  border-color: var(--accent);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.records-nav-spacer {
+  flex: 1 1 auto;
+}
+
+.records-loading {
+  flex: 0 0 auto;
+  border-bottom: 1px solid var(--border);
+  padding: 7px 14px;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+.records-panel > .error-note {
+  flex: 0 0 auto;
+  margin: 10px 12px 0;
+}
+
+.records-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 12px;
+}
+
+.records-controls {
+  display: grid;
+  grid-template-columns: minmax(260px, 1fr) minmax(180px, 240px) auto auto;
+  gap: 8px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+
+.records-controls .pill {
+  justify-self: end;
+  white-space: nowrap;
+}
+
+.records-split {
+  display: grid;
+  grid-template-columns: minmax(320px, 390px) minmax(0, 1fr);
+  gap: 12px;
+  height: calc(100% - 48px);
+  min-height: 0;
+}
+
+.records-browser,
+.record-detail,
+.records-table-scroll {
+  min-height: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--field-bg);
+}
+
+.records-browser {
+  display: flex;
+  overflow: hidden;
+  flex-direction: column;
+}
+
+.record-list,
+.records-table-scroll,
+.record-detail {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.record-list {
+  flex: 1 1 auto;
+  min-height: 0;
+  padding: 6px;
+}
+
+.record-list-item {
+  display: grid;
+  width: 100%;
+  gap: 5px;
+  border: 0;
+  border-bottom: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 11px;
+  background: transparent;
+  text-align: left;
+}
+
+.record-list-item:last-child {
+  border-bottom: 0;
+}
+
+.record-list-item:hover,
+.record-list-item.selected {
+  background: var(--panel-2);
+}
+
+.record-list-item.selected {
+  box-shadow: inset 3px 0 var(--accent);
+}
+
+.record-list-head,
+.record-detail-header,
+.result-record-heading,
+.result-record-footer {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.record-list-head strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.record-list-item > span:not(.record-list-head),
+.record-list-item small,
+.result-record small,
+.result-record-footer > span,
+.import-record .result-record-footer {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.record-detail {
+  padding: 15px;
+}
+
+.record-detail h2 {
+  margin: 0 0 7px;
+  font-size: 1.2rem;
+}
+
+.record-actions {
+  justify-content: flex-end;
+}
+
+.record-quality {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(100px, 1fr));
+  gap: 8px;
+  margin: 14px 0 10px;
+}
+
+.record-quality div {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 9px 10px;
+  background: var(--panel-2);
+}
+
+.record-quality span,
+.record-quality strong {
+  display: block;
+}
+
+.record-quality span {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.record-quality strong {
+  margin-top: 3px;
+  color: var(--accent);
+}
+
+.clinical-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.clinical-summary-grid > div {
+  min-width: 0;
+  border-bottom: 1px solid var(--border);
+  padding: 8px 2px;
+}
+
+.clinical-summary-grid span,
+.clinical-summary-grid strong {
+  display: block;
+}
+
+.clinical-summary-grid span {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.clinical-summary-grid strong {
+  margin-top: 3px;
+  overflow-wrap: anywhere;
+  font-size: 0.86rem;
+}
+
+.record-history-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 14px;
+}
+
+.record-history-grid h3 {
+  margin: 0 0 8px;
+  font-size: 0.9rem;
+}
+
+.compact-scroll {
+  max-height: 230px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.compact-history {
+  display: grid;
+  gap: 6px;
+}
+
+.compact-history-item {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 9px;
+}
+
+.compact-history-item small {
+  display: block;
+  margin: 3px 0 7px;
+  color: var(--muted);
+}
+
+.record-empty {
+  display: grid;
+  place-content: center;
+  min-height: 160px;
+  padding: 24px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.record-empty strong,
+.record-empty span {
+  display: block;
+}
+
+.record-empty strong {
+  margin-bottom: 5px;
+  color: var(--text);
+}
+
+.records-table-scroll {
+  height: calc(100% - 48px);
+  padding: 8px;
+}
+
+.result-records,
+.import-records {
+  display: grid;
+  gap: 8px;
+}
+
+.result-record,
+.import-record {
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  padding: 11px 13px;
+  background: var(--panel);
+}
+
+.result-record p,
+.import-record p {
+  margin: 7px 0;
+  overflow-wrap: anywhere;
+  line-height: 1.42;
+}
+
+.result-record-footer {
+  align-items: center;
+  border-top: 1px solid var(--border);
+  padding-top: 8px;
+}
+
 .clinical-hero {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -1449,6 +1822,39 @@ body[data-theme="dark"] .check-row.warning .check-mark {
   .import-metrics {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
+
+  .records-page {
+    height: auto;
+    min-height: 0;
+    overflow: visible;
+  }
+
+  .records-hero {
+    grid-template-columns: 1fr auto;
+  }
+
+  .records-hero .records-metrics {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .records-panel {
+    min-height: 720px;
+  }
+
+  .records-split {
+    grid-template-columns: 1fr;
+    height: auto;
+  }
+
+  .records-browser {
+    min-height: 320px;
+    max-height: 430px;
+  }
+
+  .record-detail {
+    max-height: 680px;
+  }
 }
 
 @media (max-width: 700px) {
@@ -1518,6 +1924,50 @@ body[data-theme="dark"] .check-row.warning .check-mark {
   .dashboard-metrics,
   .batch-job {
     grid-template-columns: 1fr;
+  }
+
+  .records-hero,
+  .records-controls,
+  .record-history-grid,
+  .clinical-summary-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .records-hero .records-metrics {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-column: auto;
+    grid-row: auto;
+  }
+
+  .records-hero > .button {
+    width: 100%;
+    text-align: center;
+  }
+
+  .records-nav {
+    overflow-x: auto;
+  }
+
+  .records-nav-spacer {
+    display: none;
+  }
+
+  .records-controls .pill {
+    justify-self: start;
+  }
+
+  .record-detail-header,
+  .result-record-footer {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .record-actions {
+    justify-content: flex-start;
+  }
+
+  .record-quality {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
   }
 
   .activity-chart {

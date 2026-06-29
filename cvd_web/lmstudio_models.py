@@ -147,6 +147,32 @@ def activate_lm_model(
         return {**catalog, "selected": selected, "warning": "Использован совместимый API v0"}
 
     base_url = management_base_url(api_url)
+    previous_id = str(previous_model_id or "").strip()
+    unloaded_instances: list[str] = []
+    if unload_previous:
+        loaded_models = [
+            item for item in models
+            if item["id"] != selected_id and item.get("loaded_instances")
+        ]
+        loaded_models.sort(key=lambda item: item["id"] != previous_id)
+        for loaded_model in loaded_models:
+            for instance in loaded_model.get("loaded_instances", []):
+                instance_id = str(instance.get("id") or "").strip()
+                if not instance_id:
+                    continue
+                try:
+                    _request_json(
+                        f"{base_url}/api/v1/models/unload",
+                        method="POST",
+                        payload={"instance_id": instance_id},
+                        timeout_seconds=min(timeout_seconds, 60),
+                    )
+                    unloaded_instances.append(instance_id)
+                except urllib.error.HTTPError as exc:
+                    raise LMStudioManagementError(
+                        f"Не удалось выгрузить активную модель: LM Studio HTTP {exc.code}"
+                    ) from exc
+
     if selected["state"] != "loaded":
         try:
             _request_json(
@@ -157,25 +183,6 @@ def activate_lm_model(
             )
         except urllib.error.HTTPError as exc:
             raise LMStudioManagementError(f"Не удалось загрузить модель: LM Studio HTTP {exc.code}") from exc
-
-    previous_id = str(previous_model_id or "").strip()
-    unloaded_instances: list[str] = []
-    if unload_previous and previous_id and previous_id != selected_id:
-        previous = next((item for item in models if item["id"] == previous_id), None)
-        for instance in (previous or {}).get("loaded_instances", []):
-            instance_id = str(instance.get("id") or "").strip()
-            if not instance_id:
-                continue
-            try:
-                _request_json(
-                    f"{base_url}/api/v1/models/unload",
-                    method="POST",
-                    payload={"instance_id": instance_id},
-                    timeout_seconds=min(timeout_seconds, 60),
-                )
-                unloaded_instances.append(instance_id)
-            except urllib.error.HTTPError as exc:
-                raise LMStudioManagementError(f"Модель выбрана, но предыдущая не выгружена: LM Studio HTTP {exc.code}") from exc
 
     refreshed = list_lm_models(api_url, timeout_seconds=min(timeout_seconds, 30))
     active = next((item for item in refreshed["models"] if item["id"] == selected_id), None)

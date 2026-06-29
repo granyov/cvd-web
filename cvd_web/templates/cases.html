@@ -1,0 +1,149 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="csrf-token" content="{{csrf_token}}">
+  <title>{{app_name}} - кейсы и история</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/static/css/styles.css">
+</head>
+<body data-theme="{{default_theme}}">
+  <div class="emoji-layer" aria-hidden="true">
+    <span>🫀</span><span>🩺</span><span>💊</span><span>💉</span><span>🧬</span>
+    <span>🧪</span><span>🩹</span><span>🩻</span><span>⚕️</span><span>🩸</span>
+    <span>🧫</span><span>🌡️</span><span>🧠</span><span>🫁</span><span>🏥</span>
+  </div>
+  <header class="topbar">
+    <div class="brand">{{app_name}} <span class="pill">{{app_version}}</span></div>
+    <nav class="nav">
+      <span id="userLabel" class="pill"></span>
+      <a class="button" href="/app">Рабочее место</a>
+      <a id="adminLink" class="button hidden" href="/admin">Админка</a>
+      <button type="button" data-theme-toggle>Тема</button>
+      <button id="logoutButton" type="button">Выйти</button>
+    </nav>
+  </header>
+
+  <main class="container records-page">
+    <section class="records-hero">
+      <div>
+        <p class="eyebrow">Медицинский архив</p>
+        <h1>Кейсы и история</h1>
+      </div>
+      <div class="records-metrics">
+        <div><strong id="casesMetric">0</strong><span>кейсов</span></div>
+        <div><strong id="resultsMetric">0</strong><span>анализов</span></div>
+        <div><strong id="successMetric">0%</strong><span>успешно</span></div>
+        <div><strong id="importsMetric">0</strong><span>импортов</span></div>
+      </div>
+      <a class="button primary-link" href="/app">Новый кейс</a>
+    </section>
+
+    <section class="panel records-panel">
+      <div class="records-nav" role="tablist" aria-label="Разделы архива">
+        <button type="button" class="records-tab active" data-library-view="cases" role="tab">Кейсы</button>
+        <button type="button" class="records-tab" data-library-view="results" role="tab">Результаты</button>
+        <button type="button" class="records-tab" data-library-view="imports" role="tab">Импорты</button>
+        <span class="records-nav-spacer"></span>
+        <button type="button" id="refreshLibraryButton">Обновить</button>
+      </div>
+
+      <div id="libraryLoading" class="records-loading hidden">Обновление данных...</div>
+      <div id="libraryError" class="notice error-note hidden" role="alert"></div>
+
+      <section id="library-cases" class="library-view records-body">
+        <div class="records-controls">
+          <input id="caseSearchInput" type="search" autocomplete="off" placeholder="Название, ID пациента или номер кейса" aria-label="Поиск по кейсам">
+          <select id="caseAnalysisFilter" aria-label="Фильтр кейсов по результатам">
+            <option value="">Все кейсы</option>
+            <option value="with">С готовым результатом</option>
+            <option value="without">Без готового результата</option>
+          </select>
+          <button type="button" id="clearCaseFiltersButton">Сбросить</button>
+          <span id="caseCount" class="pill">0</span>
+        </div>
+        <div class="records-split">
+          <div class="records-browser">
+            <div id="casesList" class="record-list" aria-live="polite"></div>
+            <button type="button" id="loadMoreCasesButton" class="load-more hidden">Показать ещё</button>
+          </div>
+          <article class="record-detail">
+            <div id="caseDetailEmpty" class="record-empty">
+              <strong>Выберите кейс</strong>
+              <span>Здесь появятся данные, связанные анализы и история действий.</span>
+            </div>
+            <div id="caseDetailContent" class="hidden">
+              <div class="record-detail-header">
+                <div>
+                  <p class="eyebrow">Выбранный кейс</p>
+                  <h2 id="caseDetailTitle"></h2>
+                  <div id="caseDetailMeta" class="status-line"></div>
+                </div>
+                <div class="toolbar record-actions">
+                  <a id="editCaseLink" class="button primary-link" href="/app">Открыть в работе</a>
+                  <button type="button" id="caseResultButton">Последний результат</button>
+                  <button type="button" id="copyCaseButton">Создать копию</button>
+                  <button type="button" id="fhirCaseButton">Скачать FHIR</button>
+                  <button type="button" id="deleteCaseButton" class="danger">Удалить</button>
+                </div>
+              </div>
+              <div id="caseQuality" class="record-quality"></div>
+              <div id="caseClinicalSummary" class="clinical-summary-grid"></div>
+              <div class="record-history-grid">
+                <section>
+                  <h3>Таймлайн</h3>
+                  <div id="caseTimeline" class="timeline-list compact-scroll"></div>
+                </section>
+                <section>
+                  <h3>Связанные результаты</h3>
+                  <div id="caseResultsList" class="compact-history compact-scroll"></div>
+                </section>
+              </div>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section id="library-results" class="library-view records-body hidden">
+        <div class="records-controls">
+          <input id="resultSearchInput" type="search" autocomplete="off" placeholder="Номер результата, кейс, ID пациента или текст сводки" aria-label="Поиск по результатам">
+          <select id="resultStatusFilter" aria-label="Фильтр результатов по статусу">
+            <option value="">Все статусы</option>
+            <option value="success">Готовые</option>
+            <option value="error">С ошибкой</option>
+          </select>
+          <button type="button" id="clearResultFiltersButton">Сбросить</button>
+          <span id="resultsCount" class="pill">0</span>
+        </div>
+        <div class="records-table-scroll">
+          <div id="resultsList" class="result-records" aria-live="polite"></div>
+          <button type="button" id="loadMoreResultsButton" class="load-more hidden">Показать ещё</button>
+        </div>
+      </section>
+
+      <section id="library-imports" class="library-view records-body hidden">
+        <div class="records-controls">
+          <input id="importSearchInput" type="search" autocomplete="off" placeholder="Файл, формат, кейс или номер импорта" aria-label="Поиск по импортам">
+          <select id="importStatusFilter" aria-label="Фильтр импортов по статусу">
+            <option value="">Все статусы</option>
+            <option value="applied">Применённые</option>
+            <option value="previewed">Не применённые</option>
+          </select>
+          <button type="button" id="clearImportFiltersButton">Сбросить</button>
+          <span id="importsCount" class="pill">0</span>
+        </div>
+        <div class="records-table-scroll">
+          <div id="importsList" class="import-records" aria-live="polite"></div>
+          <button type="button" id="loadMoreImportsButton" class="load-more hidden">Показать ещё</button>
+        </div>
+      </section>
+    </section>
+  </main>
+
+  <div id="toastRegion" aria-live="polite"></div>
+  <script>window.CURRENT_USER = {{user_json}}; window.APP_SETTINGS = {{settings_json}};</script>
+  <script src="/static/js/theme.js"></script>
+  <script src="/static/js/cases.js"></script>
+</body>
+</html>

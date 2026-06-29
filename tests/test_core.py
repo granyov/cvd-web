@@ -160,6 +160,37 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(result["unloaded_instances"], ["old-model-instance"])
         self.assertIn("/api/v1/models/unload", request_json.call_args_list[1].args[0])
 
+    def test_model_activation_unloads_unexpected_active_model_before_loading_selected(self):
+        initial = {
+            "models": [
+                {"type": "llm", "key": "medgemma-4b-it", "loaded_instances": []},
+                {
+                    "type": "llm",
+                    "key": "medgemma-27b-text-it",
+                    "loaded_instances": [{"id": "medgemma-27b-text-it", "config": {"context_length": 3500}}],
+                },
+            ]
+        }
+        refreshed = {
+            "models": [
+                {
+                    "type": "llm",
+                    "key": "medgemma-4b-it",
+                    "loaded_instances": [{"id": "medgemma-4b-it", "config": {"context_length": 8192}}],
+                },
+                {"type": "llm", "key": "medgemma-27b-text-it", "loaded_instances": []},
+            ]
+        }
+        with patch("cvd_web.lmstudio_models._request_json", side_effect=[initial, {}, {}, refreshed]) as request_json:
+            result = activate_lm_model(
+                "http://127.0.0.1:1234/v1/chat/completions",
+                "medgemma-4b-it",
+                previous_model_id="medgemma-4b-it",
+            )
+        self.assertEqual(result["unloaded_instances"], ["medgemma-27b-text-it"])
+        self.assertIn("/api/v1/models/unload", request_json.call_args_list[1].args[0])
+        self.assertIn("/api/v1/models/load", request_json.call_args_list[2].args[0])
+
     def test_password_hash_verify(self):
         encoded = hash_password("secret-password")
         self.assertTrue(verify_password("secret-password", encoded))
@@ -290,6 +321,14 @@ class CoreTests(unittest.TestCase):
             self.assertNotIn("127.0.0.1:1234", app_html)
             self.assertNotIn("LM Studio", app_html)
             self.assertNotIn("MedGemma", app_html)
+            self.assertIn("Кейсы и история", app_html)
+            self.assertNotIn("tab-history", app_html)
+
+            status, _, body = call_wsgi(app, "/cases", cookie=cookie)
+            cases_html = body.decode("utf-8")
+            self.assertTrue(status.startswith("200"), body)
+            self.assertIn("Медицинский архив", cases_html)
+            self.assertIn("/static/js/cases.js", cases_html)
 
             status, _, body = call_wsgi(app, "/api/admin/requests?limit=abc", cookie=cookie)
             self.assertTrue(status.startswith("200"), body)
@@ -384,6 +423,12 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(stored["GENERAL_INFO"]["Age"], 64.5)
             self.assertEqual(stored["GENERAL_INFO"]["Full_name"], "Тестов Тест Тестович")
             self.assertEqual(stored["FINAL_DIAGNOSES"]["ICD10_codes"], ["I10", "I25.1"])
+
+            status, _, body = call_wsgi(app, "/api/cases?limit=1", cookie=cookie)
+            self.assertTrue(status.startswith("200"), body)
+            paged_cases = json.loads(body.decode("utf-8"))
+            self.assertEqual(paged_cases["total"], 2)
+            self.assertTrue(paged_cases["has_more"])
 
             status, _, body = call_wsgi(app, "/api/cases?q=CASE_2&limit=1", cookie=cookie)
             self.assertTrue(status.startswith("200"), body)
@@ -580,6 +625,30 @@ class CoreTests(unittest.TestCase):
             case_search = json.loads(body.decode("utf-8"))
             self.assertEqual(case_search["cases"][0]["latest_result_id"], request_id)
             self.assertEqual(case_search["cases"][0]["analysis_count"], 1)
+
+            status, _, body = call_wsgi(app, "/api/cases?analysis=with", cookie=cookie)
+            self.assertTrue(status.startswith("200"), body)
+            self.assertEqual([item["id"] for item in json.loads(body.decode("utf-8"))["cases"]], [2])
+
+            status, _, body = call_wsgi(
+                app,
+                f"/api/requests?status=success&case_id=2&q={request_id}&limit=1",
+                cookie=cookie,
+            )
+            self.assertTrue(status.startswith("200"), body)
+            request_search = json.loads(body.decode("utf-8"))
+            self.assertEqual(request_search["total"], 1)
+            self.assertEqual(request_search["requests"][0]["case_title"], "Тестов Тест Тестович · CASE_2")
+
+            status, _, body = call_wsgi(app, f"/api/requests/{request_id}", cookie=cookie)
+            self.assertTrue(status.startswith("200"), body)
+            self.assertEqual(json.loads(body.decode("utf-8"))["request"]["id"], request_id)
+
+            status, _, body = call_wsgi(app, "/api/library/summary", cookie=cookie)
+            self.assertTrue(status.startswith("200"), body)
+            library_summary = json.loads(body.decode("utf-8"))["summary"]
+            self.assertEqual(library_summary["cases_total"], 2)
+            self.assertEqual(library_summary["requests_success"], 1)
 
             status, _, body = call_wsgi(
                 app,

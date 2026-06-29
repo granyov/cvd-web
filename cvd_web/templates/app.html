@@ -21,6 +21,7 @@
     </div>
     <nav class="nav">
       <span id="userLabel" class="pill"></span>
+      <a class="button" href="/cases">Кейсы и история</a>
       <a id="adminLink" class="button hidden" href="/admin">Админка</a>
       <button type="button" data-theme-toggle>Тема</button>
       <button id="changePasswordButton" type="button">Сменить пароль</button>
@@ -78,7 +79,6 @@
           <button type="button" class="tab active" data-tab="quality">Проверка</button>
           <button type="button" class="tab" data-tab="json">JSON</button>
           <button type="button" class="tab" data-tab="model">Ответ</button>
-          <button type="button" class="tab" data-tab="history">Мои кейсы</button>
         </div>
         <div class="panel-body">
           <section id="tab-quality">
@@ -144,24 +144,6 @@
             </form>
             <div style="height: 10px;"></div>
             <pre id="modelPreview">Технический ответ AI появится здесь.</pre>
-          </section>
-          <section id="tab-history" class="hidden">
-            <h3>Таймлайн кейса</h3>
-            <div id="caseTimeline" class="timeline-list"></div>
-            <div class="case-library-heading">
-              <h3>Сохранённые кейсы</h3>
-              <span id="caseCount" class="pill">0</span>
-            </div>
-            <div class="case-search">
-              <input id="caseSearchInput" type="search" autocomplete="off" placeholder="Название, ID пациента или номер кейса" aria-label="Поиск по сохранённым кейсам">
-              <button type="button" id="clearCaseSearchButton">Очистить</button>
-            </div>
-            <div id="casesList" class="history-list"></div>
-            <button type="button" id="loadMoreCasesButton" class="load-more hidden">Показать ещё</button>
-            <h3>Результаты AI-анализа</h3>
-            <div id="requestsList" class="history-list"></div>
-            <h3>Импорты данных</h3>
-            <div id="importsList" class="history-list"></div>
           </section>
         </div>
       </aside>
