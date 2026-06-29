@@ -25,6 +25,8 @@ Rules:
 - PATIENT_JSON is the only clinical source. Preserve numeric values exactly and never invent findings.
 - Provide at most 3 differential diagnoses and only ICD-10 codes you can support from the supplied data.
 - Keep summary to 4 short sentences. Keep evidence lists concise.
+- Use at most 4 supporting findings per diagnosis and at most 4 items in every other list.
+- Return field values, not source field names or JSON paths. Do not repeat the same fact.
 - red_flags contains only findings that may require urgent clinical attention, not ordinary chronic risk factors.
 - recommended_next_data contains missing data or investigations, not treatment instructions.
 - Respect symptom duration and acuity. Do not label a chronic stable presentation as acute or unstable without supplied acute features.
@@ -44,6 +46,7 @@ PATIENT_JSON:
 TEXT_ARRAY_SCHEMA = {
     "type": "array",
     "items": {"type": "string"},
+    "maxItems": 4,
 }
 
 MODEL_RESPONSE_JSON_SCHEMA = {
@@ -57,9 +60,10 @@ MODEL_RESPONSE_JSON_SCHEMA = {
                 "type": "object",
                 "additionalProperties": False,
                 "properties": {
-                    "summary": {"type": "string"},
+                    "summary": {"type": "string", "maxLength": 1200},
                     "possible_diagnoses": {
                         "type": "array",
+                        "maxItems": 3,
                         "items": {
                             "type": "object",
                             "additionalProperties": False,
@@ -100,9 +104,18 @@ MODEL_RESPONSE_JSON_SCHEMA = {
 
 
 class LMStudioError(RuntimeError):
-    def __init__(self, message: str, duration_ms: int):
+    def __init__(
+        self,
+        message: str,
+        duration_ms: int,
+        *,
+        request_body: dict[str, Any] | None = None,
+        response_payload: dict[str, Any] | None = None,
+    ):
         super().__init__(message)
         self.duration_ms = duration_ms
+        self.request_body = request_body
+        self.response_payload = response_payload
 
 
 def remove_empty(value: Any) -> Any:
@@ -344,7 +357,13 @@ def call_json_lm_studio(
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
         elapsed_ms = int((time.monotonic() - started) * 1000)
-        raise LMStudioError(f"LM Studio HTTP {exc.code}: {body}", elapsed_ms) from exc
+        raise LMStudioError(lm_studio_http_error_message(exc.code, body), elapsed_ms) from exc
+    except TimeoutError as exc:
+        elapsed_ms = int((time.monotonic() - started) * 1000)
+        raise LMStudioError(
+            f"LM Studio не ответила за {timeout_seconds} с. Проверьте нагрузку и таймаут модели.",
+            elapsed_ms,
+        ) from exc
     except urllib.error.URLError as exc:
         elapsed_ms = int((time.monotonic() - started) * 1000)
         raise LMStudioError(f"LM Studio недоступен: {exc.reason}", elapsed_ms) from exc
@@ -363,6 +382,21 @@ def call_json_lm_studio(
     if not content:
         content = json.dumps(response_json, ensure_ascii=False)
     return response_json, str(content), duration_ms
+
+
+def lm_studio_http_error_message(status_code: int, body: str) -> str:
+    message = str(body or "").strip()
+    try:
+        payload = json.loads(message)
+        error = payload.get("error") if isinstance(payload, dict) else None
+        if isinstance(error, dict) and error.get("message"):
+            message = str(error["message"]).strip()
+    except json.JSONDecodeError:
+        pass
+    lowered = message.lower()
+    if "insufficient system resources" in lowered or "requires approximately" in lowered:
+        return "LM Studio не смогла загрузить модель: недостаточно памяти. Выберите меньшую модель в админке."
+    return f"LM Studio HTTP {status_code}: {message[:1000] or 'ошибка без описания'}"
 
 
 def call_lm_studio(
@@ -392,10 +426,38 @@ def call_lm_studio(
         timeout_seconds=timeout_seconds,
     )
 
+    response_payload = {"raw": response_json, "content": content}
+    choices = response_json.get("choices") if isinstance(response_json, dict) else None
+    first_choice = choices[0] if isinstance(choices, list) and choices and isinstance(choices[0], dict) else {}
+    finish_reason = str(first_choice.get("finish_reason") or "")
+    if finish_reason == "length":
+        raise LMStudioError(
+            f"Ответ LM Studio обрезан по лимиту max_tokens={max_tokens}. "
+            "Увеличьте lm_studio_max_tokens и повторите запрос.",
+            duration_ms,
+            request_body=request_body,
+            response_payload=response_payload,
+        )
+
     parsed = extract_json_from_text(content)
     if parsed is None:
-        parsed = {"raw_content": content}
-    else:
-        parsed = normalize_model_output(parsed)
+        raise LMStudioError(
+            "LM Studio вернула незавершённый или невалидный структурированный JSON. "
+            "Ответ не принят как клинический результат.",
+            duration_ms,
+            request_body=request_body,
+            response_payload=response_payload,
+        )
 
-    return request_body, {"raw": response_json, "content": content}, parsed, duration_ms
+    raw_cds = parsed.get("CDS_OUTPUT") if isinstance(parsed.get("CDS_OUTPUT"), dict) else None
+    if not raw_cds or not text_value(raw_cds.get("summary")):
+        raise LMStudioError(
+            "LM Studio вернула структурированный ответ без клинической сводки. "
+            "Ответ не принят как клинический результат.",
+            duration_ms,
+            request_body=request_body,
+            response_payload=response_payload,
+        )
+    parsed = normalize_model_output(parsed)
+
+    return request_body, response_payload, parsed, duration_ms

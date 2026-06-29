@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="csrf-token" content="{{csrf_token}}">
   <title>{{app_name}} - админка</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/static/css/styles.css">
 </head>
 <body data-theme="{{default_theme}}">
@@ -128,7 +129,19 @@
           </div>
           <div class="field">
             <label>Модель<span class="key">lm_studio_model</span></label>
-            <input name="lm_studio_model" type="text" required>
+            <select name="lm_studio_model" id="lmStudioModelSelect" required></select>
+          </div>
+          <div class="field">
+            <label>Модель подготовки текста<span class="key">text_structuring_model</span></label>
+            <select name="text_structuring_model" id="textStructuringModelSelect"></select>
+          </div>
+          <div class="field full model-picker">
+            <div class="toolbar">
+              <button type="button" id="refreshModelsButton">Обновить модели</button>
+              <button type="button" id="activateModelButton" class="primary">Активировать выбранную</button>
+              <label class="inline-check"><input id="unloadPreviousModel" type="checkbox" checked> Выгрузить предыдущую</label>
+            </div>
+            <div id="modelCatalogStatus" class="model-catalog-status muted">Каталог LM Studio ещё не загружен.</div>
           </div>
           <div class="field">
             <label>Таймаут, сек<span class="key">lm_studio_timeout_seconds</span></label>
@@ -136,11 +149,27 @@
           </div>
           <div class="field">
             <label>max_tokens<span class="key">lm_studio_max_tokens</span></label>
-            <input name="lm_studio_max_tokens" type="number" min="64" max="32768" required>
+            <input name="lm_studio_max_tokens" type="number" min="1024" max="32768" required>
           </div>
           <div class="field">
             <label>Temperature<span class="key">lm_studio_temperature</span></label>
             <input name="lm_studio_temperature" type="number" min="0" max="2" step="0.1" required>
+          </div>
+          <div class="field">
+            <label>Параллельные генерации<span class="key">lm_studio_max_concurrent</span></label>
+            <input name="lm_studio_max_concurrent" type="number" min="1" max="8" required>
+          </div>
+          <div class="field">
+            <label>Ёмкость очереди<span class="key">lm_studio_queue_limit</span></label>
+            <input name="lm_studio_queue_limit" type="number" min="1" max="500" required>
+          </div>
+          <div class="field">
+            <label>Запросов на пользователя<span class="key">lm_studio_per_user_limit</span></label>
+            <input name="lm_studio_per_user_limit" type="number" min="1" max="10" required>
+          </div>
+          <div class="field">
+            <label>Ожидание в очереди, сек<span class="key">lm_studio_queue_timeout_seconds</span></label>
+            <input name="lm_studio_queue_timeout_seconds" type="number" min="30" max="7200" required>
           </div>
           <div class="field">
             <label>Деидентификация перед моделью<span class="key">deidentify_before_model</span></label>

@@ -5,15 +5,25 @@ import tempfile
 import unittest
 from io import BytesIO
 from pathlib import Path
+from unittest.mock import patch
 from urllib.parse import urlsplit
 
 from cvd_web.app import CVDApplication
 from cvd_web.auth import hash_password, utc_now, verify_password
 from cvd_web.config import Config, PROJECT_ROOT
 from cvd_web.db import connect
-from cvd_web.lmstudio import build_chat_request, extract_json_from_text, normalize_model_output
+from cvd_web.lmstudio import (
+    LMStudioError,
+    build_chat_request,
+    call_lm_studio,
+    extract_json_from_text,
+    lm_studio_http_error_message,
+    normalize_model_output,
+)
+from cvd_web.lmstudio_models import activate_lm_model, list_lm_models
 from cvd_web.privacy import deidentify_patient_data
 from cvd_web.rate_limit import MemoryRateLimiter
+from cvd_web.reporting import build_html_report
 
 
 def test_config(db_path: Path) -> Config:
@@ -29,7 +39,7 @@ def test_config(db_path: Path) -> Config:
         lm_studio_api_url="http://127.0.0.1:1234/v1/chat/completions",
         lm_studio_model="healtheart-cvd-engine",
         lm_studio_timeout_seconds=5,
-        lm_studio_max_tokens=128,
+        lm_studio_max_tokens=1536,
         lm_studio_temperature=0.2,
         max_request_bytes=1024 * 1024,
     )
@@ -77,6 +87,79 @@ def call_wsgi(
 
 
 class CoreTests(unittest.TestCase):
+    def test_lm_studio_memory_error_is_user_friendly(self):
+        message = lm_studio_http_error_message(
+            400,
+            json.dumps({"error": {"message": "Failed due to insufficient system resources; requires approximately 18 GB"}}),
+        )
+        self.assertIn("недостаточно памяти", message)
+        self.assertIn("меньшую модель", message)
+        self.assertNotIn("approximately", message)
+
+    def test_html_report_escapes_patient_and_model_content(self):
+        report = build_html_report(
+            {"GENERAL_INFO": {"Patient_ID": "CASE-1", "Full_name": "<script>alert(1)</script>"}},
+            {
+                "CDS_OUTPUT": {
+                    "summary": "Результат <опасный>",
+                    "possible_diagnoses": [],
+                    "red_flags": [],
+                    "missing_data": [],
+                    "recommended_next_data": [],
+                    "limitations": [],
+                    "model_should_abstain": False,
+                }
+            },
+            {"request_id": 7, "model": "medgemma-4b-it"},
+        )
+        self.assertIn("onclick=\"window.print()\"", report)
+        self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", report)
+        self.assertNotIn("<script>alert(1)</script>", report)
+        self.assertIn("Результат &lt;опасный&gt;", report)
+
+    def test_lm_studio_v1_catalog_and_activation(self):
+        initial = {
+            "models": [
+                {
+                    "type": "llm",
+                    "key": "medgemma-4b-it",
+                    "display_name": "MedGemma 4B",
+                    "params_string": "4B",
+                    "quantization": "Q4_K_S",
+                    "loaded_instances": [{"id": "medgemma-4b-it", "config": {"context_length": 8192}}],
+                },
+                {
+                    "type": "llm",
+                    "key": "old-model",
+                    "loaded_instances": [{"id": "old-model-instance", "load_config": {"context_length": 4096}}],
+                },
+            ]
+        }
+        refreshed = {
+            "models": [
+                {
+                    "type": "llm",
+                    "key": "medgemma-4b-it",
+                    "loaded_instances": [{"id": "medgemma-4b-it", "load_config": {"context_length": 8192}}],
+                },
+                {"type": "llm", "key": "old-model", "loaded_instances": []},
+            ]
+        }
+        with patch("cvd_web.lmstudio_models._request_json", return_value=initial):
+            catalog = list_lm_models("http://127.0.0.1:1234/v1/chat/completions")
+        self.assertEqual(catalog["api_version"], "v1")
+        self.assertEqual(catalog["models"][0]["loaded_context_length"], 8192)
+
+        with patch("cvd_web.lmstudio_models._request_json", side_effect=[initial, {}, refreshed]) as request_json:
+            result = activate_lm_model(
+                "http://127.0.0.1:1234/v1/chat/completions",
+                "medgemma-4b-it",
+                previous_model_id="old-model",
+            )
+        self.assertEqual(result["selected"]["state"], "loaded")
+        self.assertEqual(result["unloaded_instances"], ["old-model-instance"])
+        self.assertIn("/api/v1/models/unload", request_json.call_args_list[1].args[0])
+
     def test_password_hash_verify(self):
         encoded = hash_password("secret-password")
         self.assertTrue(verify_password("secret-password", encoded))
@@ -96,6 +179,10 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(request["response_format"]["type"], "json_schema")
         response_schema = request["response_format"]["json_schema"]["schema"]
         self.assertEqual(response_schema["required"], ["CDS_OUTPUT"])
+        self.assertEqual(
+            response_schema["properties"]["CDS_OUTPUT"]["properties"]["possible_diagnoses"]["maxItems"],
+            3,
+        )
         self.assertNotIn("MODEL_OUTPUT", response_schema["properties"])
         self.assertNotIn(
             "response_format",
@@ -131,6 +218,28 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(normalized["CDS_OUTPUT"]["possible_diagnoses"][0]["icd10_codes"], ["I10"])
         self.assertEqual(normalized["CDS_OUTPUT"]["possible_diagnoses"][0]["confidence"], "medium")
         self.assertEqual(normalized["MODEL_OUTPUT"]["Model_ICD10_codes"], ["I10"])
+
+    def test_truncated_model_response_is_rejected_with_diagnostics(self):
+        raw_response = {
+            "choices": [{"finish_reason": "length", "message": {"content": '{"CDS_OUTPUT": {'}}],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 768, "total_tokens": 868},
+        }
+        with patch(
+            "cvd_web.lmstudio.call_json_lm_studio",
+            return_value=(raw_response, '{"CDS_OUTPUT": {', 2500),
+        ):
+            with self.assertRaises(LMStudioError) as context:
+                call_lm_studio(
+                    api_url="http://127.0.0.1:1234/v1/chat/completions",
+                    model="medgemma-4b-it",
+                    patient_data={"GENERAL_INFO": {"Patient_ID": "TEST"}},
+                    timeout_seconds=10,
+                    max_tokens=768,
+                )
+        self.assertIn("max_tokens=768", str(context.exception))
+        self.assertEqual(context.exception.duration_ms, 2500)
+        self.assertEqual(context.exception.response_payload["raw"]["choices"][0]["finish_reason"], "length")
+        self.assertEqual(context.exception.request_body["max_tokens"], 768)
 
     def test_direct_patient_identifiers_are_deidentified(self):
         cleaned, signals = deidentify_patient_data({
@@ -179,6 +288,8 @@ class CoreTests(unittest.TestCase):
             self.assertTrue(status.startswith("200"), body)
             self.assertNotIn("lm_studio_api_url", app_html)
             self.assertNotIn("127.0.0.1:1234", app_html)
+            self.assertNotIn("LM Studio", app_html)
+            self.assertNotIn("MedGemma", app_html)
 
             status, _, body = call_wsgi(app, "/api/admin/requests?limit=abc", cookie=cookie)
             self.assertTrue(status.startswith("200"), body)
@@ -274,6 +385,13 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(stored["GENERAL_INFO"]["Full_name"], "Тестов Тест Тестович")
             self.assertEqual(stored["FINAL_DIAGNOSES"]["ICD10_codes"], ["I10", "I25.1"])
 
+            status, _, body = call_wsgi(app, "/api/cases?q=CASE_2&limit=1", cookie=cookie)
+            self.assertTrue(status.startswith("200"), body)
+            case_search = json.loads(body.decode("utf-8"))
+            self.assertEqual(case_search["total"], 1)
+            self.assertFalse(case_search["has_more"])
+            self.assertIsNone(case_search["cases"][0]["latest_result_id"])
+
             status, _, body = call_wsgi(app, "/api/cases/2/fhir", cookie=cookie)
             self.assertTrue(status.startswith("200"), body)
             bundle = json.loads(body.decode("utf-8"))
@@ -335,6 +453,10 @@ class CoreTests(unittest.TestCase):
             settings = {item["key"]: item["value"] for item in json.loads(body.decode("utf-8"))["settings"]}
             self.assertIn("lm_studio_temperature", settings)
             self.assertIn("lm_studio_structured_output", settings)
+            self.assertEqual(settings["lm_studio_max_concurrent"], "1")
+            self.assertEqual(settings["lm_studio_queue_limit"], "64")
+            self.assertEqual(settings["lm_studio_per_user_limit"], "2")
+            self.assertIn("text_structuring_model", settings)
             self.assertIn("deidentify_before_model", settings)
             self.assertIn("active_prompt_version", settings)
             self.assertIn("active_prompt_template", settings)
@@ -373,6 +495,13 @@ class CoreTests(unittest.TestCase):
             self.assertIn("completion_tokens", columns)
             self.assertIn("tokens_per_second", columns)
             self.assertIn("finish_reason", columns)
+            self.assertIn("queue_wait_ms", columns)
+
+            status, _, body = call_wsgi(app, "/api/inference/status", cookie=cookie)
+            self.assertTrue(status.startswith("200"), body)
+            queue = json.loads(body.decode("utf-8"))["queue"]
+            self.assertEqual(queue["max_concurrent"], 1)
+            self.assertEqual(queue["user"]["state"], "idle")
 
             parsed_output = {
                 "CDS_OUTPUT": {
@@ -424,6 +553,81 @@ class CoreTests(unittest.TestCase):
                     ),
                 )
                 request_id = cur.lastrowid
+
+            status, report_headers, body = call_wsgi(
+                app,
+                "/api/reports/html",
+                method="POST",
+                cookie=cookie,
+                csrf=csrf,
+                body={"request_id": request_id, "patient_data": patient_data},
+            )
+            self.assertTrue(status.startswith("200"), body)
+            self.assertEqual(report_headers["Content-Type"], "text/html; charset=utf-8")
+            self.assertIn(f"cvd-report-{request_id}.html", report_headers["Content-Disposition"])
+            self.assertIn("Распечатать", body.decode("utf-8"))
+            self.assertNotIn("healtheart-cvd-engine", body.decode("utf-8"))
+            self.assertNotIn("LM Studio", body.decode("utf-8"))
+
+            status, report_headers, body = call_wsgi(app, f"/reports/{request_id}", cookie=cookie)
+            self.assertTrue(status.startswith("200"), body)
+            self.assertTrue(report_headers["Content-Disposition"].startswith("inline;"))
+            self.assertIn("Тестов Тест Тестович", body.decode("utf-8"))
+            self.assertNotIn("healtheart-cvd-engine", body.decode("utf-8"))
+
+            status, _, body = call_wsgi(app, "/api/cases?q=CASE_2&limit=1", cookie=cookie)
+            self.assertTrue(status.startswith("200"), body)
+            case_search = json.loads(body.decode("utf-8"))
+            self.assertEqual(case_search["cases"][0]["latest_result_id"], request_id)
+            self.assertEqual(case_search["cases"][0]["analysis_count"], 1)
+
+            status, _, body = call_wsgi(
+                app,
+                "/api/cases/2/copy",
+                method="POST",
+                cookie=cookie,
+                csrf=csrf,
+                body={},
+            )
+            self.assertTrue(status.startswith("201"), body)
+            copied_case_id = json.loads(body.decode("utf-8"))["case_id"]
+            status, _, body = call_wsgi(app, f"/api/cases/{copied_case_id}", cookie=cookie)
+            self.assertTrue(status.startswith("200"), body)
+            copied_case = json.loads(body.decode("utf-8"))["case"]
+            self.assertTrue(copied_case["title"].startswith("Копия:"))
+            self.assertTrue(all(value is None for value in copied_case["data"]["MODEL_OUTPUT"].values()))
+
+            now = utc_now()
+            with connect(app.config.db_path) as conn:
+                conn.execute(
+                    """
+                    INSERT INTO users
+                      (email, full_name, password_hash, role, is_active, must_change_password, created_at, updated_at)
+                    VALUES (?, ?, ?, 'user', 1, 0, ?, ?)
+                    """,
+                    ("doctor@test.local", "Doctor", hash_password("User-password-2026!"), now, now),
+                )
+            status, user_headers, body = call_wsgi(
+                app,
+                "/api/login",
+                method="POST",
+                body={"email": "doctor@test.local", "password": "User-password-2026!"},
+            )
+            self.assertTrue(status.startswith("200"), body)
+            user_cookie = user_headers["Set-Cookie"].split(";", 1)[0]
+            _, _, body = call_wsgi(app, "/api/me", cookie=user_cookie)
+            user_csrf = json.loads(body.decode("utf-8"))["csrfToken"]
+            status, _, _ = call_wsgi(app, f"/reports/{request_id}", cookie=user_cookie)
+            self.assertTrue(status.startswith("404"))
+            status, _, _ = call_wsgi(
+                app,
+                "/api/cases/2/copy",
+                method="POST",
+                cookie=user_cookie,
+                csrf=user_csrf,
+                body={},
+            )
+            self.assertTrue(status.startswith("404"))
 
             status, _, body = call_wsgi(
                 app,

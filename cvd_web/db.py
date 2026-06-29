@@ -71,6 +71,7 @@ CREATE TABLE IF NOT EXISTS model_requests (
   tokens_per_second REAL NOT NULL DEFAULT 0,
   finish_reason TEXT NOT NULL DEFAULT '',
   request_source TEXT NOT NULL DEFAULT 'interactive',
+  queue_wait_ms INTEGER NOT NULL DEFAULT 0,
   created_at TEXT NOT NULL
 );
 
@@ -122,12 +123,15 @@ CREATE TABLE IF NOT EXISTS data_preparation_requests (
   status TEXT NOT NULL CHECK (status IN ('success', 'error')),
   model TEXT NOT NULL,
   input_sha256 TEXT NOT NULL,
+  chunk_count INTEGER NOT NULL DEFAULT 1,
   mapped_fields INTEGER NOT NULL DEFAULT 0,
   warning_count INTEGER NOT NULL DEFAULT 0,
   duration_ms INTEGER NOT NULL DEFAULT 0,
   prompt_tokens INTEGER NOT NULL DEFAULT 0,
   completion_tokens INTEGER NOT NULL DEFAULT 0,
   total_tokens INTEGER NOT NULL DEFAULT 0,
+  finish_reason TEXT NOT NULL DEFAULT '',
+  queue_wait_ms INTEGER NOT NULL DEFAULT 0,
   error TEXT,
   created_at TEXT NOT NULL
 );
@@ -238,10 +242,15 @@ SETTINGS_KEYS = [
     "default_theme",
     "lm_studio_api_url",
     "lm_studio_model",
+    "text_structuring_model",
     "lm_studio_timeout_seconds",
     "lm_studio_max_tokens",
     "lm_studio_temperature",
     "lm_studio_structured_output",
+    "lm_studio_max_concurrent",
+    "lm_studio_queue_limit",
+    "lm_studio_per_user_limit",
+    "lm_studio_queue_timeout_seconds",
     "deidentify_before_model",
     "active_prompt_version",
     "active_prompt_template",
@@ -265,10 +274,15 @@ def default_settings(config: Config) -> dict[str, tuple[str, str]]:
         "default_theme": ("light", "Тема по умолчанию: light или dark."),
         "lm_studio_api_url": (config.lm_studio_api_url, "OpenAI-compatible endpoint LM Studio."),
         "lm_studio_model": (config.lm_studio_model, "Имя модели для запросов."),
+        "text_structuring_model": ("", "Отдельная модель подготовки текста; пустое значение использует основную модель."),
         "lm_studio_timeout_seconds": (str(config.lm_studio_timeout_seconds), "Таймаут запроса к LM Studio в секундах."),
         "lm_studio_max_tokens": (str(config.lm_studio_max_tokens), "max_tokens для ответа модели."),
         "lm_studio_temperature": (str(config.lm_studio_temperature), "temperature для запроса к LM Studio."),
         "lm_studio_structured_output": ("1", "Запрашивать JSON Schema structured output у LM Studio: 1 или 0."),
+        "lm_studio_max_concurrent": ("1", "Максимальное число одновременных генераций LM Studio."),
+        "lm_studio_queue_limit": ("64", "Максимальное число запросов, ожидающих LM Studio."),
+        "lm_studio_per_user_limit": ("2", "Максимальное число активных и ожидающих AI-запросов одного пользователя."),
+        "lm_studio_queue_timeout_seconds": ("1800", "Максимальное ожидание свободного слота LM Studio в секундах."),
         "deidentify_before_model": ("1", "Удалять явные идентификаторы из данных перед отправкой в LM Studio: 1 или 0."),
         "active_prompt_version": (MODEL_PROMPT_VERSION, "Активная версия prompt для запросов к модели."),
         "active_prompt_template": (USER_PROMPT_TEMPLATE, "Шаблон user prompt. Должен содержать {{PATIENT_JSON}}."),
@@ -303,16 +317,37 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
         "tokens_per_second": "ALTER TABLE model_requests ADD COLUMN tokens_per_second REAL NOT NULL DEFAULT 0",
         "finish_reason": "ALTER TABLE model_requests ADD COLUMN finish_reason TEXT NOT NULL DEFAULT ''",
         "request_source": "ALTER TABLE model_requests ADD COLUMN request_source TEXT NOT NULL DEFAULT 'interactive'",
+        "queue_wait_ms": "ALTER TABLE model_requests ADD COLUMN queue_wait_ms INTEGER NOT NULL DEFAULT 0",
     }
     for column, statement in migrations.items():
         if column not in columns:
             conn.execute(statement)
+
+    conn.execute(
+        """
+        UPDATE model_requests
+        SET status = 'error',
+            error = COALESCE(NULLIF(error, ''), 'Ответ LM Studio был обрезан по лимиту max_tokens.'),
+            parsed_output_json = NULL
+        WHERE status = 'success' AND finish_reason = 'length'
+        """
+    )
 
     import_columns = {row["name"] for row in conn.execute("PRAGMA table_info(data_imports)").fetchall()}
     if import_columns and "mapping_version" not in import_columns:
         conn.execute("ALTER TABLE data_imports ADD COLUMN mapping_version TEXT NOT NULL DEFAULT ''")
     if import_columns and "mapped_paths_json" not in import_columns:
         conn.execute("ALTER TABLE data_imports ADD COLUMN mapped_paths_json TEXT NOT NULL DEFAULT '[]'")
+
+    preparation_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(data_preparation_requests)").fetchall()
+    }
+    if preparation_columns and "finish_reason" not in preparation_columns:
+        conn.execute("ALTER TABLE data_preparation_requests ADD COLUMN finish_reason TEXT NOT NULL DEFAULT ''")
+    if preparation_columns and "chunk_count" not in preparation_columns:
+        conn.execute("ALTER TABLE data_preparation_requests ADD COLUMN chunk_count INTEGER NOT NULL DEFAULT 1")
+    if preparation_columns and "queue_wait_ms" not in preparation_columns:
+        conn.execute("ALTER TABLE data_preparation_requests ADD COLUMN queue_wait_ms INTEGER NOT NULL DEFAULT 0")
 
 
 def get_app_settings(conn: sqlite3.Connection) -> dict[str, str]:

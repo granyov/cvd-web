@@ -1,4 +1,5 @@
 import socket
+import sys
 from socketserver import ThreadingMixIn
 from wsgiref.simple_server import WSGIServer, make_server
 
@@ -15,6 +16,11 @@ class ThreadingWSGIServer(ThreadingMixIn, WSGIServer):
         connection, address = super().get_request()
         connection.settimeout(30)
         return connection, address
+
+    def handle_error(self, request, client_address) -> None:
+        if isinstance(sys.exc_info()[1], TimeoutError):
+            return
+        super().handle_error(request, client_address)
 
 
 def main() -> None:

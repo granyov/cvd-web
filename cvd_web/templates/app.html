@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="csrf-token" content="{{csrf_token}}">
   <title>{{app_name}}</title>
+  <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="/static/css/styles.css">
 </head>
 <body data-theme="{{default_theme}}">
@@ -52,14 +53,21 @@
             <button type="button" id="downloadJsonButton">Экспорт JSON</button>
             <button type="button" id="saveCaseButton">Сохранить</button>
             <button type="button" id="reviewButton">Проверить перед AI</button>
-            <button type="button" id="diagnoseButton" class="primary">Отправить в модель</button>
+            <button type="button" id="diagnoseButton" class="primary">Запустить AI-анализ</button>
             <input id="importJsonInput" class="hidden" type="file" accept="application/json,application/xml,text/xml,.json,.xml">
           </div>
         </div>
         <div class="panel-body">
           <div class="status-line" style="margin-bottom: 12px;">
             <span id="saveStatus" class="pill">не сохранено</span>
-            <span id="modelStatus" class="pill">модель не вызывалась</span>
+            <span id="modelStatus" class="pill">AI не запускался</span>
+          </div>
+          <div id="resultReadyBanner" class="result-ready hidden" role="status" aria-live="polite">
+            <div>
+              <strong>Результат анализа готов</strong>
+              <span>Откройте оформленный отчёт в новой вкладке.</span>
+            </div>
+            <button type="button" id="viewResultButton" class="primary">Просмотреть результат</button>
           </div>
           <form id="caseForm"></form>
         </div>
@@ -70,7 +78,7 @@
           <button type="button" class="tab active" data-tab="quality">Проверка</button>
           <button type="button" class="tab" data-tab="json">JSON</button>
           <button type="button" class="tab" data-tab="model">Ответ</button>
-          <button type="button" class="tab" data-tab="history">История</button>
+          <button type="button" class="tab" data-tab="history">Мои кейсы</button>
         </div>
         <div class="panel-body">
           <section id="tab-quality">
@@ -84,7 +92,7 @@
               <div id="signalsPanel" class="quality-list"></div>
             </div>
             <div class="notice safety-note">
-              Результат модели требует проверки врачом.
+              Результат AI-анализа требует проверки врачом.
             </div>
           </section>
           <section id="tab-json" class="hidden">
@@ -94,6 +102,9 @@
             <pre id="jsonPreview">{}</pre>
           </section>
           <section id="tab-model" class="hidden">
+            <div class="toolbar model-actions">
+              <button type="button" id="exportHtmlButton" disabled>Скачать HTML</button>
+            </div>
             <div id="icdSummary" class="notice">Коды МКБ-10 ещё не сравнивались.</div>
             <div style="height: 10px;"></div>
             <div id="modelStructured" class="model-output"></div>
@@ -132,14 +143,22 @@
               </div>
             </form>
             <div style="height: 10px;"></div>
-            <pre id="modelPreview">Ответ модели появится здесь.</pre>
+            <pre id="modelPreview">Технический ответ AI появится здесь.</pre>
           </section>
           <section id="tab-history" class="hidden">
             <h3>Таймлайн кейса</h3>
             <div id="caseTimeline" class="timeline-list"></div>
-            <h3>Сохранённые кейсы</h3>
+            <div class="case-library-heading">
+              <h3>Сохранённые кейсы</h3>
+              <span id="caseCount" class="pill">0</span>
+            </div>
+            <div class="case-search">
+              <input id="caseSearchInput" type="search" autocomplete="off" placeholder="Название, ID пациента или номер кейса" aria-label="Поиск по сохранённым кейсам">
+              <button type="button" id="clearCaseSearchButton">Очистить</button>
+            </div>
             <div id="casesList" class="history-list"></div>
-            <h3>Запросы к модели</h3>
+            <button type="button" id="loadMoreCasesButton" class="load-more hidden">Показать ещё</button>
+            <h3>Результаты AI-анализа</h3>
             <div id="requestsList" class="history-list"></div>
             <h3>Импорты данных</h3>
             <div id="importsList" class="history-list"></div>
@@ -189,7 +208,7 @@
           Настройки деидентификации применяются перед отправкой.
         </div>
         <div class="toolbar">
-          <button class="primary" type="button" id="confirmReviewButton">Отправить в модель</button>
+          <button class="primary" type="button" id="confirmReviewButton">Запустить AI-анализ</button>
           <button type="button" id="cancelReviewModal">Отмена</button>
         </div>
       </div>
@@ -221,7 +240,10 @@
           <span id="importSelectionStatus" class="pill">выбрано: 0</span>
         </div>
         <div id="importDiff" class="import-diff"></div>
-        <div class="toolbar import-actions">
+      </div>
+      <div class="modal-footer import-actions">
+        <span id="importSelectionFooter" class="muted">Проверьте выбранные поля перед применением</span>
+        <div class="toolbar">
           <button class="primary" type="button" id="applyImportButton">Применить выбранное</button>
           <button type="button" id="cancelImportModal">Отмена</button>
         </div>
@@ -234,16 +256,17 @@
       <div class="modal-header">
         <div>
           <h2 id="structureTextModalTitle">Подготовка неструктурированных данных</h2>
-          <p class="muted">MedGemma исправит опечатки и предложит распределение фактов по полям CVD.</p>
+          <p class="muted">AI исправит опечатки и предложит распределение фактов по полям CVD.</p>
         </div>
         <button type="button" id="closeStructureTextModal" aria-label="Закрыть">×</button>
       </div>
       <form id="structureTextForm" class="modal-body">
         <div class="field">
-          <label for="structureTextInput">Медицинская запись <span id="structureTextCounter" class="key">0 / 30000</span></label>
-          <textarea id="structureTextInput" name="text" class="source-textarea" maxlength="30000" required placeholder="Вставьте жалобы, анамнез, результаты осмотра, исследований и назначения..."></textarea>
+          <label for="structureTextInput">Медицинская запись <span id="structureTextCounter" class="key">0 / 10000</span></label>
+          <textarea id="structureTextInput" name="text" class="source-textarea" maxlength="10000" required placeholder="Вставьте жалобы, анамнез, результаты осмотра, исследований и назначения..."></textarea>
         </div>
         <div class="notice safety-note">Используйте синтетические или деидентифицированные данные. Перед применением каждое извлечённое поле нужно проверить.</div>
+        <div id="structureTextError" class="notice error-note hidden" role="alert"></div>
         <div class="toolbar">
           <button class="primary" type="submit" id="submitStructureTextButton">Подготовить данные</button>
           <button type="button" id="cancelStructureTextModal">Отмена</button>

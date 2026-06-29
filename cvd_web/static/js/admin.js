@@ -18,6 +18,11 @@
   const batchCasesTable = document.getElementById("batchCasesTable");
   const batchJobs = document.getElementById("batchJobs");
   const batchSelectionStatus = document.getElementById("batchSelectionStatus");
+  const modelSelect = document.getElementById("lmStudioModelSelect");
+  const textStructuringModelSelect = document.getElementById("textStructuringModelSelect");
+  const modelCatalogStatus = document.getElementById("modelCatalogStatus");
+  const activateModelButton = document.getElementById("activateModelButton");
+  const unloadPreviousModel = document.getElementById("unloadPreviousModel");
   const selectedBatchCases = new Set();
   let batchCases = [];
   let lastModelHealth = null;
@@ -137,11 +142,13 @@
 
   function renderSystemHealth(dashboard) {
     const system = dashboard.system || {};
+    const queue = dashboard.inference_queue || {};
     systemHealthGrid.innerHTML = "";
     const rows = [
       ["LM Studio", lastModelHealth?.ok ? `доступна · ${lastModelHealth.latency_ms} мс` : lastModelHealth ? "недоступна" : "не проверена", lastModelHealth?.ok ? "ok" : lastModelHealth ? "error" : "warning"],
       ["База данных", system.db_integrity === "ok" ? "integrity ok" : system.db_integrity || "нет данных", system.db_integrity === "ok" ? "ok" : "error"],
       ["Фоновый worker", system.worker_running ? "работает" : "остановлен", system.worker_running ? "ok" : "error"],
+      ["Очередь LM Studio", `${number(queue.active_count)} активно · ${number(queue.queued_count)} ожидает · лимит ${number(queue.max_concurrent)}`, Number(queue.queued_count) > 0 ? "warning" : "ok"],
       ["Размер БД", `${(Number(system.db_size_bytes || 0) / 1024 / 1024).toFixed(2)} МБ`, ""],
       ["Время работы", uptime(system.uptime_seconds), ""],
       ["Версия", system.app_version || "", ""]
@@ -163,6 +170,7 @@
     const quality = dashboard.quality || {};
     const batch = dashboard.batch || {};
     const preparations = dashboard.preparations || {};
+    const queue = dashboard.inference_queue || {};
     dashboardMetrics.innerHTML = "";
     [
       metricCard("Пользователи", number(dashboard.users?.active), `${number(dashboard.users?.total)} всего · ${number(dashboard.users?.active_24h)} входов за 24 ч`),
@@ -172,7 +180,8 @@
       metricCard("Готовность данных", `${quality.avg_readiness_percent || 0}%`, `заполненность ${quality.avg_completeness_percent || 0}% · сигналов ${number(quality.signals)}`),
       metricCard("Скорость генерации", `${Number(model.avg_tokens_per_second || 0).toFixed(1)} tok/s`, `${number(model.total_tokens)} токенов всего`),
       metricCard("AI-подготовка", number(preparations.success), `${number(preparations.mapped_fields)} полей · ${number(preparations.errors)} ошибок`, Number(preparations.errors) > 0 ? "warning" : ""),
-      metricCard("Пакетная очередь", number(batch.active_jobs), `${number(batch.success_items)} готово · ${number(batch.error_items)} ошибок`, Number(batch.error_items) > 0 ? "warning" : "")
+      metricCard("Пакетная очередь", number(batch.active_jobs), `${number(batch.success_items)} готово · ${number(batch.error_items)} ошибок`, Number(batch.error_items) > 0 ? "warning" : ""),
+      metricCard("Очередь LM Studio", number(queue.queued_count), `${number(queue.active_count)} активно · среднее ожидание ${duration(queue.average_wait_ms)}`, Number(queue.queued_count) > 0 ? "warning" : "")
     ].forEach((card) => dashboardMetrics.appendChild(card));
     renderActivity(dashboard.daily || []);
     renderSystemHealth(dashboard);
@@ -207,6 +216,81 @@
       }
     });
     window.APP_SETTINGS = { ...(window.APP_SETTINGS || {}), ...values };
+    return values;
+  }
+
+  function modelSize(bytes) {
+    const size = Number(bytes || 0);
+    if (!size) return "";
+    return `${(size / 1024 / 1024 / 1024).toFixed(1)} GB`;
+  }
+
+  function modelOptionLabel(model) {
+    const details = [model.params, model.quantization, modelSize(model.size_bytes)].filter(Boolean).join(" · ");
+    const state = model.state === "loaded" ? "загружена" : "не загружена";
+    return `${model.display_name || model.id}${details ? ` · ${details}` : ""} · ${state}`;
+  }
+
+  async function loadModels() {
+    modelCatalogStatus.textContent = "Получение каталога LM Studio...";
+    const response = await api("/api/admin/models");
+    const configured = window.APP_SETTINGS?.lm_studio_model || response.selected_model || "";
+    const configuredTextModel = window.APP_SETTINGS?.text_structuring_model || "";
+    const models = (response.models || []).filter((model) => ["llm", "vlm"].includes(model.type));
+    modelSelect.innerHTML = "";
+    textStructuringModelSelect.innerHTML = "";
+    const defaultTextOption = document.createElement("option");
+    defaultTextOption.value = "";
+    defaultTextOption.textContent = "Использовать основную модель";
+    defaultTextOption.selected = !configuredTextModel;
+    textStructuringModelSelect.appendChild(defaultTextOption);
+    models.forEach((model) => {
+      const option = document.createElement("option");
+      option.value = model.id;
+      option.textContent = modelOptionLabel(model);
+      option.selected = model.id === configured;
+      modelSelect.appendChild(option);
+      const textOption = option.cloneNode(true);
+      textOption.selected = model.id === configuredTextModel;
+      textStructuringModelSelect.appendChild(textOption);
+    });
+    if (configured && !models.some((model) => model.id === configured)) {
+      const option = document.createElement("option");
+      option.value = configured;
+      option.textContent = `${configured} · отсутствует в каталоге`;
+      option.selected = true;
+      modelSelect.prepend(option);
+    }
+    if (configuredTextModel && !models.some((model) => model.id === configuredTextModel)) {
+      const option = document.createElement("option");
+      option.value = configuredTextModel;
+      option.textContent = `${configuredTextModel} · отсутствует в каталоге`;
+      option.selected = true;
+      textStructuringModelSelect.appendChild(option);
+    }
+    const loaded = models.filter((model) => model.state === "loaded").map((model) => model.display_name || model.id);
+    modelCatalogStatus.textContent = `${response.api_version.toUpperCase()} · моделей ${models.length} · загружено: ${loaded.join(", ") || "нет"}`;
+  }
+
+  async function activateModel() {
+    const model = modelSelect.value;
+    if (!model) throw new Error("Выберите модель");
+    activateModelButton.disabled = true;
+    modelCatalogStatus.textContent = `Активация ${model}...`;
+    try {
+      const response = await api("/api/admin/models/activate", {
+        method: "POST",
+        body: JSON.stringify({
+          model,
+          unload_previous: unloadPreviousModel.checked
+        })
+      });
+      window.APP_SETTINGS = { ...(window.APP_SETTINGS || {}), lm_studio_model: response.selected_model };
+      toast(`Активна модель ${response.selected_model}`);
+      await Promise.all([loadSettings(), loadModels(), loadModelHealth(), loadStats(), loadDashboard()]);
+    } finally {
+      activateModelButton.disabled = false;
+    }
   }
 
   async function saveSettings(event) {
@@ -216,13 +300,15 @@
       if (!element.name) return;
       settings[element.name] = element.value;
     });
+    settings.lm_studio_model = window.APP_SETTINGS?.lm_studio_model || settings.lm_studio_model;
     await api("/api/admin/settings", {
       method: "POST",
       body: JSON.stringify({ settings })
     });
     window.APP_SETTINGS = { ...(window.APP_SETTINGS || {}), ...settings };
     toast("Настройки сохранены");
-    await Promise.all([loadStats(), loadSettings()]);
+    await loadSettings();
+    await Promise.all([loadStats(), loadModels()]);
   }
 
   async function loadUsers() {
@@ -566,8 +652,16 @@
   settingsForm.addEventListener("submit", (event) => {
     saveSettings(event).catch((err) => toast(err.message));
   });
-  document.getElementById("refreshSettingsButton").addEventListener("click", () => loadSettings().catch((err) => toast(err.message)));
+  document.getElementById("refreshSettingsButton").addEventListener("click", () => loadSettings().then(loadModels).catch((err) => toast(err.message)));
   document.getElementById("testModelButton").addEventListener("click", () => loadModelHealth().catch((err) => toast(err.message)));
+  document.getElementById("refreshModelsButton").addEventListener("click", () => loadModels().catch((err) => {
+    modelCatalogStatus.textContent = err.message;
+    toast(err.message);
+  }));
+  activateModelButton.addEventListener("click", () => activateModel().catch((err) => {
+    modelCatalogStatus.textContent = err.message;
+    toast(err.message);
+  }));
   document.getElementById("refreshUsersButton").addEventListener("click", () => loadUsers().catch((err) => toast(err.message)));
   document.getElementById("refreshRequestsButton").addEventListener("click", () => loadRequests().catch((err) => toast(err.message)));
   document.getElementById("refreshQualityButton").addEventListener("click", () => loadQuality().catch((err) => toast(err.message)));
@@ -583,6 +677,7 @@
   document.getElementById("startBatchButton").addEventListener("click", () => startBatch().catch((err) => toast(err.message)));
   document.getElementById("logoutButton").addEventListener("click", () => logout().catch((err) => toast(err.message)));
 
-  Promise.all([loadStats(), loadDashboard(), loadModelHealth(), loadBatch(), loadSettings(), loadUsers(), loadRequests(), loadQuality(), loadAudit(), loadReviews()]).catch((err) => toast(err.message));
+  const settingsAndModels = loadSettings().then(loadModels);
+  Promise.all([loadStats(), loadDashboard(), loadModelHealth(), loadBatch(), settingsAndModels, loadUsers(), loadRequests(), loadQuality(), loadAudit(), loadReviews()]).catch((err) => toast(err.message));
   window.setInterval(() => Promise.all([loadDashboard(), loadBatch()]).catch(() => {}), 10000);
 })();

@@ -7,13 +7,12 @@ import re
 import threading
 import time
 import traceback
+from contextlib import contextmanager
 from html import escape
 from datetime import datetime, timedelta, timezone
 from http import cookies
 from pathlib import Path
 from typing import Any, Callable
-from urllib import error as urllib_error
-from urllib import request as urllib_request
 from urllib.parse import parse_qs, urlsplit
 
 from .auth import hash_password, new_token, utc_now, verify_password
@@ -31,11 +30,14 @@ from .db import (
 )
 from .fhir import build_fhir_bundle
 from .integration_import import KNOWN_PATHS, parse_clinical_import
+from .inference_queue import InferenceQueue, InferenceQueueError
 from .lmstudio import call_lm_studio
+from .lmstudio_models import LMStudioManagementError, activate_lm_model, list_lm_models
 from .privacy import deidentify_patient_data
 from .quality import case_quality_summary
 from .rate_limit import MemoryRateLimiter
-from .text_structuring import TEXT_STRUCTURING_VERSION, call_text_structuring
+from .reporting import build_html_report
+from .text_structuring import TEXT_MAX_INPUT_CHARS, TEXT_STRUCTURING_VERSION, call_text_structuring
 from .versions import APP_VERSION, MODEL_OUTPUT_SCHEMA_VERSION, MODEL_PROMPT_VERSION, PATIENT_SCHEMA_VERSION
 
 
@@ -127,6 +129,7 @@ class CVDApplication:
         self.template_dir = config.project_root / "cvd_web" / "templates"
         self.static_dir = config.project_root / "cvd_web" / "static"
         self.rate_limiter = MemoryRateLimiter()
+        self.inference_queue = InferenceQueue()
         self.started_at = datetime.now(timezone.utc).replace(microsecond=0)
         self.batch_worker_event = threading.Event()
         self.recover_interrupted_batch_jobs()
@@ -189,6 +192,9 @@ class CVDApplication:
         if request.path == "/admin" and request.method == "GET":
             self.require_admin(user)
             return self.render("admin.html", user=user, csrf_token=user["csrf_token"])
+        if match := re.fullmatch(r"/reports/(\d+)", request.path):
+            if request.method == "GET":
+                return self.view_html_report(user, int(match.group(1)))
         if request.path == "/api/logout" and request.method == "POST":
             return self.logout(request, user)
         if request.path == "/api/me" and request.method == "GET":
@@ -196,7 +202,7 @@ class CVDApplication:
         if request.path == "/api/me/password" and request.method == "POST":
             return self.change_own_password(request, user)
         if request.path == "/api/cases" and request.method == "GET":
-            return self.list_cases(user)
+            return self.list_cases(request, user)
         if request.path == "/api/cases" and request.method == "POST":
             return self.save_case(request, user)
         if request.path == "/api/import/preview" and request.method == "POST":
@@ -215,10 +221,17 @@ class CVDApplication:
         if match := re.fullmatch(r"/api/cases/(\d+)/delete", request.path):
             if request.method == "POST":
                 return self.delete_case(user, int(match.group(1)))
+        if match := re.fullmatch(r"/api/cases/(\d+)/copy", request.path):
+            if request.method == "POST":
+                return self.copy_case(user, int(match.group(1)))
         if request.path == "/api/model/diagnose" and request.method == "POST":
             return self.diagnose(request, user)
         if request.path == "/api/model/structure-text" and request.method == "POST":
             return self.structure_text(request, user)
+        if request.path == "/api/inference/status" and request.method == "GET":
+            return self.inference_status(user)
+        if request.path == "/api/reports/html" and request.method == "POST":
+            return self.export_html_report(request, user)
         if request.path == "/api/requests" and request.method == "GET":
             return self.list_requests(user)
         if match := re.fullmatch(r"/api/requests/(\d+)/review", request.path):
@@ -262,6 +275,12 @@ class CVDApplication:
         if request.path == "/api/admin/model-health" and request.method == "GET":
             self.require_admin(user)
             return self.admin_model_health()
+        if request.path == "/api/admin/models" and request.method == "GET":
+            self.require_admin(user)
+            return self.admin_models()
+        if request.path == "/api/admin/models/activate" and request.method == "POST":
+            self.require_admin(user)
+            return self.admin_activate_model(request, user)
         if request.path == "/api/admin/quality" and request.method == "GET":
             self.require_admin(user)
             return self.admin_quality()
@@ -364,6 +383,19 @@ class CVDApplication:
         if raw is None:
             return default
         return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+    def configure_inference_queue(self, settings: dict[str, str]) -> int:
+        self.inference_queue.configure(
+            max_concurrent=self.setting_int(settings, "lm_studio_max_concurrent", 1),
+            queue_limit=self.setting_int(settings, "lm_studio_queue_limit", 64),
+            per_user_limit=self.setting_int(settings, "lm_studio_per_user_limit", 2),
+        )
+        return self.setting_int(settings, "lm_studio_queue_timeout_seconds", 1800)
+
+    def inference_status(self, user: dict[str, Any]):
+        settings = self.load_settings()
+        self.configure_inference_queue(settings)
+        return self.json_response({"queue": self.inference_queue.snapshot(user_id=user["id"])})
 
     def model_metrics(self, response_payload: dict[str, Any] | None, duration_ms: int) -> dict[str, Any]:
         raw = response_payload.get("raw", {}) if isinstance(response_payload, dict) else {}
@@ -488,19 +520,55 @@ class CVDApplication:
             audit(conn, user_id=user["id"], action="own_password_change", target_type="user", target_id=user["id"])
         return self.json_response({"ok": True})
 
-    def list_cases(self, user: dict[str, Any]):
+    def list_cases(self, request: Request, user: dict[str, Any]):
+        query = str(request.query.get("q", [""])[0]).strip()[:200]
+        limit = self.query_int(request, "limit", 100, 1, 200)
+        offset = self.query_int(request, "offset", 0, 0, 1_000_000)
+        escaped_query = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
+        search = f"%{escaped_query}%"
         with connect(self.config.db_path) as conn:
+            total = conn.execute(
+                """
+                SELECT COUNT(*)
+                FROM cases c
+                WHERE c.user_id = ?
+                  AND (? = '' OR c.title LIKE ? ESCAPE '\\' OR c.patient_id LIKE ? ESCAPE '\\'
+                       OR CAST(c.id AS TEXT) LIKE ? ESCAPE '\\')
+                """,
+                (user["id"], query, search, search, search),
+            ).fetchone()[0]
             rows = conn.execute(
                 """
-                SELECT id, title, patient_id, created_at, updated_at
-                FROM cases
-                WHERE user_id = ?
-                ORDER BY updated_at DESC
-                LIMIT 100
+                SELECT c.id, c.title, c.patient_id, c.created_at, c.updated_at,
+                       (
+                         SELECT r.id
+                         FROM model_requests r
+                         WHERE r.case_id = c.id AND r.user_id = c.user_id
+                           AND r.status = 'success' AND r.parsed_output_json IS NOT NULL
+                         ORDER BY r.created_at DESC, r.id DESC
+                         LIMIT 1
+                       ) AS latest_result_id,
+                       (
+                         SELECT COUNT(*)
+                         FROM model_requests r
+                         WHERE r.case_id = c.id AND r.user_id = c.user_id
+                       ) AS analysis_count
+                FROM cases c
+                WHERE c.user_id = ?
+                  AND (? = '' OR c.title LIKE ? ESCAPE '\\' OR c.patient_id LIKE ? ESCAPE '\\'
+                       OR CAST(c.id AS TEXT) LIKE ? ESCAPE '\\')
+                ORDER BY c.updated_at DESC
+                LIMIT ? OFFSET ?
                 """,
-                (user["id"],),
+                (user["id"], query, search, search, search, limit, offset),
             ).fetchall()
-        return self.json_response({"cases": rows_to_dicts(rows)})
+        return self.json_response({
+            "cases": rows_to_dicts(rows),
+            "total": int(total),
+            "limit": limit,
+            "offset": offset,
+            "has_more": offset + len(rows) < int(total),
+        })
 
     def preview_clinical_import(self, request: Request, user: dict[str, Any]):
         self.ensure_request_size(request)
@@ -695,6 +763,12 @@ class CVDApplication:
 
     def delete_case(self, user: dict[str, Any], case_id: int):
         with connect(self.config.db_path) as conn:
+            owned_case = conn.execute(
+                "SELECT id FROM cases WHERE id = ? AND user_id = ?",
+                (case_id, user["id"]),
+            ).fetchone()
+            if not owned_case:
+                raise HTTPError(404, "Кейс не найден")
             active_batch = conn.execute(
                 """
                 SELECT 1
@@ -713,6 +787,47 @@ class CVDApplication:
                 raise HTTPError(404, "Кейс не найден")
             audit(conn, user_id=user["id"], action="case_delete", target_type="case", target_id=case_id)
         return self.json_response({"ok": True})
+
+    def copy_case(self, user: dict[str, Any], case_id: int):
+        with connect(self.config.db_path) as conn:
+            row = conn.execute(
+                "SELECT id, title, patient_id, data_json FROM cases WHERE id = ? AND user_id = ?",
+                (case_id, user["id"]),
+            ).fetchone()
+            if not row:
+                raise HTTPError(404, "Кейс не найден")
+            try:
+                patient_data = json.loads(row["data_json"])
+            except json.JSONDecodeError as exc:
+                raise HTTPError(409, "Данные исходного кейса повреждены") from exc
+            patient_data["MODEL_OUTPUT"] = {}
+            patient_data = self.normalized_patient_data(patient_data)
+            now = utc_now()
+            title = f"Копия: {row['title']}"[:200]
+            cur = conn.execute(
+                """
+                INSERT INTO cases (user_id, title, patient_id, data_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    user["id"],
+                    title,
+                    row["patient_id"],
+                    json.dumps(patient_data, ensure_ascii=False),
+                    now,
+                    now,
+                ),
+            )
+            copied_id = int(cur.lastrowid)
+            audit(
+                conn,
+                user_id=user["id"],
+                action="case_copy",
+                target_type="case",
+                target_id=copied_id,
+                details={"source_case_id": case_id},
+            )
+        return self.json_response({"ok": True, "case_id": copied_id, "title": title}, 201)
 
     def diagnose(self, request: Request, user: dict[str, Any]):
         settings = self.load_settings()
@@ -740,8 +855,115 @@ class CVDApplication:
             settings=settings,
         )
         if not result["ok"]:
-            raise HTTPError(502, result["error"] or "Ошибка обращения к LM Studio")
+            status = 429 if result.get("queue_error") else 502
+            raise HTTPError(status, "Сервис AI временно недоступен. Подробности сохранены для администратора")
         return self.json_response(result)
+
+    def export_html_report(self, request: Request, user: dict[str, Any]):
+        settings = self.load_settings()
+        self.ensure_request_size(request, settings)
+        data = request.json()
+        patient_data = self.normalized_patient_data(data.get("patient_data"))
+        try:
+            request_id = int(data.get("request_id"))
+        except (TypeError, ValueError) as exc:
+            raise HTTPError(400, "Некорректный request_id") from exc
+
+        html = self.build_request_report(
+            user,
+            request_id,
+            settings=settings,
+            patient_data=patient_data,
+            audit_action="html_report_export",
+        )
+
+        filename = f"cvd-report-{request_id}.html"
+        return self.response(
+            200,
+            html.encode("utf-8"),
+            [
+                ("Content-Type", "text/html; charset=utf-8"),
+                ("Content-Disposition", f'attachment; filename="{filename}"'),
+                ("Cache-Control", "no-store"),
+            ],
+        )
+
+    def view_html_report(self, user: dict[str, Any], request_id: int):
+        html = self.build_request_report(
+            user,
+            request_id,
+            settings=self.load_settings(),
+            patient_data=None,
+            audit_action="html_report_view",
+        )
+        return self.response(
+            200,
+            html.encode("utf-8"),
+            [
+                ("Content-Type", "text/html; charset=utf-8"),
+                ("Content-Disposition", f'inline; filename="cvd-report-{request_id}.html"'),
+                ("Cache-Control", "no-store"),
+            ],
+        )
+
+    def build_request_report(
+        self,
+        user: dict[str, Any],
+        request_id: int,
+        *,
+        settings: dict[str, str],
+        patient_data: dict[str, Any] | None,
+        audit_action: str,
+    ) -> str:
+        with connect(self.config.db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT r.id, r.user_id, r.case_id, r.status, r.parsed_output_json,
+                       r.deidentified_input_json, r.duration_ms, r.created_at,
+                       c.data_json AS case_data_json
+                FROM model_requests r
+                LEFT JOIN cases c ON c.id = r.case_id AND c.user_id = r.user_id
+                WHERE r.id = ? AND (r.user_id = ? OR ? = 'admin')
+                """,
+                (request_id, user["id"], user["role"]),
+            ).fetchone()
+            if not row:
+                raise HTTPError(404, "Результат анализа не найден")
+            if row["status"] != "success" or not row["parsed_output_json"]:
+                raise HTTPError(409, "Для отчёта нужен успешный структурированный результат")
+            try:
+                parsed_output = json.loads(row["parsed_output_json"])
+                if patient_data is None:
+                    case_data = json.loads(row["case_data_json"] or "{}")
+                    patient_data = json.loads(row["deidentified_input_json"]) if row["deidentified_input_json"] else case_data
+                    report_general = patient_data.setdefault("GENERAL_INFO", {})
+                    case_general = case_data.get("GENERAL_INFO", {})
+                    for key in ("Patient_ID", "Full_name"):
+                        if case_general.get(key) not in (None, ""):
+                            report_general[key] = case_general[key]
+            except (json.JSONDecodeError, TypeError, AttributeError) as exc:
+                raise HTTPError(409, "Сохранённые данные результата повреждены") from exc
+
+            html = build_html_report(
+                patient_data,
+                parsed_output,
+                {
+                    "app_name": settings.get("app_name", "CVD Web"),
+                    "organization_name": settings.get("organization_name", ""),
+                    "generated_at": utc_now(),
+                    "request_id": row["id"],
+                    "duration_ms": row["duration_ms"],
+                },
+            )
+            audit(
+                conn,
+                user_id=user["id"],
+                action=audit_action,
+                target_type="model_request",
+                target_id=request_id,
+                details={"case_id": row["case_id"]},
+            )
+        return html
 
     def execute_model_request(
         self,
@@ -760,6 +982,7 @@ class CVDApplication:
         temperature = self.setting_float(settings, "lm_studio_temperature", 0.2)
         structured_output = self.setting_bool(settings, "lm_studio_structured_output", True)
         deidentify_before_model = self.setting_bool(settings, "deidentify_before_model", True)
+        queue_timeout_seconds = self.configure_inference_queue(settings)
         active_prompt_version = str(settings.get("active_prompt_version") or MODEL_PROMPT_VERSION).strip()[:120] or MODEL_PROMPT_VERSION
         active_prompt_template = str(settings.get("active_prompt_template") or "").strip()
         model_patient_data, phi_signals = deidentify_patient_data(patient_data) if deidentify_before_model else (patient_data, [])
@@ -775,28 +998,43 @@ class CVDApplication:
             "patient_schema_version": PATIENT_SCHEMA_VERSION,
             "output_schema_version": MODEL_OUTPUT_SCHEMA_VERSION,
             "request_source": request_source,
+            "lm_studio_max_concurrent": self.setting_int(settings, "lm_studio_max_concurrent", 1),
+            "lm_studio_queue_timeout_seconds": queue_timeout_seconds,
         }
         request_json: dict[str, Any] | None = None
         response_payload: dict[str, Any] | None = None
         parsed: dict[str, Any] | None = None
         duration_ms = 0
+        queue_wait_ms = 0
+        queue_error = False
         status = "error"
         error = None
         try:
-            request_json, response_payload, parsed, duration_ms = call_lm_studio(
-                api_url=lm_studio_api_url,
-                model=lm_studio_model,
-                patient_data=model_patient_data,
-                timeout_seconds=timeout_seconds,
-                max_tokens=max_tokens,
-                temperature=temperature,
-                prompt_template=active_prompt_template,
-                prompt_version=active_prompt_version,
-                structured_output=structured_output,
-            )
+            queue_kind = "batch_diagnosis" if request_source == "batch" else "diagnosis"
+            with self.inference_queue.acquire(
+                user_id=user_id,
+                kind=queue_kind,
+                timeout_seconds=queue_timeout_seconds,
+            ) as lease:
+                queue_wait_ms = lease.wait_ms
+                request_json, response_payload, parsed, duration_ms = call_lm_studio(
+                    api_url=lm_studio_api_url,
+                    model=lm_studio_model,
+                    patient_data=model_patient_data,
+                    timeout_seconds=timeout_seconds,
+                    max_tokens=max_tokens,
+                    temperature=temperature,
+                    prompt_template=active_prompt_template,
+                    prompt_version=active_prompt_version,
+                    structured_output=structured_output,
+                )
             status = "success"
         except Exception as exc:
+            queue_error = isinstance(exc, InferenceQueueError)
+            queue_wait_ms = max(queue_wait_ms, int(getattr(exc, "wait_ms", 0) or 0))
             error = str(exc)[:4000]
+            request_json = getattr(exc, "request_body", None) or request_json
+            response_payload = getattr(exc, "response_payload", None) or response_payload
             duration_ms = max(duration_ms, int(getattr(exc, "duration_ms", 0) or 0))
 
         metrics = self.model_metrics(response_payload, duration_ms)
@@ -808,8 +1046,8 @@ class CVDApplication:
                    parsed_output_json, prompt_version, schema_version, output_schema_version,
                    settings_snapshot_json, deidentified_input_json, phi_signals_json,
                    error, duration_ms, prompt_tokens, completion_tokens, total_tokens,
-                   tokens_per_second, finish_reason, request_source, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   tokens_per_second, finish_reason, request_source, queue_wait_ms, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     user_id,
@@ -834,6 +1072,7 @@ class CVDApplication:
                     metrics["tokens_per_second"],
                     metrics["finish_reason"],
                     request_source,
+                    queue_wait_ms,
                     utc_now(),
                 ),
             )
@@ -851,6 +1090,7 @@ class CVDApplication:
                     "completion_tokens": metrics["completion_tokens"],
                     "tokens_per_second": metrics["tokens_per_second"],
                     "request_source": request_source,
+                    "queue_wait_ms": queue_wait_ms,
                 },
             )
             request_id = int(cur.lastrowid)
@@ -861,6 +1101,8 @@ class CVDApplication:
             "parsed": parsed,
             "error": error,
             "duration_ms": duration_ms,
+            "queue_wait_ms": queue_wait_ms,
+            "queue_error": queue_error,
             "prompt_version": active_prompt_version,
             "schema_version": PATIENT_SCHEMA_VERSION,
             "output_schema_version": MODEL_OUTPUT_SCHEMA_VERSION,
@@ -881,18 +1123,33 @@ class CVDApplication:
         source_text = str(data.get("text") or "").strip()
         if len(source_text) < 10:
             raise HTTPError(400, "Добавьте медицинский текст длиной не менее 10 символов")
-        if len(source_text) > 30000:
-            raise HTTPError(413, "Текст не должен превышать 30 000 символов")
+        if len(source_text) > TEXT_MAX_INPUT_CHARS:
+            raise HTTPError(413, f"Текст не должен превышать {TEXT_MAX_INPUT_CHARS:,} символов".replace(",", " "))
 
         api_url = settings.get("lm_studio_api_url") or self.config.lm_studio_api_url
-        model = settings.get("lm_studio_model") or self.config.lm_studio_model
+        model = settings.get("text_structuring_model") or settings.get("lm_studio_model") or self.config.lm_studio_model
         timeout_seconds = self.setting_int(settings, "lm_studio_timeout_seconds", self.config.lm_studio_timeout_seconds)
         max_tokens = self.setting_int(settings, "lm_studio_max_tokens", self.config.lm_studio_max_tokens)
+        queue_timeout_seconds = self.configure_inference_queue(settings)
         content_sha256 = hashlib.sha256(source_text.encode("utf-8")).hexdigest()
         response_payload: dict[str, Any] | None = None
         result: dict[str, Any] | None = None
         duration_ms = 0
+        queue_wait_ms = 0
+        queue_error = False
         error = None
+
+        @contextmanager
+        def queued_model_call():
+            nonlocal queue_wait_ms
+            with self.inference_queue.acquire(
+                user_id=user["id"],
+                kind="text_structuring",
+                timeout_seconds=queue_timeout_seconds,
+            ) as lease:
+                queue_wait_ms += lease.wait_ms
+                yield
+
         try:
             _, response_payload, result, duration_ms = call_text_structuring(
                 api_url=api_url,
@@ -900,31 +1157,41 @@ class CVDApplication:
                 text=source_text,
                 timeout_seconds=timeout_seconds,
                 max_tokens=max_tokens,
+                call_guard=queued_model_call,
             )
         except Exception as exc:
+            queue_error = isinstance(exc, InferenceQueueError)
+            queue_wait_ms = max(queue_wait_ms, int(getattr(exc, "wait_ms", 0) or 0))
             error = str(exc)[:4000]
+            response_payload = getattr(exc, "response_payload", None) or response_payload
             duration_ms = int(getattr(exc, "duration_ms", 0) or 0)
 
         metrics = self.model_metrics(response_payload, duration_ms)
+        chunk_count = max(1, int(response_payload.get("chunk_count") or 1)) if response_payload else 1
+        failed_chunk_count = max(0, int(response_payload.get("failed_chunk_count") or 0)) if response_payload else 0
         with connect(self.config.db_path) as conn:
             prep_cur = conn.execute(
                 """
                 INSERT INTO data_preparation_requests
-                  (user_id, status, model, input_sha256, mapped_fields, warning_count,
-                   duration_ms, prompt_tokens, completion_tokens, total_tokens, error, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                  (user_id, status, model, input_sha256, chunk_count, mapped_fields, warning_count,
+                   duration_ms, prompt_tokens, completion_tokens, total_tokens,
+                   finish_reason, queue_wait_ms, error, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     user["id"],
                     "success" if result is not None else "error",
                     model,
                     content_sha256,
+                    chunk_count,
                     len(result["mappings"]) if result else 0,
                     len(result["warnings"]) if result else 0,
                     duration_ms,
                     metrics["prompt_tokens"],
                     metrics["completion_tokens"],
                     metrics["total_tokens"],
+                    metrics["finish_reason"],
+                    queue_wait_ms,
                     error,
                     utc_now(),
                 ),
@@ -960,12 +1227,18 @@ class CVDApplication:
                 details={
                     "status": "success" if result is not None else "error",
                     "mapped_fields": len(result["mappings"]) if result else 0,
+                    "chunk_count": chunk_count,
                     "duration_ms": duration_ms,
+                    "queue_wait_ms": queue_wait_ms,
+                    "failed_chunk_count": failed_chunk_count,
                 },
             )
 
         if result is None:
-            raise HTTPError(502, error or "Не удалось подготовить данные")
+            raise HTTPError(
+                429 if queue_error else 502,
+                "Сервис AI временно не смог подготовить данные. Подробности сохранены для администратора",
+            )
         return self.json_response({
             "ok": True,
             "import_id": import_id,
@@ -976,7 +1249,10 @@ class CVDApplication:
             "warnings": result["warnings"],
             "corrected_text": result["corrected_text"],
             "summary": {"mapped_fields": len(result["mappings"])},
+            "chunk_count": chunk_count,
+            "failed_chunk_count": failed_chunk_count,
             "duration_ms": duration_ms,
+            "queue_wait_ms": queue_wait_ms,
             **metrics,
         })
 
@@ -1254,10 +1530,15 @@ class CVDApplication:
             "default_theme": str(incoming.get("default_theme", "light")).strip(),
             "lm_studio_api_url": str(incoming.get("lm_studio_api_url", "")).strip(),
             "lm_studio_model": str(incoming.get("lm_studio_model", "")).strip()[:160],
+            "text_structuring_model": str(incoming.get("text_structuring_model", "")).strip()[:160],
             "lm_studio_timeout_seconds": str(incoming.get("lm_studio_timeout_seconds", "")).strip(),
             "lm_studio_max_tokens": str(incoming.get("lm_studio_max_tokens", "")).strip(),
             "lm_studio_temperature": str(incoming.get("lm_studio_temperature", "0.2")).strip(),
             "lm_studio_structured_output": "1" if str(incoming.get("lm_studio_structured_output", "1")).strip().lower() in {"1", "true", "yes", "on"} else "0",
+            "lm_studio_max_concurrent": str(incoming.get("lm_studio_max_concurrent", "1")).strip(),
+            "lm_studio_queue_limit": str(incoming.get("lm_studio_queue_limit", "64")).strip(),
+            "lm_studio_per_user_limit": str(incoming.get("lm_studio_per_user_limit", "2")).strip(),
+            "lm_studio_queue_timeout_seconds": str(incoming.get("lm_studio_queue_timeout_seconds", "1800")).strip(),
             "deidentify_before_model": "1" if str(incoming.get("deidentify_before_model", "1")).strip().lower() in {"1", "true", "yes", "on"} else "0",
             "active_prompt_version": str(incoming.get("active_prompt_version", MODEL_PROMPT_VERSION)).strip()[:120],
             "active_prompt_template": str(incoming.get("active_prompt_template", "")).strip()[:12000],
@@ -1279,7 +1560,11 @@ class CVDApplication:
 
         ranges = {
             "lm_studio_timeout_seconds": (5, 1800),
-            "lm_studio_max_tokens": (64, 32768),
+            "lm_studio_max_tokens": (1024, 32768),
+            "lm_studio_max_concurrent": (1, 8),
+            "lm_studio_queue_limit": (1, 500),
+            "lm_studio_per_user_limit": (1, 10),
+            "lm_studio_queue_timeout_seconds": (30, 7200),
             "max_request_bytes": (1024, 20 * 1024 * 1024),
         }
         for key, (min_value, max_value) in ranges.items():
@@ -1302,6 +1587,7 @@ class CVDApplication:
         with connect(self.config.db_path) as conn:
             update_app_settings(conn, values)
             audit(conn, user_id=admin["id"], action="settings_update", target_type="app_settings")
+        self.configure_inference_queue(values)
         return self.json_response({"ok": True})
 
     def recover_interrupted_batch_jobs(self) -> None:
@@ -1571,6 +1857,8 @@ class CVDApplication:
         now = datetime.now(timezone.utc).replace(microsecond=0)
         since_24h = (now - timedelta(hours=24)).isoformat()
         since_7d = (now - timedelta(days=7)).isoformat()
+        settings = self.load_settings()
+        self.configure_inference_queue(settings)
         with connect(self.config.db_path) as conn:
             users = row_to_dict(conn.execute(
                 """
@@ -1599,6 +1887,8 @@ class CVDApplication:
                        SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success,
                        SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS errors,
                        ROUND(AVG(CASE WHEN status = 'success' THEN duration_ms END)) AS avg_duration_ms,
+                       ROUND(AVG(queue_wait_ms)) AS avg_queue_wait_ms,
+                       MAX(queue_wait_ms) AS max_queue_wait_ms,
                        ROUND(AVG(CASE WHEN status = 'success' THEN tokens_per_second END), 2) AS avg_tokens_per_second,
                        SUM(total_tokens) AS total_tokens,
                        MAX(CASE WHEN status = 'success' THEN created_at END) AS last_success_at,
@@ -1627,7 +1917,8 @@ class CVDApplication:
                 SELECT COUNT(*) AS total,
                        SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success,
                        SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS errors,
-                       SUM(mapped_fields) AS mapped_fields
+                       SUM(mapped_fields) AS mapped_fields,
+                       ROUND(AVG(queue_wait_ms)) AS avg_queue_wait_ms
                 FROM data_preparation_requests
                 """
             ).fetchone())
@@ -1702,6 +1993,7 @@ class CVDApplication:
             "preparations": preparations,
             "reviews": reviews,
             "batch": batch,
+            "inference_queue": self.inference_queue.snapshot(),
             "daily": daily,
             "system": {
                 "app_version": APP_VERSION,
@@ -1732,16 +2024,10 @@ class CVDApplication:
         settings = self.load_settings()
         api_url = settings.get("lm_studio_api_url") or self.config.lm_studio_api_url
         selected_model = settings.get("lm_studio_model") or self.config.lm_studio_model
-        parsed = urlsplit(api_url)
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            return self.json_response({"ok": False, "error": "Некорректный LM Studio API URL"})
-
-        models_url = f"{parsed.scheme}://{parsed.netloc}/api/v0/models"
         started = time.monotonic()
         try:
-            with urllib_request.urlopen(models_url, timeout=10) as response:
-                payload = json.loads(response.read().decode("utf-8"))
-        except (urllib_error.URLError, json.JSONDecodeError) as exc:
+            catalog = list_lm_models(api_url, timeout_seconds=10)
+        except LMStudioManagementError as exc:
             latency_ms = int((time.monotonic() - started) * 1000)
             return self.json_response({
                 "ok": False,
@@ -1752,25 +2038,81 @@ class CVDApplication:
             })
 
         latency_ms = int((time.monotonic() - started) * 1000)
-        models = payload.get("data", []) if isinstance(payload, dict) else []
-        selected = next(
-            (item for item in models if isinstance(item, dict) and item.get("id") == selected_model),
-            None,
-        )
+        models = catalog["models"]
+        selected = next((item for item in models if item["id"] == selected_model), None)
         loaded_models = [
-            item.get("id")
+            item["id"]
             for item in models
-            if isinstance(item, dict) and item.get("state") == "loaded"
+            if item["state"] == "loaded"
         ]
         return self.json_response({
-            "ok": bool(selected and selected.get("state") == "loaded"),
+            "ok": bool(selected and selected["state"] == "loaded"),
             "api_url": api_url,
+            "api_version": catalog["api_version"],
             "selected_model": selected_model,
-            "selected_state": selected.get("state") if selected else "not-found",
-            "loaded_context_length": selected.get("loaded_context_length") if selected else None,
-            "max_context_length": selected.get("max_context_length") if selected else None,
+            "selected_state": selected["state"] if selected else "not-found",
+            "loaded_context_length": selected["loaded_context_length"] if selected else None,
+            "max_context_length": selected["max_context_length"] if selected else None,
             "loaded_models": loaded_models,
             "latency_ms": latency_ms,
+        })
+
+    def admin_models(self):
+        settings = self.load_settings()
+        api_url = settings.get("lm_studio_api_url") or self.config.lm_studio_api_url
+        selected_model = settings.get("lm_studio_model") or self.config.lm_studio_model
+        try:
+            catalog = list_lm_models(api_url, timeout_seconds=15)
+        except LMStudioManagementError as exc:
+            raise HTTPError(502, f"Не удалось получить модели LM Studio: {exc}") from exc
+        return self.json_response({
+            "api_url": api_url,
+            "api_version": catalog["api_version"],
+            "selected_model": selected_model,
+            "models": catalog["models"],
+        })
+
+    def admin_activate_model(self, request: Request, admin: dict[str, Any]):
+        settings = self.load_settings()
+        self.ensure_request_size(request, settings)
+        data = request.json()
+        model_id = str(data.get("model") or "").strip()[:200]
+        unload_previous = str(data.get("unload_previous", True)).strip().lower() in {"1", "true", "yes", "on"}
+        api_url = settings.get("lm_studio_api_url") or self.config.lm_studio_api_url
+        previous_model = settings.get("lm_studio_model") or self.config.lm_studio_model
+        timeout_seconds = self.setting_int(settings, "lm_studio_timeout_seconds", self.config.lm_studio_timeout_seconds)
+        try:
+            result = activate_lm_model(
+                api_url,
+                model_id,
+                previous_model_id=previous_model,
+                unload_previous=unload_previous,
+                timeout_seconds=timeout_seconds,
+            )
+        except LMStudioManagementError as exc:
+            raise HTTPError(502, str(exc)) from exc
+
+        with connect(self.config.db_path) as conn:
+            update_app_settings(conn, {"lm_studio_model": model_id})
+            audit(
+                conn,
+                user_id=admin["id"],
+                action="model_activate",
+                target_type="app_settings",
+                target_id=model_id,
+                details={
+                    "previous_model": previous_model,
+                    "unload_previous": unload_previous,
+                    "api_version": result["api_version"],
+                    "unloaded_instances": result.get("unloaded_instances", []),
+                },
+            )
+        return self.json_response({
+            "ok": True,
+            "selected_model": model_id,
+            "selected": result["selected"],
+            "api_version": result["api_version"],
+            "warning": result.get("warning", ""),
         })
 
     def admin_quality(self):

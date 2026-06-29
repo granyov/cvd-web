@@ -8,11 +8,251 @@ from unittest.mock import patch
 
 from cvd_web.app import CVDApplication
 from cvd_web.db import connect
-from cvd_web.text_structuring import normalize_structuring_output
+from cvd_web.lmstudio import LMStudioError
+from cvd_web.text_structuring import (
+    TEXT_STRUCTURING_SCHEMA,
+    build_structuring_request,
+    call_text_structuring,
+    merge_structuring_results,
+    normalize_structuring_output,
+    split_clinical_text,
+)
 from test_core import call_wsgi, test_config
 
 
 class OperationsTests(unittest.TestCase):
+    def test_text_structuring_schema_is_bounded(self):
+        schema = TEXT_STRUCTURING_SCHEMA["schema"]
+        self.assertEqual(schema["properties"]["mappings"]["maxItems"], 14)
+        self.assertEqual(schema["properties"]["corrected_text"]["maxLength"], 600)
+        request = build_structuring_request("Бисопролол 5 мг утром", model="test", max_tokens=1536)
+        prompt = request["messages"][1]["content"]
+        self.assertIn("CURRENT_MEDICATIONS.Beta_blockers [text]", prompt)
+        self.assertIn("не заменяй препарат на yes/no", prompt)
+
+    def test_text_structuring_chunks_and_merges_results(self):
+        source = "Первое предложение с данными. Второе предложение с данными. Третье предложение."
+        chunks = split_clinical_text(source, max_chars=45)
+        self.assertGreater(len(chunks), 1)
+        self.assertTrue(all(len(chunk) <= 45 for chunk in chunks))
+
+        merged = merge_structuring_results([
+            {
+                "corrected_text": "Часть один.",
+                "mappings": [{
+                    "path": "GENERAL_INFO.Age",
+                    "value": 61,
+                    "confidence": "high",
+                    "source_conflict": False,
+                    "sources": [{"label": "61 год"}],
+                }],
+                "warnings": [],
+            },
+            {
+                "corrected_text": "Часть два.",
+                "mappings": [{
+                    "path": "GENERAL_INFO.Age",
+                    "value": 62,
+                    "confidence": "high",
+                    "source_conflict": False,
+                    "sources": [{"label": "62 года"}],
+                }],
+                "warnings": [],
+            },
+        ])
+        self.assertEqual(len(merged["mappings"]), 1)
+        self.assertTrue(merged["mappings"][0]["source_conflict"])
+        self.assertEqual(merged["mappings"][0]["confidence"], "low")
+        self.assertTrue(any("разные значения" in warning for warning in merged["warnings"]))
+
+    def test_long_text_is_processed_in_multiple_model_calls(self):
+        def response(summary: str, path: str, value: str):
+            content = json.dumps({
+                "mappings": [{"path": path, "value": value, "confidence": "high", "evidence": summary}],
+                "corrected_text": summary,
+                "warnings": [],
+            }, ensure_ascii=False)
+            return (
+                {
+                    "choices": [{"finish_reason": "stop", "message": {"content": content}}],
+                    "usage": {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150},
+                },
+                content,
+                1000,
+            )
+
+        long_text = "А" * 2500
+        with patch(
+            "cvd_web.text_structuring.call_json_lm_studio",
+            side_effect=[
+                response("Пациент 61 года.", "GENERAL_INFO.Age", "61"),
+                response("ЧСС 90 в минуту.", "PHYSICAL_EXAM.Heart_rate_bpm", "90"),
+            ],
+        ) as model_call:
+            request, payload, result, duration = call_text_structuring(
+                api_url="http://127.0.0.1:1234/v1/chat/completions",
+                model="test-model",
+                text=long_text,
+                timeout_seconds=10,
+                max_tokens=1536,
+            )
+        self.assertEqual(model_call.call_count, 2)
+        self.assertEqual(request["chunk_count"], 2)
+        self.assertEqual(payload["chunk_count"], 2)
+        self.assertEqual(payload["raw"]["usage"]["completion_tokens"], 100)
+        self.assertEqual(duration, 2000)
+        self.assertEqual(len(result["mappings"]), 2)
+
+    def test_text_structuring_retries_a_chunk_only_once(self):
+        raw_response = {
+            "choices": [{"finish_reason": "length", "message": {"content": '{"mappings": ['}}],
+            "usage": {"prompt_tokens": 100, "completion_tokens": 1024, "total_tokens": 1124},
+        }
+        with patch(
+            "cvd_web.text_structuring.call_json_lm_studio",
+            return_value=(raw_response, '{"mappings": [', 1000),
+        ) as model_call:
+            with self.assertRaises(LMStudioError) as context:
+                call_text_structuring(
+                    api_url="http://127.0.0.1:1234/v1/chat/completions",
+                    model="test-model",
+                    text="А" * 1400,
+                    timeout_seconds=300,
+                    max_tokens=1536,
+                )
+        self.assertEqual(model_call.call_count, 3)
+        self.assertEqual(context.exception.response_payload["attempt_count"], 3)
+        self.assertEqual(context.exception.response_payload["failed_chunk_count"], 1)
+
+    def test_text_structuring_returns_warned_partial_result(self):
+        success_content = json.dumps({
+            "mappings": [{
+                "path": "GENERAL_INFO.Age",
+                "value": "61",
+                "confidence": "high",
+                "evidence": "61 год",
+            }],
+            "corrected_text": "Пациент 61 года.",
+            "warnings": [],
+        }, ensure_ascii=False)
+        success = (
+            {
+                "choices": [{"finish_reason": "stop", "message": {"content": success_content}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 50, "total_tokens": 150},
+            },
+            success_content,
+            1000,
+        )
+        truncated = (
+            {
+                "choices": [{"finish_reason": "length", "message": {"content": '{"mappings": ['}}],
+                "usage": {"prompt_tokens": 100, "completion_tokens": 1024, "total_tokens": 1124},
+            },
+            '{"mappings": [',
+            1000,
+        )
+        with patch(
+            "cvd_web.text_structuring.call_json_lm_studio",
+            side_effect=[success, truncated, truncated, truncated],
+        ) as model_call:
+            _, payload, result, _ = call_text_structuring(
+                api_url="http://127.0.0.1:1234/v1/chat/completions",
+                model="test-model",
+                text="А" * 2500,
+                timeout_seconds=300,
+                max_tokens=1536,
+            )
+        self.assertEqual(model_call.call_count, 4)
+        self.assertEqual(payload["raw"]["choices"][0]["finish_reason"], "partial")
+        self.assertEqual(payload["failed_chunk_count"], 1)
+        self.assertEqual(len(result["mappings"]), 1)
+        self.assertTrue(any("проверьте результат" in warning for warning in result["warnings"]))
+
+    def test_truncated_text_structuring_response_is_rejected(self):
+        raw_response = {
+            "choices": [{"finish_reason": "length", "message": {"content": '{"mappings": ['}}],
+            "usage": {"prompt_tokens": 500, "completion_tokens": 1536, "total_tokens": 2036},
+        }
+        with patch(
+            "cvd_web.text_structuring.call_json_lm_studio",
+            return_value=(raw_response, '{"mappings": [', 3200),
+        ):
+            with self.assertRaises(LMStudioError) as context:
+                call_text_structuring(
+                    api_url="http://127.0.0.1:1234/v1/chat/completions",
+                    model="medgemma-27b-text-it",
+                    text="Пациент жалуется на сердцебиение и слабость.",
+                    timeout_seconds=10,
+                    max_tokens=1536,
+                )
+        self.assertIn("обрезан", str(context.exception))
+        self.assertEqual(context.exception.response_payload["raw"]["choices"][0]["finish_reason"], "length")
+
+    def test_text_structuring_error_persists_finish_reason(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = CVDApplication(test_config(Path(tmp) / "cvd.sqlite3"), start_batch_worker=False)
+            cookie, csrf = self.login(app)
+            response_payload = {
+                "raw": {
+                    "choices": [{"finish_reason": "length"}],
+                    "usage": {"prompt_tokens": 500, "completion_tokens": 1536, "total_tokens": 2036},
+                },
+                "content": '{"mappings": [',
+            }
+            error = LMStudioError(
+                "AI-разбор текста обрезан",
+                3200,
+                response_payload=response_payload,
+            )
+            with patch("cvd_web.app.call_text_structuring", side_effect=error):
+                status, _, body = call_wsgi(
+                    app,
+                    "/api/model/structure-text",
+                    method="POST",
+                    cookie=cookie,
+                    csrf=csrf,
+                    body={"text": "Пациент жалуется на сердцебиение и слабость."},
+                )
+            self.assertTrue(status.startswith("502"), body)
+            with connect(app.config.db_path) as conn:
+                stored = conn.execute("SELECT * FROM data_preparation_requests").fetchone()
+            self.assertEqual(stored["status"], "error")
+            self.assertEqual(stored["finish_reason"], "length")
+            self.assertEqual(stored["completion_tokens"], 1536)
+
+    def test_truncated_response_is_stored_as_error_with_metrics(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = CVDApplication(test_config(Path(tmp) / "cvd.sqlite3"), start_batch_worker=False)
+            response_payload = {
+                "raw": {
+                    "usage": {"prompt_tokens": 100, "completion_tokens": 768, "total_tokens": 868},
+                    "choices": [{"finish_reason": "length"}],
+                },
+                "content": '{"CDS_OUTPUT": {',
+            }
+            error = LMStudioError(
+                "Ответ обрезан",
+                2000,
+                request_body={"model": "test", "max_tokens": 768},
+                response_payload=response_payload,
+            )
+            with patch("cvd_web.app.call_lm_studio", side_effect=error):
+                result = app.execute_model_request(
+                    user_id=1,
+                    case_id=None,
+                    patient_data={"GENERAL_INFO": {"Patient_ID": "TEST"}},
+                    request_source="interactive",
+                )
+            self.assertFalse(result["ok"])
+            self.assertEqual(result["finish_reason"], "length")
+            self.assertEqual(result["completion_tokens"], 768)
+            with connect(app.config.db_path) as conn:
+                stored = conn.execute("SELECT * FROM model_requests WHERE id = ?", (result["request_id"],)).fetchone()
+            self.assertEqual(stored["status"], "error")
+            self.assertEqual(stored["finish_reason"], "length")
+            self.assertIsNone(stored["parsed_output_json"])
+            self.assertIsNotNone(stored["response_json"])
+
     def login(self, app: CVDApplication) -> tuple[str, str]:
         status, headers, body = call_wsgi(
             app,
@@ -58,6 +298,41 @@ class OperationsTests(unittest.TestCase):
         self.assertEqual(result["mappings"][0]["value"], 148)
         self.assertTrue(any("выше допустимого" in warning for warning in result["warnings"]))
         self.assertTrue(any("неизвестное поле" in warning for warning in result["warnings"]))
+
+    def test_ai_structuring_drops_identifiers_unknown_and_low_confidence_values(self):
+        result = normalize_structuring_output({
+            "corrected_text": "Пациент 61 года.",
+            "mappings": [
+                {"path": "GENERAL_INFO.Patient_ID", "value": "61", "confidence": "high", "evidence": "61 год"},
+                {"path": "GENERAL_INFO.Full_name", "value": "unknown", "confidence": "high", "evidence": ""},
+                {"path": "GENERAL_INFO.Sex", "value": "male", "confidence": "low", "evidence": "Пациент"},
+                {"path": "COMPLAINTS.Main_complaint", "value": "unknown", "confidence": "high", "evidence": ""},
+                {"path": "RISK_FACTORS.Hypertension", "value": "yes", "confidence": "medium", "evidence": "Пульс 92"},
+                {"path": "GENERAL_INFO.Age", "value": "61", "confidence": "high", "evidence": "61 год"},
+            ],
+            "warnings": [],
+        })
+        self.assertEqual([item["path"] for item in result["mappings"]], ["GENERAL_INFO.Age"])
+        self.assertTrue(any("GENERAL_INFO.Patient_ID" in warning for warning in result["warnings"]))
+        self.assertTrue(any("GENERAL_INFO.Full_name" in warning for warning in result["warnings"]))
+        self.assertTrue(any("GENERAL_INFO.Sex" in warning for warning in result["warnings"]))
+        self.assertTrue(any("отсутствия данных" in warning for warning in result["warnings"]))
+        self.assertTrue(any("высокой уверенности" in warning for warning in result["warnings"]))
+
+    def test_ai_structuring_corrects_known_medication_class(self):
+        result = normalize_structuring_output({
+            "corrected_text": "Принимает бисопролол 5 мг утром.",
+            "mappings": [{
+                "path": "CURRENT_MEDICATIONS.Antiplatelets",
+                "value": "бисопролол 5 мг утром",
+                "confidence": "high",
+                "evidence": "Принимает бисопролол",
+            }],
+            "warnings": [],
+        })
+        self.assertEqual(len(result["mappings"]), 1)
+        self.assertEqual(result["mappings"][0]["path"], "CURRENT_MEDICATIONS.Beta_blockers")
+        self.assertTrue(any("подтверждённый класс" in warning for warning in result["warnings"]))
 
     def test_batch_processing_dashboard_and_text_preparation(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -159,6 +434,8 @@ class OperationsTests(unittest.TestCase):
                 preparation = conn.execute("SELECT * FROM data_preparation_requests").fetchone()
             self.assertEqual(sources, ["batch", "batch"])
             self.assertEqual(len(preparation["input_sha256"]), 64)
+            self.assertEqual(preparation["chunk_count"], 1)
+            self.assertEqual(preparation["finish_reason"], "stop")
             self.assertNotIn("пациэнт", preparation.keys())
 
 

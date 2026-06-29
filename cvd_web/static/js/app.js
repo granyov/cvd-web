@@ -41,12 +41,30 @@
   const structureTextForm = document.getElementById("structureTextForm");
   const structureTextInput = document.getElementById("structureTextInput");
   const structureTextStatus = document.getElementById("structureTextStatus");
+  const structureTextError = document.getElementById("structureTextError");
+  const exportHtmlButton = document.getElementById("exportHtmlButton");
+  const resultReadyBanner = document.getElementById("resultReadyBanner");
+  const viewResultButton = document.getElementById("viewResultButton");
+  const caseSearchInput = document.getElementById("caseSearchInput");
+  const clearCaseSearchButton = document.getElementById("clearCaseSearchButton");
+  const caseCount = document.getElementById("caseCount");
+  const loadMoreCasesButton = document.getElementById("loadMoreCasesButton");
   const minimumPasswordLength = 15;
   const maxImportBytes = 5 * 1024 * 1024;
   let currentCaseId = null;
   let currentModelRequestId = null;
   let pendingReviewAction = null;
   let pendingImport = null;
+  let structureTextBusy = false;
+  let structureTextTimer = null;
+  let structureTextStartedAt = 0;
+  let structureTextChunkEstimate = 1;
+  let structureQueueState = null;
+  let structureQueueTimer = null;
+  let diagnosisQueueTimer = null;
+  let caseSearchTimer = null;
+  let caseLoadSequence = 0;
+  const modalTriggers = new WeakMap();
 
   const requiredDataPoints = [
     ["GENERAL_INFO.Patient_ID", "ID случая"],
@@ -65,6 +83,31 @@
     node.textContent = message;
     document.body.appendChild(node);
     setTimeout(() => node.remove(), 3200);
+  }
+
+  function openModalElement(modal, focusTarget = null) {
+    if (document.activeElement instanceof HTMLElement) {
+      modalTriggers.set(modal, document.activeElement);
+    }
+    modal.classList.remove("hidden");
+    const scrollArea = modal.querySelector(".modal-body");
+    if (scrollArea) scrollArea.scrollTop = 0;
+    modal.querySelectorAll(".import-diff, .corrected-text-block").forEach((node) => {
+      node.scrollTop = 0;
+      node.scrollLeft = 0;
+    });
+    document.body.classList.add("modal-open");
+    window.requestAnimationFrame(() => focusTarget?.focus());
+  }
+
+  function closeModalElement(modal) {
+    modal.classList.add("hidden");
+    if (!document.querySelector(".modal:not(.hidden)")) {
+      document.body.classList.remove("modal-open");
+    }
+    const trigger = modalTriggers.get(modal);
+    modalTriggers.delete(modal);
+    if (trigger?.isConnected) trigger.focus();
   }
 
   async function api(path, options = {}) {
@@ -412,19 +455,13 @@
     const summary = document.createElement("div");
     summary.className = "model-summary-card";
     const title = document.createElement("strong");
-    title.textContent = cds.model_should_abstain ? "Модель воздержалась от заключения" : "Сводка модели";
+    title.textContent = cds.model_should_abstain ? "AI не сформировал заключение" : "Клиническая сводка";
     const text = document.createElement("p");
     text.textContent = cds.summary || "Сводка не указана.";
     summary.append(title, text);
-    if (meta.prompt_version || meta.output_schema_version || meta.completion_tokens) {
+    if (meta.duration_ms) {
       const version = document.createElement("small");
-      version.textContent = [
-        meta.prompt_version,
-        meta.output_schema_version,
-        meta.completion_tokens ? `${meta.completion_tokens} output tokens` : "",
-        Number(meta.tokens_per_second) > 0 ? `${Number(meta.tokens_per_second).toFixed(1)} tok/s` : "",
-        meta.finish_reason ? `finish: ${meta.finish_reason}` : ""
-      ].filter(Boolean).join(" · ");
+      version.textContent = `Время анализа: ${(Number(meta.duration_ms) / 1000).toFixed(1)} с`;
       summary.appendChild(version);
     }
     modelStructured.appendChild(summary);
@@ -440,8 +477,8 @@
       modelStructured.appendChild(section);
     }
 
-    modelStructured.appendChild(renderModelList("Red flags", cds.red_flags, "Нет явных red flags в ответе модели."));
-    modelStructured.appendChild(renderModelList("Недостающие данные", cds.missing_data, "Модель не указала недостающие данные."));
+    modelStructured.appendChild(renderModelList("Red flags", cds.red_flags, "Нет явных red flags в результате AI-анализа."));
+    modelStructured.appendChild(renderModelList("Недостающие данные", cds.missing_data, "Недостающие данные не указаны."));
     modelStructured.appendChild(renderModelList("Что ещё собрать", cds.recommended_next_data, "Дополнительные данные не указаны."));
     modelStructured.appendChild(renderModelList("Ограничения", cds.limitations, "Ограничения не указаны."));
   }
@@ -517,10 +554,67 @@
     reviewStatus.className = `pill ${review ? "ok" : ""}`;
   }
 
+  function setHtmlExportAvailable(available) {
+    if (exportHtmlButton) exportHtmlButton.disabled = !available;
+    resultReadyBanner?.classList.toggle("hidden", !available);
+    if (viewResultButton) viewResultButton.disabled = !available;
+  }
+
+  function viewHtmlResult(requestId = currentModelRequestId) {
+    if (!requestId) {
+      toast("Сначала получите успешный результат AI-анализа");
+      return;
+    }
+    const link = document.createElement("a");
+    link.href = `/reports/${encodeURIComponent(requestId)}`;
+    link.target = "_blank";
+    link.rel = "noopener noreferrer";
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+  }
+
+  async function exportHtmlReport() {
+    if (!currentModelRequestId) {
+      toast("Сначала получите успешный результат AI-анализа");
+      return;
+    }
+    exportHtmlButton.disabled = true;
+    try {
+      const response = await fetch("/api/reports/html", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "X-CSRF-Token": csrfToken
+        },
+        body: JSON.stringify({
+          request_id: currentModelRequestId,
+          patient_data: updatePreview()
+        })
+      });
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        throw new Error(error.error || `HTTP ${response.status}`);
+      }
+      const blob = await response.blob();
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = `cvd-report-${currentModelRequestId}.html`;
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      toast("HTML-отчёт сформирован");
+    } finally {
+      setHtmlExportAvailable(Boolean(currentModelRequestId));
+    }
+  }
+
   async function saveRequestReview(event) {
     event.preventDefault();
     if (!currentModelRequestId) {
-      toast("Сначала выберите ответ модели");
+      toast("Сначала выберите результат AI-анализа");
       return;
     }
     const payload = {
@@ -548,9 +642,25 @@
   async function runDiagnose(patientData) {
     const button = document.getElementById("diagnoseButton");
     button.disabled = true;
+    currentModelRequestId = null;
+    setHtmlExportAvailable(false);
     modelStatus.textContent = "запрос выполняется";
     modelStatus.className = "pill warning";
-    modelPreview.textContent = "Ожидание ответа LM Studio...";
+    modelPreview.textContent = "Выполняется AI-анализ...";
+    diagnosisQueueTimer = window.setInterval(async () => {
+      try {
+        const status = await api("/api/inference/status");
+        const queue = status.queue || {};
+        const own = queue.user?.by_kind?.diagnosis || {};
+        if (own.state === "queued") {
+          modelStatus.textContent = `в очереди · позиция ${own.position}`;
+        } else if (own.state === "running") {
+          modelStatus.textContent = "AI обрабатывает запрос";
+        }
+      } catch (_) {
+        // Основной запрос покажет ошибку; сбой служебного polling не должен его прерывать.
+      }
+    }, 2000);
     try {
       const response = await api("/api/model/diagnose", {
         method: "POST",
@@ -563,72 +673,153 @@
       fillModelOutput(response.parsed);
       renderModelOutput(response.parsed, response);
       showReviewForm(response.request_id, null);
+      setHtmlExportAvailable(true);
       const seconds = (Number(response.duration_ms || 0) / 1000).toFixed(1);
-      const speed = Number(response.tokens_per_second) > 0 ? ` · ${Number(response.tokens_per_second).toFixed(1)} tok/s` : "";
-      modelStatus.textContent = `ответ получен за ${seconds} с${speed}`;
+      const waited = Number(response.queue_wait_ms || 0) > 0 ? ` · очередь ${(Number(response.queue_wait_ms) / 1000).toFixed(1)} с` : "";
+      modelStatus.textContent = `результат готов за ${seconds} с${waited}`;
       modelStatus.className = "pill ok";
-      toast("Ответ модели получен");
+      toast("Результат AI-анализа готов");
       await loadHistory();
     } catch (err) {
       modelPreview.textContent = err.message;
-      modelStatus.textContent = "ошибка модели";
+      modelStatus.textContent = "ошибка AI-анализа";
       modelStatus.className = "pill error";
       toast(err.message);
     } finally {
+      if (diagnosisQueueTimer) window.clearInterval(diagnosisQueueTimer);
+      diagnosisQueueTimer = null;
       button.disabled = false;
     }
   }
 
   async function loadHistory() {
-    const [casesResponse, requestsResponse, importsResponse] = await Promise.all([
-      api("/api/cases"),
+    const [, requestsResponse, importsResponse] = await Promise.all([
+      loadCaseLibrary(),
       api("/api/requests"),
       api("/api/imports")
     ]);
-    window.__lastCases = casesResponse.cases || [];
     window.__lastRequests = requestsResponse.requests || [];
     window.__lastImports = importsResponse.imports || [];
-    renderCases(window.__lastCases);
     renderRequests(window.__lastRequests);
     renderImports(window.__lastImports);
-    renderTimeline(window.__lastCases, window.__lastRequests, window.__lastImports);
+    renderTimeline(window.__timelineCases || window.__lastCases || [], window.__lastRequests, window.__lastImports);
   }
 
-  function renderCases(items) {
+  function formatDateTime(value) {
+    const date = new Date(value);
+    if (Number.isNaN(date.getTime())) return String(value || "");
+    return new Intl.DateTimeFormat("ru-RU", {
+      day: "2-digit",
+      month: "2-digit",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit"
+    }).format(date);
+  }
+
+  function requestErrorText() {
+    return "AI-анализ завершился ошибкой. Повторите запрос или обратитесь к администратору.";
+  }
+
+  async function loadCaseLibrary(append = false) {
+    const query = (caseSearchInput?.value || "").trim();
+    const offset = append ? (window.__lastCases || []).length : 0;
+    const sequence = ++caseLoadSequence;
+    const response = await api(`/api/cases?q=${encodeURIComponent(query)}&limit=100&offset=${offset}`);
+    if (sequence !== caseLoadSequence || query !== (caseSearchInput?.value || "").trim()) return;
+    const incoming = response.cases || [];
+    const cases = append ? [...(window.__lastCases || []), ...incoming] : incoming;
+    window.__lastCases = cases;
+    if (!query) window.__timelineCases = cases;
+    if (caseCount) caseCount.textContent = query ? `${response.total} найдено` : String(response.total || 0);
+    loadMoreCasesButton?.classList.toggle("hidden", !response.has_more);
+    renderCases(cases, Boolean(query));
+  }
+
+  function scheduleCaseSearch() {
+    if (caseSearchTimer) window.clearTimeout(caseSearchTimer);
+    caseSearchTimer = window.setTimeout(() => {
+      loadCaseLibrary().catch((err) => toast(err.message));
+    }, 250);
+  }
+
+  function renderCases(items, searchActive = false) {
     casesList.innerHTML = "";
     if (items.length === 0) {
-      casesList.textContent = "Сохранённых кейсов пока нет.";
+      casesList.textContent = searchActive ? "По вашему запросу кейсы не найдены." : "Сохранённых кейсов пока нет.";
       return;
     }
     items.forEach((item) => {
       const div = document.createElement("div");
-      div.className = "history-item";
+      div.className = "history-item case-item";
+      div.dataset.caseId = String(item.id);
+      const heading = document.createElement("div");
+      heading.className = "case-item-heading";
       const title = document.createElement("strong");
       title.textContent = item.title;
+      const analysis = document.createElement("span");
+      analysis.className = `pill ${item.latest_result_id ? "ok" : ""}`;
+      analysis.textContent = item.latest_result_id ? `анализов: ${item.analysis_count}` : "без анализа";
+      heading.append(title, analysis);
       const meta = document.createElement("span");
       meta.className = "muted";
-      meta.textContent = `#${item.id} · ${item.updated_at}`;
+      meta.textContent = [
+        `Кейс #${item.id}`,
+        item.patient_id ? `ID пациента: ${item.patient_id}` : "ID пациента не указан",
+        `обновлён ${formatDateTime(item.updated_at)}`
+      ].join(" · ");
       const load = document.createElement("button");
       load.type = "button";
-      load.textContent = "Открыть";
+      load.textContent = "Открыть и изменить";
       load.addEventListener("click", () => openCase(item.id).catch((err) => toast(err.message)));
+      const result = document.createElement("button");
+      result.type = "button";
+      result.className = "primary";
+      result.textContent = "Просмотреть результат";
+      result.disabled = !item.latest_result_id;
+      result.addEventListener("click", () => viewHtmlResult(item.latest_result_id));
+      const copy = document.createElement("button");
+      copy.type = "button";
+      copy.textContent = "Создать копию";
+      copy.addEventListener("click", () => copyCase(item.id).catch((err) => toast(err.message)));
       const fhir = document.createElement("button");
       fhir.type = "button";
-      fhir.textContent = "FHIR";
+      fhir.textContent = "Скачать FHIR";
       fhir.addEventListener("click", () => downloadFHIR(item.id).catch((err) => toast(err.message)));
+      const remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "danger";
+      remove.textContent = "Удалить";
+      remove.addEventListener("click", () => deleteCase(item.id, item.title).catch((err) => toast(err.message)));
       const actions = document.createElement("div");
-      actions.className = "toolbar";
-      actions.append(load, fhir);
-      div.append(title, meta, document.createElement("br"), actions);
+      actions.className = "toolbar case-actions";
+      actions.append(load, result, copy, fhir, remove);
+      div.append(heading, meta, actions);
       casesList.appendChild(div);
     });
+  }
+
+  async function copyCase(caseId) {
+    const response = await api(`/api/cases/${caseId}/copy`, {method: "POST", body: "{}"});
+    await loadHistory();
+    await openCase(response.case_id);
+    toast(`Создана копия кейса #${response.case_id}`);
+  }
+
+  async function deleteCase(caseId, title) {
+    if (!window.confirm(`Удалить кейс «${title}»? Результаты анализов останутся в истории без привязки к кейсу.`)) return;
+    await api(`/api/cases/${caseId}/delete`, {method: "POST", body: "{}"});
+    if (currentCaseId === caseId) resetCase();
+    await loadHistory();
+    toast(`Кейс #${caseId} удалён`);
   }
 
   async function openCase(caseId) {
     const response = await api(`/api/cases/${caseId}`);
     currentCaseId = response.case.id;
+    resetModelState();
     applyData(response.case.data);
-    renderTimeline(window.__lastCases || [], window.__lastRequests || [], window.__lastImports || []);
+    renderTimeline(window.__timelineCases || window.__lastCases || [], window.__lastRequests || [], window.__lastImports || []);
     toast("Кейс загружен");
   }
 
@@ -636,33 +827,43 @@
     if (requestMetric) requestMetric.textContent = String(items.length);
     requestsList.innerHTML = "";
     if (items.length === 0) {
-      requestsList.textContent = "Запросов к модели пока нет.";
+      requestsList.textContent = "Результатов AI-анализа пока нет.";
       return;
     }
     items.forEach((item) => {
       const div = document.createElement("div");
       div.className = "history-item";
+      div.dataset.requestId = String(item.id);
       const status = item.status === "success" ? "ok" : "error";
-      const diagnosis = item.parsed_output?.CDS_OUTPUT?.summary || item.parsed_output?.MODEL_OUTPUT?.Final_model_diagnosis || item.error || "без текста";
+      const diagnosis = item.status === "success"
+        ? item.parsed_output?.CDS_OUTPUT?.summary || item.parsed_output?.MODEL_OUTPUT?.Final_model_diagnosis || "Сводка не указана."
+        : requestErrorText();
       div.innerHTML = "";
       const title = document.createElement("strong");
-      title.textContent = `#${item.id} · ${item.model}`;
+      title.textContent = `Результат #${item.id}`;
       const pill = document.createElement("span");
       pill.className = `pill ${status}`;
-      pill.textContent = item.status;
+      pill.textContent = item.status === "success" ? "готов" : "ошибка";
       const text = document.createElement("p");
       text.textContent = diagnosis;
       const meta = document.createElement("span");
       meta.className = "muted";
       const seconds = (Number(item.duration_ms || 0) / 1000).toFixed(1);
-      const tokens = item.completion_tokens ? ` · ${item.completion_tokens} tokens` : "";
-      const speed = Number(item.tokens_per_second) > 0 ? ` · ${Number(item.tokens_per_second).toFixed(1)} tok/s` : "";
-      meta.textContent = `${item.created_at} · ${seconds} с${tokens}${speed}`;
+      meta.textContent = `${formatDateTime(item.created_at)} · ${seconds} с`;
       const open = document.createElement("button");
       open.type = "button";
-      open.textContent = item.review ? "Открыть оценку" : "Оценить";
+      open.textContent = item.review ? "Детали и оценка" : "Открыть и оценить";
       open.addEventListener("click", () => openRequestResult(item));
-      div.append(title, pill, text, meta, document.createElement("br"), open);
+      const report = document.createElement("button");
+      report.type = "button";
+      report.className = "primary";
+      report.textContent = "Просмотреть результат";
+      report.disabled = item.status !== "success";
+      report.addEventListener("click", () => viewHtmlResult(item.id));
+      const actions = document.createElement("div");
+      actions.className = "toolbar history-actions";
+      actions.append(report, open);
+      div.append(title, pill, text, meta, actions);
       requestsList.appendChild(div);
     });
   }
@@ -677,9 +878,10 @@
     currentModelRequestId = item.id;
     modelStatus.textContent = item.status === "success" ? "ответ из истории" : "ошибка из истории";
     modelStatus.className = `pill ${item.status === "success" ? "ok" : "error"}`;
-    modelPreview.textContent = JSON.stringify(item.parsed_output || { error: item.error }, null, 2);
+    modelPreview.textContent = JSON.stringify(item.parsed_output || {error: requestErrorText()}, null, 2);
     renderModelOutput(item.parsed_output || {}, item);
     showReviewForm(item.id, item.review);
+    setHtmlExportAvailable(item.status === "success");
   }
 
   function renderImports(items) {
@@ -716,7 +918,11 @@
     });
     requests.forEach((item) => {
       if (!currentCaseId || item.case_id === currentCaseId) {
-        events.push({ when: item.created_at, type: item.status, text: `Модель ${item.model}: ${item.status}` });
+        events.push({
+          when: item.created_at,
+          type: item.status,
+          text: `AI-анализ #${item.id}: ${item.status === "success" ? "результат готов" : "ошибка"}`
+        });
       }
     });
     imports.forEach((item) => {
@@ -853,7 +1059,8 @@
     importFileLabel.textContent = [
       preview.filename || "Файл",
       preview.source_format || "неизвестный формат",
-      preview.mapping_version || ""
+      preview.mapping_version || "",
+      Number(preview.chunk_count || 1) > 1 ? `${preview.chunk_count} частей` : ""
     ].filter(Boolean).join(" · ");
     importSummary.innerHTML = "";
     appendImportMetric(rows.length, "сопоставлено");
@@ -867,9 +1074,19 @@
 
     const warnings = preview.warnings || [];
     importWarnings.classList.toggle("hidden", warnings.length === 0);
-    importWarnings.textContent = warnings.length ? warnings.slice(0, 8).map((item) => `• ${item}`).join("\n") : "";
+    const visibleWarnings = warnings.slice(0, 8).map((item) => `• ${item}`);
+    if (warnings.length > visibleWarnings.length) {
+      visibleWarnings.push(`• И ещё предупреждений: ${warnings.length - visibleWarnings.length}`);
+    }
+    importWarnings.textContent = visibleWarnings.join("\n");
     renderImportDiff();
-    importModal.classList.remove("hidden");
+    openModalElement(importModal, document.getElementById("closeImportModal"));
+  }
+
+  function shouldAutoSelectImportRow(row) {
+    if (row.state !== "new" || row.mapping.source_conflict) return false;
+    if (pendingImport?.preview?.source_format !== "ai-text") return true;
+    return row.mapping.confidence === "high";
   }
 
   function renderImportDiff() {
@@ -893,7 +1110,7 @@
       selectCell.className = "import-diff-cell select";
       const checkbox = document.createElement("input");
       checkbox.type = "checkbox";
-      checkbox.checked = row.state === "new";
+      checkbox.checked = shouldAutoSelectImportRow(row);
       checkbox.disabled = row.state === "same";
       checkbox.setAttribute("aria-label", `Импортировать ${meta.label}`);
       checkbox.addEventListener("change", updateImportSelection);
@@ -939,12 +1156,15 @@
   function updateImportSelection() {
     const selected = pendingImport?.rows.filter((row) => row.checkbox?.checked).length || 0;
     importSelectionStatus.textContent = `выбрано: ${selected}`;
+    document.getElementById("importSelectionFooter").textContent = selected
+      ? `К применению выбрано полей: ${selected}`
+      : "Выберите хотя бы одно поле";
     document.getElementById("applyImportButton").disabled = selected === 0;
   }
 
   function selectNewImportFields() {
     pendingImport?.rows.forEach((row) => {
-      if (row.checkbox && !row.checkbox.disabled) row.checkbox.checked = row.state === "new";
+      if (row.checkbox && !row.checkbox.disabled) row.checkbox.checked = shouldAutoSelectImportRow(row);
     });
     updateImportSelection();
   }
@@ -957,7 +1177,7 @@
   }
 
   function closeImportModal() {
-    importModal.classList.add("hidden");
+    closeModalElement(importModal);
     correctedTextBlock.classList.add("hidden");
     correctedTextContent.textContent = "";
     pendingImport = null;
@@ -966,16 +1186,48 @@
   function openStructureTextModal() {
     structureTextStatus.textContent = "ожидание";
     structureTextStatus.className = "pill";
-    structureTextModal.classList.remove("hidden");
-    structureTextInput.focus();
+    structureTextError.textContent = "";
+    structureTextError.classList.add("hidden");
+    openModalElement(structureTextModal, structureTextInput);
   }
 
   function closeStructureTextModal() {
-    structureTextModal.classList.add("hidden");
+    if (structureTextBusy) {
+      toast("Дождитесь завершения AI-разбора");
+      return;
+    }
+    closeModalElement(structureTextModal);
+  }
+
+  function setStructureTextBusy(busy) {
+    structureTextBusy = busy;
+    document.getElementById("submitStructureTextButton").disabled = busy;
+    document.getElementById("cancelStructureTextModal").disabled = busy;
+    document.getElementById("closeStructureTextModal").disabled = busy;
+  }
+
+  function stopStructureTextProgress() {
+    if (structureTextTimer) window.clearInterval(structureTextTimer);
+    if (structureQueueTimer) window.clearInterval(structureQueueTimer);
+    structureTextTimer = null;
+    structureQueueTimer = null;
+    structureQueueState = null;
+  }
+
+  function updateStructureTextProgress() {
+    const elapsed = Math.max(0, Math.floor((Date.now() - structureTextStartedAt) / 1000));
+    const minutes = String(Math.floor(elapsed / 60)).padStart(2, "0");
+    const seconds = String(elapsed % 60).padStart(2, "0");
+    const chunks = structureTextChunkEstimate > 1 ? ` · частей: ${structureTextChunkEstimate}` : "";
+    if (structureQueueState?.state === "queued") {
+      structureTextStatus.textContent = `в очереди · позиция ${structureQueueState.position} · ${minutes}:${seconds}`;
+      return;
+    }
+    structureTextStatus.textContent = `AI обрабатывает${chunks} · ${minutes}:${seconds}`;
   }
 
   function updateStructureTextCounter() {
-    document.getElementById("structureTextCounter").textContent = `${structureTextInput.value.length} / 30000`;
+    document.getElementById("structureTextCounter").textContent = `${structureTextInput.value.length} / 10000`;
   }
 
   async function structureText(event) {
@@ -985,25 +1237,45 @@
       toast("Добавьте медицинский текст длиной не менее 10 символов");
       return;
     }
-    const button = document.getElementById("submitStructureTextButton");
-    button.disabled = true;
-    structureTextStatus.textContent = "MedGemma обрабатывает текст...";
+    setStructureTextBusy(true);
+    structureTextError.textContent = "";
+    structureTextError.classList.add("hidden");
+    structureTextStartedAt = Date.now();
+    structureTextChunkEstimate = Math.max(1, Math.ceil(text.length / 1400));
+    updateStructureTextProgress();
+    structureTextTimer = window.setInterval(updateStructureTextProgress, 1000);
+    structureQueueTimer = window.setInterval(async () => {
+      try {
+        const status = await api("/api/inference/status");
+        structureQueueState = status.queue?.user?.by_kind?.text_structuring || null;
+        updateStructureTextProgress();
+      } catch (_) {
+        structureQueueState = null;
+      }
+    }, 2000);
     structureTextStatus.className = "pill warning";
     try {
       const preview = await api("/api/model/structure-text", {
         method: "POST",
         body: JSON.stringify({text})
       });
-      structureTextStatus.textContent = `готово · ${preview.mappings?.length || 0} полей`;
-      structureTextStatus.className = "pill ok";
+      const chunks = Number(preview.chunk_count || 1) > 1 ? ` · частей: ${preview.chunk_count}` : "";
+      const failed = Number(preview.failed_chunk_count || 0);
+      structureTextStatus.textContent = `${failed ? "частично готово" : "готово"} · ${preview.mappings?.length || 0} полей${chunks}`;
+      structureTextStatus.className = `pill ${failed ? "warning" : "ok"}`;
+      stopStructureTextProgress();
+      setStructureTextBusy(false);
       closeStructureTextModal();
       openImportPreview(preview);
     } catch (error) {
       structureTextStatus.textContent = "ошибка обработки";
       structureTextStatus.className = "pill error";
+      structureTextError.textContent = error.message || "Не удалось подготовить текст";
+      structureTextError.classList.remove("hidden");
       throw error;
     } finally {
-      button.disabled = false;
+      stopStructureTextProgress();
+      setStructureTextBusy(false);
     }
   }
 
@@ -1069,11 +1341,11 @@
     pendingReviewAction = action || null;
     confirmReviewButton.classList.toggle("hidden", !aiMode);
     renderReviewContent(data);
-    reviewModal.classList.remove("hidden");
+    openModalElement(reviewModal, aiMode ? confirmReviewButton : document.getElementById("closeReviewModal"));
   }
 
   function closeReviewModal() {
-    reviewModal.classList.add("hidden");
+    closeModalElement(reviewModal);
     pendingReviewAction = null;
   }
 
@@ -1135,13 +1407,14 @@
 
   function resetModelState(clearFields = false) {
     currentModelRequestId = null;
+    setHtmlExportAvailable(false);
     if (clearFields) {
       const modelSection = window.CVD_SCHEMA.find((section) => section.key === "MODEL_OUTPUT");
       modelSection?.fields.forEach((field) => setFieldValue(`MODEL_OUTPUT.${field.key}`, null));
     }
-    modelPreview.textContent = "Ответ модели появится здесь.";
+    modelPreview.textContent = "Технический ответ AI появится здесь.";
     modelStructured.innerHTML = "";
-    modelStatus.textContent = "модель не вызывалась";
+    modelStatus.textContent = "AI не запускался";
     modelStatus.className = "pill";
     requestReviewForm?.classList.add("hidden");
   }
@@ -1194,6 +1467,17 @@
     importModal.addEventListener("click", (event) => {
       if (event.target === importModal) closeImportModal();
     });
+    document.addEventListener("keydown", (event) => {
+      if (event.key !== "Escape") return;
+      const openModals = Array.from(document.querySelectorAll(".modal:not(.hidden)"));
+      const modal = openModals[openModals.length - 1];
+      if (!modal) return;
+      event.preventDefault();
+      if (modal === importModal) closeImportModal();
+      else if (modal === structureTextModal) closeStructureTextModal();
+      else if (modal === reviewModal) closeReviewModal();
+      else if (modal === passwordModal) closePasswordModal();
+    });
     document.getElementById("structureTextButton").addEventListener("click", openStructureTextModal);
     document.getElementById("closeStructureTextModal").addEventListener("click", closeStructureTextModal);
     document.getElementById("cancelStructureTextModal").addEventListener("click", closeStructureTextModal);
@@ -1218,12 +1502,11 @@
   function openPasswordModal() {
     passwordForm.reset();
     updatePasswordStrength();
-    passwordModal.classList.remove("hidden");
-    passwordForm.current_password.focus();
+    openModalElement(passwordModal, passwordForm.current_password);
   }
 
   function closePasswordModal() {
-    passwordModal.classList.add("hidden");
+    closeModalElement(passwordModal);
   }
 
   function updatePasswordStrength() {
@@ -1258,11 +1541,21 @@
       calculateBMI();
     }
     updatePreview();
+    setHtmlExportAvailable(false);
     saveStatus.textContent = currentCaseId ? `кейс #${currentCaseId} изменён` : "не сохранено";
   });
   document.getElementById("saveCaseButton").addEventListener("click", () => saveCase().catch((err) => toast(err.message)));
   document.getElementById("diagnoseButton").addEventListener("click", diagnose);
   document.getElementById("downloadJsonButton").addEventListener("click", downloadJson);
+  exportHtmlButton?.addEventListener("click", () => exportHtmlReport().catch((err) => toast(err.message)));
+  viewResultButton?.addEventListener("click", () => viewHtmlResult());
+  caseSearchInput?.addEventListener("input", scheduleCaseSearch);
+  clearCaseSearchButton?.addEventListener("click", () => {
+    caseSearchInput.value = "";
+    loadCaseLibrary().catch((err) => toast(err.message));
+    caseSearchInput.focus();
+  });
+  loadMoreCasesButton?.addEventListener("click", () => loadCaseLibrary(true).catch((err) => toast(err.message)));
   document.getElementById("importJsonButton").addEventListener("click", () => importJsonInput.click());
   importJsonInput.addEventListener("change", () => {
     const file = importJsonInput.files?.[0];
