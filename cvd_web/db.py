@@ -136,6 +136,24 @@ CREATE TABLE IF NOT EXISTS data_preparation_requests (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS text_preparation_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  data_preparation_request_id INTEGER REFERENCES data_preparation_requests(id) ON DELETE SET NULL,
+  import_id INTEGER REFERENCES data_imports(id) ON DELETE SET NULL,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  status TEXT NOT NULL CHECK (status IN ('prepared', 'applied', 'archived')) DEFAULT 'prepared',
+  source_label TEXT NOT NULL DEFAULT '',
+  input_sha256 TEXT NOT NULL,
+  corrected_text TEXT NOT NULL DEFAULT '',
+  mappings_json TEXT NOT NULL DEFAULT '[]',
+  warnings_json TEXT NOT NULL DEFAULT '[]',
+  mapped_fields INTEGER NOT NULL DEFAULT 0,
+  warning_count INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  applied_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS batch_jobs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
@@ -161,6 +179,46 @@ CREATE TABLE IF NOT EXISTS batch_job_items (
   UNIQUE(batch_job_id, case_id)
 );
 
+CREATE TABLE IF NOT EXISTS gold_cases (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  case_id INTEGER NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  expected_diagnosis TEXT NOT NULL DEFAULT '',
+  expected_icd10_json TEXT NOT NULL DEFAULT '[]',
+  expected_red_flags_json TEXT NOT NULL DEFAULT '[]',
+  expected_abstain INTEGER NOT NULL DEFAULT 0,
+  notes TEXT NOT NULL DEFAULT '',
+  created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  UNIQUE(case_id)
+);
+
+CREATE TABLE IF NOT EXISTS gold_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+  status TEXT NOT NULL CHECK (status IN ('completed', 'empty')),
+  total_items INTEGER NOT NULL DEFAULT 0,
+  evaluated_items INTEGER NOT NULL DEFAULT 0,
+  avg_score_percent INTEGER NOT NULL DEFAULT 0,
+  settings_snapshot_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  finished_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS gold_run_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  gold_run_id INTEGER NOT NULL REFERENCES gold_runs(id) ON DELETE CASCADE,
+  gold_case_id INTEGER NOT NULL REFERENCES gold_cases(id) ON DELETE CASCADE,
+  case_id INTEGER NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+  model_request_id INTEGER REFERENCES model_requests(id) ON DELETE SET NULL,
+  status TEXT NOT NULL CHECK (status IN ('evaluated', 'pending')),
+  score_percent INTEGER NOT NULL DEFAULT 0,
+  evaluation_json TEXT NOT NULL DEFAULT '{}',
+  created_at TEXT NOT NULL,
+  UNIQUE(gold_run_id, gold_case_id)
+);
+
 CREATE TABLE IF NOT EXISTS app_settings (
   key TEXT PRIMARY KEY,
   value TEXT NOT NULL,
@@ -177,8 +235,12 @@ CREATE INDEX IF NOT EXISTS idx_reviews_request ON model_request_reviews(model_re
 CREATE INDEX IF NOT EXISTS idx_reviews_created ON model_request_reviews(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_imports_user_created ON data_imports(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_preparation_user_created ON data_preparation_requests(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_text_preparation_user_created ON text_preparation_items(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_batch_jobs_status_created ON batch_jobs(status, created_at);
 CREATE INDEX IF NOT EXISTS idx_batch_items_job_status ON batch_job_items(batch_job_id, status, id);
+CREATE INDEX IF NOT EXISTS idx_gold_cases_updated ON gold_cases(updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_gold_runs_created ON gold_runs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_gold_run_items_run ON gold_run_items(gold_run_id, status);
 """
 
 
@@ -240,6 +302,9 @@ SETTINGS_KEYS = [
     "usage_notice",
     "support_contact",
     "default_theme",
+    "ai_gateway_profile",
+    "ai_gateway_auth_header_name",
+    "ai_gateway_auth_header_value",
     "lm_studio_api_url",
     "lm_studio_model",
     "text_structuring_model",
@@ -272,6 +337,9 @@ def default_settings(config: Config) -> dict[str, tuple[str, str]]:
         ),
         "support_contact": ("", "Контакт администратора или поддержки."),
         "default_theme": ("light", "Тема по умолчанию: light или dark."),
+        "ai_gateway_profile": ("local", "Профиль подключения к AI Gateway: local, lan, wsl2 или cloudflared."),
+        "ai_gateway_auth_header_name": ("", "Имя дополнительного HTTP-заголовка для tunnel/auth, например Authorization."),
+        "ai_gateway_auth_header_value": ("", "Значение дополнительного HTTP-заголовка для tunnel/auth."),
         "lm_studio_api_url": (config.lm_studio_api_url, "OpenAI-compatible endpoint LM Studio."),
         "lm_studio_model": (config.lm_studio_model, "Имя модели для запросов."),
         "text_structuring_model": ("", "Отдельная модель подготовки текста; пустое значение использует основную модель."),
@@ -348,6 +416,83 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE data_preparation_requests ADD COLUMN chunk_count INTEGER NOT NULL DEFAULT 1")
     if preparation_columns and "queue_wait_ms" not in preparation_columns:
         conn.execute("ALTER TABLE data_preparation_requests ADD COLUMN queue_wait_ms INTEGER NOT NULL DEFAULT 0")
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS text_preparation_items (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          data_preparation_request_id INTEGER REFERENCES data_preparation_requests(id) ON DELETE SET NULL,
+          import_id INTEGER REFERENCES data_imports(id) ON DELETE SET NULL,
+          user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          status TEXT NOT NULL CHECK (status IN ('prepared', 'applied', 'archived')) DEFAULT 'prepared',
+          source_label TEXT NOT NULL DEFAULT '',
+          input_sha256 TEXT NOT NULL,
+          corrected_text TEXT NOT NULL DEFAULT '',
+          mappings_json TEXT NOT NULL DEFAULT '[]',
+          warnings_json TEXT NOT NULL DEFAULT '[]',
+          mapped_fields INTEGER NOT NULL DEFAULT 0,
+          warning_count INTEGER NOT NULL DEFAULT 0,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          applied_at TEXT
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_text_preparation_user_created ON text_preparation_items(user_id, created_at DESC)")
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS gold_cases (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          case_id INTEGER NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+          title TEXT NOT NULL,
+          expected_diagnosis TEXT NOT NULL DEFAULT '',
+          expected_icd10_json TEXT NOT NULL DEFAULT '[]',
+          expected_red_flags_json TEXT NOT NULL DEFAULT '[]',
+          expected_abstain INTEGER NOT NULL DEFAULT 0,
+          notes TEXT NOT NULL DEFAULT '',
+          created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+          created_at TEXT NOT NULL,
+          updated_at TEXT NOT NULL,
+          UNIQUE(case_id)
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_gold_cases_updated ON gold_cases(updated_at DESC)")
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS gold_runs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+          status TEXT NOT NULL CHECK (status IN ('completed', 'empty')),
+          total_items INTEGER NOT NULL DEFAULT 0,
+          evaluated_items INTEGER NOT NULL DEFAULT 0,
+          avg_score_percent INTEGER NOT NULL DEFAULT 0,
+          settings_snapshot_json TEXT NOT NULL DEFAULT '{}',
+          created_at TEXT NOT NULL,
+          finished_at TEXT NOT NULL
+        )
+        """
+    )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS gold_run_items (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          gold_run_id INTEGER NOT NULL REFERENCES gold_runs(id) ON DELETE CASCADE,
+          gold_case_id INTEGER NOT NULL REFERENCES gold_cases(id) ON DELETE CASCADE,
+          case_id INTEGER NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
+          model_request_id INTEGER REFERENCES model_requests(id) ON DELETE SET NULL,
+          status TEXT NOT NULL CHECK (status IN ('evaluated', 'pending')),
+          score_percent INTEGER NOT NULL DEFAULT 0,
+          evaluation_json TEXT NOT NULL DEFAULT '{}',
+          created_at TEXT NOT NULL,
+          UNIQUE(gold_run_id, gold_case_id)
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_gold_runs_created ON gold_runs(created_at DESC)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_gold_run_items_run ON gold_run_items(gold_run_id, status)")
 
 
 def get_app_settings(conn: sqlite3.Connection) -> dict[str, str]:

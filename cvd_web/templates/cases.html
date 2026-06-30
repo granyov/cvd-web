@@ -45,6 +45,7 @@
         <button type="button" class="records-tab active" data-library-view="cases" role="tab">Кейсы</button>
         <button type="button" class="records-tab" data-library-view="results" role="tab">Результаты</button>
         <button type="button" class="records-tab" data-library-view="imports" role="tab">Импорты</button>
+        <button type="button" class="records-tab" data-library-view="preparations" role="tab">AI-подготовка</button>
         <span class="records-nav-spacer"></span>
         <button type="button" id="refreshLibraryButton">Обновить</button>
       </div>
@@ -91,14 +92,20 @@
               <div id="caseQuality" class="record-quality"></div>
               <div id="caseClinicalSummary" class="clinical-summary-grid"></div>
               <div class="record-history-grid">
-                <section>
-                  <h3>Таймлайн</h3>
+                <details class="record-history-panel collapsible-panel">
+                  <summary class="record-history-summary">
+                    <span class="collapse-indicator" aria-hidden="true"></span>
+                    <h3>Таймлайн</h3>
+                  </summary>
                   <div id="caseTimeline" class="timeline-list compact-scroll"></div>
-                </section>
-                <section>
-                  <h3>Связанные результаты</h3>
+                </details>
+                <details class="record-history-panel collapsible-panel">
+                  <summary class="record-history-summary">
+                    <span class="collapse-indicator" aria-hidden="true"></span>
+                    <h3>Связанные результаты</h3>
+                  </summary>
                   <div id="caseResultsList" class="compact-history compact-scroll"></div>
-                </section>
+                </details>
               </div>
             </div>
           </article>
@@ -112,6 +119,27 @@
             <option value="">Все статусы</option>
             <option value="success">Готовые</option>
             <option value="error">С ошибкой</option>
+          </select>
+          <select id="resultModelFilter" aria-label="Фильтр результатов по модели">
+            <option value="">Все модели</option>
+          </select>
+          <select id="resultReviewFilter" aria-label="Фильтр результатов по экспертной оценке">
+            <option value="">Любая оценка</option>
+            <option value="unreviewed">Без оценки</option>
+            <option value="useful">Полезно</option>
+            <option value="partial">Частично</option>
+            <option value="wrong">Неверно</option>
+            <option value="unsafe">Небезопасно</option>
+          </select>
+          <select id="resultRedFlagsFilter" aria-label="Фильтр результатов по red flags">
+            <option value="">Все red flags</option>
+            <option value="with">Есть red flags</option>
+            <option value="without">Без red flags</option>
+          </select>
+          <select id="resultAbstainFilter" aria-label="Фильтр результатов по отказам модели">
+            <option value="">Все ответы</option>
+            <option value="yes">Модель отказалась</option>
+            <option value="no">Есть заключение</option>
           </select>
           <button type="button" id="clearResultFiltersButton">Сбросить</button>
           <span id="resultsCount" class="pill">0</span>
@@ -136,6 +164,24 @@
         <div class="records-table-scroll">
           <div id="importsList" class="import-records" aria-live="polite"></div>
           <button type="button" id="loadMoreImportsButton" class="load-more hidden">Показать ещё</button>
+        </div>
+      </section>
+
+      <section id="library-preparations" class="library-view records-body hidden">
+        <div class="records-controls">
+          <input id="preparationSearchInput" type="search" autocomplete="off" placeholder="Номер, текст, кейс или источник" aria-label="Поиск по AI-подготовке">
+          <select id="preparationStatusFilter" aria-label="Фильтр AI-подготовки по статусу">
+            <option value="">Все статусы</option>
+            <option value="prepared">Подготовленные</option>
+            <option value="applied">Применённые</option>
+            <option value="archived">Архив</option>
+          </select>
+          <button type="button" id="clearPreparationFiltersButton">Сбросить</button>
+          <span id="preparationsCount" class="pill">0</span>
+        </div>
+        <div class="records-table-scroll">
+          <div id="preparationsList" class="import-records" aria-live="polite"></div>
+          <button type="button" id="loadMorePreparationsButton" class="load-more hidden">Показать ещё</button>
         </div>
       </section>
     </section>

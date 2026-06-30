@@ -1,6 +1,6 @@
 # CVD Web
 
-**Текущая версия: `v0.7.0-beta.8`**
+**Текущая версия: `v0.8.2`**
 
 Веб-приложение для структурированных CVD-кейсов, простой авторизации, админки пользователей и журналирования запросов к LM Studio.
 
@@ -19,6 +19,7 @@
 - Редактирование, удаление и создание копии кейса для повторного анализа.
 - Клиническая панель готовности кейса: patient snapshot, обязательный минимум данных, сигналы по заполненным числовым параметрам.
 - Backend-прокси к OpenAI-compatible `/v1/chat/completions` LM Studio.
+- AI Gateway профили для same-host, WSL2, локальной сети и cloudflared tunnel с auth headers и диагностикой в админке.
 - Review before AI: перед отправкой в модель пользователь видит полноту кейса, сигналы и JSON payload.
 - Структурированный CDS-ответ модели: summary, возможные диагнозы, supporting findings, missing data, red flags, confidence, limitations и совместимый `MODEL_OUTPUT`.
 - LM Studio structured output через JSON Schema с серверной нормализацией ответа.
@@ -75,7 +76,53 @@ sudo ./install.sh \
 
 При включённом systemd создаётся пользовательский сервис, иначе процесс запускается через `nohup`. Для доступа с других устройств домашней сети установщик выводит PowerShell-команды `netsh portproxy` и правило Windows Firewall.
 
+
+### Установка релиза из облака
+
+Для локального развёртывания без ручного копирования архива можно скачать релиз из S3/GitHub Releases/Cloudflare R2 или другого HTTPS-хранилища и сразу запустить bundled `install.sh`:
+
+```bash
+scripts/install_from_release.sh \
+  --url https://storage.example.com/cvd-web/v0.8.2/cvd-web-v0.8.2.tar.gz \
+  --sha256 <archive-sha256> \
+  -- --target local
+```
+
+Всё после `--` передаётся напрямую в `install.sh`, поэтому можно использовать `--target local`, `--target wsl2`, `--unattended`, `--lm-url` и остальные параметры установщика. Для постоянного канала релизов URL можно хранить в переменной окружения:
+
+```bash
+export CVD_RELEASE_URL=https://github.com/<org>/<repo>/releases/latest/download/cvd-web.tar.gz
+scripts/install_from_release.sh -- --target local --unattended
+```
+
+Если рядом с архивом опубликован checksum-файл, используйте `--sha256-url`; скрипт возьмёт первый SHA-256 из файла и остановит установку при несовпадении. Повторный запуск сохраняет существующую SQLite-базу и пароль администратора так же, как обычный `install.sh`.
+
+### Публикация архива в GitHub Releases
+
+Для загрузки собранного архива в GitHub Releases используйте GitHub CLI. В CI или на временной машине удобнее не делать интерактивный логин, а передать токен через окружение:
+
+```bash
+export GH_TOKEN=<github-token-with-repo-or-public_repo-scope>
+export GH_REPO=<owner>/<repo>
+scripts/publish_github_release.sh \
+  --tag v0.8.2 \
+  --archive /workspace/cvd-web-release/cvd-web-v0.8.2.tar.gz
+```
+
+Скрипт проверит авторизацию `gh`, создаст release, если его ещё нет, или перезальёт архив и `.sha256` через `gh release upload --clobber`, если release уже существует.
+
 Все параметры доступны через `./install.sh --help`. Для установки только файлов используйте `--no-service`. При первом запуске без `--admin-password` генерируется случайный пароль и показывается один раз. Повторная установка сохраняет SQLite-базу и текущий пароль администратора.
+
+## AI Gateway профили
+
+Админка поддерживает четыре профиля подключения к LM Studio:
+
+- `local` — CVD Web и LM Studio запущены на одной системе: `http://127.0.0.1:1234/v1/chat/completions`.
+- `wsl2` — CVD Web запущен в WSL2, а LM Studio на Windows host: используйте IP Windows host или mirrored networking.
+- `lan` — CVD Web и LM Studio находятся в одной локальной сети: `http://<LAN-IP>:1234/v1/chat/completions`.
+- `cloudflared` — endpoint опубликован через Cloudflare Tunnel: `https://<tunnel-host>/v1/chat/completions`. Для Cloudflare Access можно задать дополнительный auth header.
+
+Диагностика AI Gateway проверяет каталог моделей, выбранную модель, загруженное состояние, latency и наличие auth header без раскрытия его значения пользователям.
 
 ## Запуск из исходников
 

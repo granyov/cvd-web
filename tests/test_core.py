@@ -26,7 +26,7 @@ from cvd_web.rate_limit import MemoryRateLimiter
 from cvd_web.reporting import build_html_report
 
 
-def test_config(db_path: Path) -> Config:
+def make_test_config(db_path: Path) -> Config:
     return Config(
         project_root=PROJECT_ROOT,
         db_path=db_path,
@@ -145,8 +145,12 @@ class CoreTests(unittest.TestCase):
                 {"type": "llm", "key": "old-model", "loaded_instances": []},
             ]
         }
-        with patch("cvd_web.lmstudio_models._request_json", return_value=initial):
-            catalog = list_lm_models("http://127.0.0.1:1234/v1/chat/completions")
+        with patch("cvd_web.lmstudio_models._request_json", return_value=initial) as request_json:
+            catalog = list_lm_models(
+                "http://127.0.0.1:1234/v1/chat/completions",
+                extra_headers={"Authorization": "Bearer tunnel-token"},
+            )
+        self.assertEqual(request_json.call_args.kwargs["extra_headers"], {"Authorization": "Bearer tunnel-token"})
         self.assertEqual(catalog["api_version"], "v1")
         self.assertEqual(catalog["models"][0]["loaded_context_length"], 8192)
 
@@ -286,7 +290,7 @@ class CoreTests(unittest.TestCase):
 
     def test_login_csrf_and_case_save(self):
         with tempfile.TemporaryDirectory() as tmp:
-            app = CVDApplication(test_config(Path(tmp) / "cvd.sqlite3"), start_batch_worker=False)
+            app = CVDApplication(make_test_config(Path(tmp) / "cvd.sqlite3"), start_batch_worker=False)
 
             status, _, body = call_wsgi(app, "/healthz")
             self.assertTrue(status.startswith("200"), body)
@@ -496,6 +500,9 @@ class CoreTests(unittest.TestCase):
             status, _, body = call_wsgi(app, "/api/admin/settings", cookie=cookie)
             self.assertTrue(status.startswith("200"), body)
             settings = {item["key"]: item["value"] for item in json.loads(body.decode("utf-8"))["settings"]}
+            self.assertIn("ai_gateway_profile", settings)
+            self.assertIn("ai_gateway_auth_header_name", settings)
+            self.assertIn("ai_gateway_auth_header_value", settings)
             self.assertIn("lm_studio_temperature", settings)
             self.assertIn("lm_studio_structured_output", settings)
             self.assertEqual(settings["lm_studio_max_concurrent"], "1")
@@ -508,6 +515,9 @@ class CoreTests(unittest.TestCase):
             self.assertIn("{{PATIENT_JSON}}", settings["active_prompt_template"])
 
             updated_settings = dict(settings)
+            updated_settings["ai_gateway_profile"] = "cloudflared"
+            updated_settings["ai_gateway_auth_header_name"] = "Authorization"
+            updated_settings["ai_gateway_auth_header_value"] = "Bearer test-token"
             updated_settings["active_prompt_version"] = "test-prompt-v2"
             updated_settings["active_prompt_template"] = "Clinical prompt\n{{PATIENT_JSON}}"
             status, _, body = call_wsgi(
@@ -519,6 +529,21 @@ class CoreTests(unittest.TestCase):
                 body={"settings": updated_settings},
             )
             self.assertTrue(status.startswith("200"), body)
+
+            with patch("cvd_web.app.list_lm_models", return_value={"api_version": "v1", "models": [{"id": "healtheart-cvd-engine", "state": "loaded", "loaded_context_length": 8192}]}) as list_models:
+                status, _, body = call_wsgi(
+                    app,
+                    "/api/admin/ai-gateway/test",
+                    method="POST",
+                    cookie=cookie,
+                    csrf=csrf,
+                    body={"api_url": "https://cvd-ai.example.com/v1/chat/completions", "model": "healtheart-cvd-engine"},
+                )
+            self.assertTrue(status.startswith("200"), body)
+            gateway_test = json.loads(body.decode("utf-8"))
+            self.assertTrue(gateway_test["ok"])
+            self.assertEqual(gateway_test["gateway"]["profile"], "cloudflared")
+            self.assertEqual(list_models.call_args.kwargs["extra_headers"], {"Authorization": "Bearer test-token"})
 
             invalid_settings = dict(updated_settings)
             invalid_settings["active_prompt_template"] = "Clinical prompt without placeholder"
@@ -720,6 +745,66 @@ class CoreTests(unittest.TestCase):
             reviewed = next(item for item in requests if item["id"] == request_id)
             self.assertEqual(reviewed["review"]["rating"], "partial")
             self.assertEqual(reviewed["review"]["corrected_icd10"], ["I10"])
+            self.assertEqual(reviewed["result_flags"]["review_rating"], "partial")
+
+            status, _, body = call_wsgi(
+                app,
+                "/api/requests?model=healtheart-cvd-engine&review=partial&red_flags=without&abstain=no",
+                cookie=cookie,
+            )
+            self.assertTrue(status.startswith("200"), body)
+            filtered = json.loads(body.decode("utf-8"))
+            self.assertEqual(filtered["total"], 1)
+            self.assertEqual(filtered["requests"][0]["id"], request_id)
+            self.assertEqual(filtered["filters"]["models"], ["healtheart-cvd-engine"])
+
+            status, _, body = call_wsgi(app, "/api/requests?review=unsafe", cookie=cookie)
+            self.assertTrue(status.startswith("200"), body)
+            self.assertEqual(json.loads(body.decode("utf-8"))["total"], 0)
+
+            status, _, body = call_wsgi(app, "/api/requests?red_flags=bad", cookie=cookie)
+            self.assertTrue(status.startswith("400"), body)
+
+            status, _, body = call_wsgi(
+                app,
+                "/api/admin/gold-set",
+                method="POST",
+                cookie=cookie,
+                csrf=csrf,
+                body={
+                    "case_id": 2,
+                    "expected_diagnosis": "артериальная гипертензия",
+                    "expected_icd10": "I10",
+                    "expected_red_flags": "",
+                    "expected_abstain": False,
+                    "notes": "Базовый эталон",
+                },
+            )
+            self.assertTrue(status.startswith("201"), body)
+
+            status, _, body = call_wsgi(app, "/api/admin/gold-set", cookie=cookie)
+            self.assertTrue(status.startswith("200"), body)
+            gold_set = json.loads(body.decode("utf-8"))
+            self.assertEqual(gold_set["summary"]["gold_cases"], 1)
+            self.assertEqual(gold_set["summary"]["evaluated"], 1)
+            self.assertEqual(gold_set["gold_cases"][0]["evaluation"]["icd10_match"], True)
+            self.assertEqual(gold_set["gold_cases"][0]["evaluation"]["abstain_match"], True)
+
+            status, _, body = call_wsgi(app, "/api/admin/gold-runs", method="POST", cookie=cookie, csrf=csrf, body={})
+            self.assertTrue(status.startswith("201"), body)
+            gold_run = json.loads(body.decode("utf-8"))
+            self.assertEqual(gold_run["summary"]["total_items"], 1)
+            self.assertEqual(gold_run["summary"]["evaluated_items"], 1)
+
+            status, _, body = call_wsgi(app, "/api/admin/gold-runs", cookie=cookie)
+            self.assertTrue(status.startswith("200"), body)
+            gold_runs = json.loads(body.decode("utf-8"))["runs"]
+            self.assertEqual(gold_runs[0]["id"], gold_run["run_id"])
+            self.assertEqual(gold_runs[0]["items"][0]["model_request_id"], request_id)
+            self.assertEqual(gold_runs[0]["items"][0]["evaluation"]["icd10_match"], True)
+
+            status, _, body = call_wsgi(app, "/api/admin/gold-set", method="POST", cookie=cookie, csrf=csrf, body={"case_id": 999})
+            self.assertTrue(status.startswith("404"), body)
 
             status, _, body = call_wsgi(app, "/api/admin/reviews", cookie=cookie)
             self.assertTrue(status.startswith("200"), body)
@@ -754,7 +839,7 @@ class CoreTests(unittest.TestCase):
 
     def test_login_rate_limit(self):
         with tempfile.TemporaryDirectory() as tmp:
-            app = CVDApplication(test_config(Path(tmp) / "cvd.sqlite3"), start_batch_worker=False)
+            app = CVDApplication(make_test_config(Path(tmp) / "cvd.sqlite3"), start_batch_worker=False)
 
             for _ in range(10):
                 status, _, body = call_wsgi(

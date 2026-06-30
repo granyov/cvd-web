@@ -1,5 +1,14 @@
 # Changelog
 
+## v0.8.2 - 2026-06-30
+
+- Define the v0.8 roadmap for AI Gateway, result center, model compare, text structuring, and validation/gold set work.
+- Add AI Gateway profiles for same-host, WSL2, LAN, and cloudflared tunnel deployments.
+- Add optional admin-only auth header settings for tunnel-protected LM Studio endpoints.
+- Pass AI Gateway auth headers to model catalog, activation, diagnosis, and text-structuring calls.
+- Add an admin AI Gateway diagnostic endpoint and UI action.
+- Add a cloud-release installer wrapper for downloading, verifying, and locally deploying release archives.
+
 ## v0.7.0-beta.8 - 2026-06-29
 
 - Move cases, analysis history, and imports into a dedicated bounded-height medical archive.

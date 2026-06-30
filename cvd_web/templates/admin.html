@@ -123,9 +123,27 @@
               <option value="dark">Тёмная</option>
             </select>
           </div>
+          <div class="field">
+            <label>AI Gateway профиль<span class="key">ai_gateway_profile</span></label>
+            <select name="ai_gateway_profile" id="aiGatewayProfile">
+              <option value="local">Та же система / localhost</option>
+              <option value="wsl2">WSL2 ↔ Windows host</option>
+              <option value="lan">Одна локальная сеть</option>
+              <option value="cloudflared">Cloudflared tunnel</option>
+            </select>
+          </div>
           <div class="field full">
             <label>LM Studio API URL<span class="key">lm_studio_api_url</span></label>
-            <input name="lm_studio_api_url" type="url" placeholder="http://10.8.0.2:1234/v1/chat/completions" required>
+            <input name="lm_studio_api_url" type="url" placeholder="http://127.0.0.1:1234/v1/chat/completions" required>
+            <div id="aiGatewayHint" class="muted">Выберите профиль, чтобы увидеть рекомендуемый формат endpoint.</div>
+          </div>
+          <div class="field">
+            <label>Auth header name<span class="key">ai_gateway_auth_header_name</span></label>
+            <input name="ai_gateway_auth_header_name" type="text" placeholder="Authorization или CF-Access-Client-Id">
+          </div>
+          <div class="field">
+            <label>Auth header value<span class="key">ai_gateway_auth_header_value</span></label>
+            <input name="ai_gateway_auth_header_value" type="password" autocomplete="off" placeholder="Bearer ... или service token">
           </div>
           <div class="field">
             <label>Модель<span class="key">lm_studio_model</span></label>
@@ -137,6 +155,7 @@
           </div>
           <div class="field full model-picker">
             <div class="toolbar">
+              <button type="button" id="testGatewayButton">Проверить AI Gateway</button>
               <button type="button" id="refreshModelsButton">Обновить модели</button>
               <button type="button" id="activateModelButton" class="primary">Активировать выбранную</button>
               <label class="inline-check"><input id="unloadPreviousModel" type="checkbox" checked> Выгрузить другие модели</label>
@@ -256,12 +275,16 @@
       </section>
     </div>
 
-    <section class="panel" style="margin-top: 16px;">
-      <div class="panel-header">
-        <h2>История запросов к модели</h2>
+    <section class="panel collapsible-panel" style="margin-top: 16px;" data-collapsible="admin-requests">
+      <div class="panel-header collapsible-header">
+        <button type="button" class="collapsible-toggle" aria-expanded="false" aria-controls="adminRequestsPanel">
+          <span class="collapse-indicator" aria-hidden="true"></span>
+          <span class="collapsible-title">История запросов к модели</span>
+          <span id="requestsCount" class="pill muted-pill">—</span>
+        </button>
         <button type="button" id="refreshRequestsButton">Обновить</button>
       </div>
-      <div class="panel-body table-wrap">
+      <div id="adminRequestsPanel" class="panel-body table-wrap collapsible-content" hidden>
         <table>
           <thead>
             <tr>
@@ -278,12 +301,16 @@
       </div>
     </section>
 
-    <section class="panel" style="margin-top: 16px;">
-      <div class="panel-header">
-        <h2>Качество данных</h2>
+    <section class="panel collapsible-panel" style="margin-top: 16px;" data-collapsible="admin-quality">
+      <div class="panel-header collapsible-header">
+        <button type="button" class="collapsible-toggle" aria-expanded="false" aria-controls="adminQualityPanel">
+          <span class="collapse-indicator" aria-hidden="true"></span>
+          <span class="collapsible-title">Качество данных</span>
+          <span id="qualityCount" class="pill muted-pill">—</span>
+        </button>
         <button type="button" id="refreshQualityButton">Обновить</button>
       </div>
-      <div class="panel-body">
+      <div id="adminQualityPanel" class="panel-body collapsible-content" hidden>
         <div id="qualitySummary" class="toolbar" style="margin-bottom: 12px;"></div>
         <div class="table-wrap">
           <table>
@@ -303,12 +330,84 @@
       </div>
     </section>
 
-    <section class="panel" style="margin-top: 16px;">
-      <div class="panel-header">
-        <h2>Журнал аудита</h2>
+    <section class="panel collapsible-panel" style="margin-top: 16px;" data-collapsible="admin-gold-set">
+      <div class="panel-header collapsible-header">
+        <button type="button" class="collapsible-toggle" aria-expanded="false" aria-controls="adminGoldSetPanel">
+          <span class="collapse-indicator" aria-hidden="true"></span>
+          <span>
+            <span class="eyebrow">Validation MVP</span>
+            <span class="collapsible-title">Gold Set</span>
+          </span>
+          <span id="goldSetCount" class="pill muted-pill">—</span>
+        </button>
+        <button type="button" id="refreshGoldSetButton">Обновить</button>
+      </div>
+      <div id="adminGoldSetPanel" class="panel-body collapsible-content" hidden>
+        <form id="goldSetForm" class="settings-grid">
+          <div class="field">
+            <label>ID кейса</label>
+            <input name="case_id" type="number" min="1" required>
+          </div>
+          <div class="field">
+            <label>Ожидаемые МКБ-10</label>
+            <input name="expected_icd10" type="text" placeholder="I10; I20.0">
+          </div>
+          <div class="field full">
+            <label>Ожидаемый диагноз</label>
+            <input name="expected_diagnosis" type="text" placeholder="Артериальная гипертензия">
+          </div>
+          <div class="field full">
+            <label>Ожидаемые red flags</label>
+            <input name="expected_red_flags" type="text" placeholder="боль в груди; SpO2 < 92%">
+          </div>
+          <div class="field">
+            <label>Ожидается отказ модели</label>
+            <select name="expected_abstain">
+              <option value="0">Нет</option>
+              <option value="1">Да</option>
+            </select>
+          </div>
+          <div class="field full">
+            <label>Заметки валидатора</label>
+            <textarea name="notes"></textarea>
+          </div>
+          <div class="field full">
+            <button type="submit" class="primary">Сохранить эталон</button>
+          </div>
+        </form>
+        <div class="toolbar" style="margin: 12px 0;">
+          <div id="goldSetSummary" class="toolbar"></div>
+          <button type="button" id="startGoldRunButton" class="primary">Создать validation run</button>
+        </div>
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>ID</th>
+                <th>Кейс</th>
+                <th>Ожидания</th>
+                <th>Последний результат</th>
+                <th>Оценка</th>
+              </tr>
+            </thead>
+            <tbody id="goldSetTable"></tbody>
+          </table>
+        </div>
+        <h3 class="subsection-title">Последние validation runs</h3>
+        <div id="goldRunsList" class="batch-jobs"></div>
+      </div>
+    </section>
+
+    <section class="panel collapsible-panel" style="margin-top: 16px;" data-collapsible="admin-audit">
+      <div class="panel-header collapsible-header">
+        <button type="button" class="collapsible-toggle" aria-expanded="false" aria-controls="adminAuditPanel">
+          <span class="collapse-indicator" aria-hidden="true"></span>
+          <span class="collapsible-title">Журнал аудита</span>
+          <span id="auditCount" class="pill muted-pill">—</span>
+        </button>
         <button type="button" id="refreshAuditButton">Обновить</button>
       </div>
-      <div class="panel-body table-wrap">
+      <div id="adminAuditPanel" class="panel-body table-wrap collapsible-content" hidden>
         <table>
           <thead>
             <tr>
@@ -325,12 +424,16 @@
       </div>
     </section>
 
-    <section class="panel" style="margin-top: 16px;">
-      <div class="panel-header">
-        <h2>Оценки ответов модели</h2>
+    <section class="panel collapsible-panel" style="margin-top: 16px;" data-collapsible="admin-reviews">
+      <div class="panel-header collapsible-header">
+        <button type="button" class="collapsible-toggle" aria-expanded="false" aria-controls="adminReviewsPanel">
+          <span class="collapse-indicator" aria-hidden="true"></span>
+          <span class="collapsible-title">Оценки ответов модели</span>
+          <span id="reviewsCount" class="pill muted-pill">—</span>
+        </button>
         <button type="button" id="refreshReviewsButton">Обновить</button>
       </div>
-      <div class="panel-body table-wrap">
+      <div id="adminReviewsPanel" class="panel-body table-wrap collapsible-content" hidden>
         <table>
           <thead>
             <tr>

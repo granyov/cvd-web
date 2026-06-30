@@ -7,6 +7,10 @@
   const auditTable = document.getElementById("auditTable");
   const qualityTable = document.getElementById("qualityTable");
   const qualitySummary = document.getElementById("qualitySummary");
+  const goldSetTable = document.getElementById("goldSetTable");
+  const goldSetSummary = document.getElementById("goldSetSummary");
+  const goldSetForm = document.getElementById("goldSetForm");
+  const goldRunsList = document.getElementById("goldRunsList");
   const reviewsTable = document.getElementById("reviewsTable");
   const statsNode = document.getElementById("stats");
   const settingsForm = document.getElementById("settingsForm");
@@ -26,6 +30,52 @@
   const selectedBatchCases = new Set();
   let batchCases = [];
   let lastModelHealth = null;
+
+  function panelStorageKey(panel) {
+    return `cvd:${panel.dataset.collapsible}:open`;
+  }
+
+  function readPanelState(panel) {
+    try {
+      return localStorage.getItem(panelStorageKey(panel));
+    } catch {
+      return null;
+    }
+  }
+
+  function writePanelState(panel, isOpen) {
+    try {
+      localStorage.setItem(panelStorageKey(panel), isOpen ? "1" : "0");
+    } catch {
+      // Collapsing still works if browser storage is unavailable.
+    }
+  }
+
+  function setPanelOpen(panel, isOpen, {persist = true} = {}) {
+    const toggle = panel.querySelector(".collapsible-toggle");
+    const content = panel.querySelector(".collapsible-content");
+    panel.classList.toggle("is-open", isOpen);
+    if (toggle) toggle.setAttribute("aria-expanded", String(isOpen));
+    if (content) content.hidden = !isOpen;
+    if (persist) writePanelState(panel, isOpen);
+  }
+
+  function initCollapsiblePanels() {
+    document.querySelectorAll("[data-collapsible]").forEach((panel) => {
+      const saved = readPanelState(panel);
+      setPanelOpen(panel, saved === "1", {persist: false});
+      panel.querySelector(".collapsible-toggle")?.addEventListener("click", () => {
+        setPanelOpen(panel, !panel.classList.contains("is-open"));
+      });
+    });
+  }
+
+  function updateCount(id, count, label = "записей") {
+    const node = document.getElementById(id);
+    if (node) node.textContent = `${Number(count || 0)} ${label}`;
+  }
+
+  initCollapsiblePanels();
 
   function toast(message) {
     const node = document.createElement("div");
@@ -188,6 +238,45 @@
     dashboardUpdated.textContent = `обновлено ${new Date(dashboard.generated_at).toLocaleTimeString("ru-RU", {hour: "2-digit", minute: "2-digit", second: "2-digit"})}`;
   }
 
+  function gatewayProfileHint(profile) {
+    const hints = {
+      local: "LM Studio и CVD на одной системе: http://127.0.0.1:1234/v1/chat/completions",
+      wsl2: "CVD в WSL2, LM Studio на Windows host: используйте IP Windows host или mirrored networking, например http://172.x.x.1:1234/v1/chat/completions",
+      lan: "CVD и LM Studio в одной LAN: http://IP-КОМПЬЮТЕРА-С-LM-STUDIO:1234/v1/chat/completions",
+      cloudflared: "Cloudflared tunnel: https://your-tunnel.example.com/v1/chat/completions; при Cloudflare Access заполните auth headers."
+    };
+    return hints[profile] || hints.local;
+  }
+
+  function updateGatewayHint() {
+    if (!aiGatewayHint || !aiGatewayProfile) return;
+    aiGatewayHint.textContent = gatewayProfileHint(aiGatewayProfile.value);
+  }
+
+  async function testGateway() {
+    testGatewayButton.disabled = true;
+    modelCatalogStatus.textContent = "Проверка AI Gateway...";
+    try {
+      const response = await api("/api/admin/ai-gateway/test", {
+        method: "POST",
+        body: JSON.stringify({
+          api_url: settingsForm.elements.lm_studio_api_url?.value || "",
+          model: modelSelect.value || settingsForm.elements.lm_studio_model?.value || ""
+        })
+      });
+      const gateway = response.gateway || {};
+      const auth = gateway.auth_header_configured ? " · auth header настроен" : "";
+      modelCatalogStatus.textContent = `${gateway.profile || "gateway"} · ${response.api_version || "?"} · моделей ${response.models_count || 0} · ${response.selected_state || "?"} · ${response.latency_ms} мс${auth}`;
+      modelCatalogStatus.classList.toggle("error", !response.ok);
+      if (!response.ok) toast(`AI Gateway доступен, но выбранная модель: ${response.selected_state || "не найдена"}`);
+    } catch (err) {
+      modelCatalogStatus.textContent = err.message;
+      toast(err.message);
+    } finally {
+      testGatewayButton.disabled = false;
+    }
+  }
+
   async function loadModelHealth() {
     modelHealthStatus.textContent = "LM Studio: проверка...";
     modelHealthStatus.className = "pill warning";
@@ -196,11 +285,12 @@
     renderSystemHealth(window.__dashboard || {});
     if (response.ok) {
       const context = response.loaded_context_length ? ` · ctx ${response.loaded_context_length}` : "";
-      modelHealthStatus.textContent = `LM Studio: loaded · ${response.latency_ms} мс${context}`;
+      const profile = response.gateway?.profile ? `${response.gateway.profile} · ` : "";
+      modelHealthStatus.textContent = `AI Gateway: ${profile}loaded · ${response.latency_ms} мс${context}`;
       modelHealthStatus.className = "pill ok";
       return;
     }
-    modelHealthStatus.textContent = `LM Studio: ${response.selected_state || response.error || "недоступен"}`;
+    modelHealthStatus.textContent = `AI Gateway: ${response.selected_state || response.error || "недоступен"}`;
     modelHealthStatus.className = "pill error";
   }
 
@@ -216,6 +306,7 @@
       }
     });
     window.APP_SETTINGS = { ...(window.APP_SETTINGS || {}), ...values };
+    updateGatewayHint();
     return values;
   }
 
@@ -403,8 +494,10 @@
 
   async function loadRequests() {
     const response = await api("/api/admin/requests?limit=200");
+    const requests = response.requests || [];
+    updateCount("requestsCount", requests.length);
     requestsTable.innerHTML = "";
-    (response.requests || []).forEach((request) => requestsTable.appendChild(renderRequestRow(request)));
+    requests.forEach((request) => requestsTable.appendChild(renderRequestRow(request)));
   }
 
   function renderRequestRow(request) {
@@ -434,8 +527,10 @@
 
   async function loadReviews() {
     const response = await api("/api/admin/reviews?limit=200");
+    const reviews = response.reviews || [];
+    updateCount("reviewsCount", reviews.length);
     reviewsTable.innerHTML = "";
-    (response.reviews || []).forEach((review) => reviewsTable.appendChild(renderReviewRow(review)));
+    reviews.forEach((review) => reviewsTable.appendChild(renderReviewRow(review)));
   }
 
   function renderReviewRow(review) {
@@ -466,8 +561,10 @@
       if (label === "Сигналы" && Number(value) > 0) node.classList.add("warning");
       qualitySummary.appendChild(node);
     });
+    const cases = response.cases || [];
+    updateCount("qualityCount", cases.length, "кейсов");
     qualityTable.innerHTML = "";
-    (response.cases || []).forEach((item) => qualityTable.appendChild(renderQualityRow(item)));
+    cases.forEach((item) => qualityTable.appendChild(renderQualityRow(item)));
   }
 
   function renderQualityRow(item) {
@@ -486,10 +583,138 @@
     return row;
   }
 
+  async function loadGoldSet() {
+    const [response, runsResponse] = await Promise.all([
+      api("/api/admin/gold-set"),
+      api("/api/admin/gold-runs")
+    ]);
+    const summary = response.summary || {};
+    goldSetSummary.innerHTML = "";
+    [
+      ["Эталонов", summary.gold_cases],
+      ["Оценено", summary.evaluated],
+      ["Средний score", `${summary.avg_score_percent || 0}%`],
+      ["МКБ-10 hit", summary.icd10_hits || 0],
+      ["Red flags match", summary.red_flag_matches || 0],
+      ["Abstain match", summary.abstain_matches || 0]
+    ].forEach(([label, value]) => {
+      const node = pill(`${label}: ${value}`);
+      if (label === "Средний score" && Number(summary.avg_score_percent || 0) < 80 && Number(summary.evaluated || 0) > 0) node.classList.add("warning");
+      goldSetSummary.appendChild(node);
+    });
+    const goldCases = response.gold_cases || [];
+    updateCount("goldSetCount", goldCases.length, "эталонов");
+    goldSetTable.innerHTML = "";
+    goldCases.forEach((item) => goldSetTable.appendChild(renderGoldSetRow(item)));
+    renderGoldRuns(runsResponse.runs || []);
+  }
+
+  function boolMark(value) {
+    if (value === true) return "✓";
+    if (value === false) return "×";
+    return "—";
+  }
+
+  function renderGoldSetRow(item) {
+    const row = document.createElement("tr");
+    const evaluation = item.evaluation || {};
+    const scoreKind = evaluation.status !== "evaluated" ? "warning" : Number(evaluation.score_percent || 0) >= 80 ? "ok" : "error";
+    const expected = [
+      item.expected_diagnosis ? `диагноз: ${item.expected_diagnosis}` : "",
+      (item.expected_icd10 || []).length ? `МКБ-10: ${(item.expected_icd10 || []).join(", ")}` : "",
+      (item.expected_red_flags || []).length ? `red flags: ${(item.expected_red_flags || []).join("; ")}` : "red flags: нет",
+      `abstain: ${item.expected_abstain ? "да" : "нет"}`
+    ].filter(Boolean).join("\n");
+    const result = item.latest_request_id
+      ? `#${item.latest_request_id} · ${item.latest_model || ""}\n${item.latest_prompt_version || ""}\n${item.latest_request_created_at || ""}`
+      : "нет успешного результата";
+    const score = evaluation.status === "evaluated"
+      ? `${evaluation.score_percent}%\nМКБ-10 ${boolMark(evaluation.icd10_match)} · red flags ${boolMark(evaluation.red_flags_match)} · abstain ${boolMark(evaluation.abstain_match)} · диагноз ${boolMark(evaluation.diagnosis_match)}`
+      : "ожидает успешного результата";
+    row.append(
+      td(item.id),
+      td(`#${item.case_id} · ${item.title}\n${item.patient_id || "ID не указан"}`),
+      td(expected),
+      td(result),
+      td(pill(score, scoreKind))
+    );
+    return row;
+  }
+
+  async function saveGoldCase(event) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    await api("/api/admin/gold-set", {
+      method: "POST",
+      body: JSON.stringify({
+        case_id: form.case_id.value,
+        expected_diagnosis: form.expected_diagnosis.value,
+        expected_icd10: form.expected_icd10.value,
+        expected_red_flags: form.expected_red_flags.value,
+        expected_abstain: form.expected_abstain.value === "1",
+        notes: form.notes.value
+      })
+    });
+    form.reset();
+    toast("Эталон Gold Set сохранён");
+    await Promise.all([loadGoldSet(), loadAudit()]);
+  }
+
+  async function startGoldRun() {
+    const button = document.getElementById("startGoldRunButton");
+    button.disabled = true;
+    try {
+      const response = await api("/api/admin/gold-runs", {method: "POST", body: "{}"});
+      const summary = response.summary || {};
+      toast(`Validation run #${response.run_id}: оценено ${summary.evaluated_items || 0}/${summary.total_items || 0}`);
+      await Promise.all([loadGoldSet(), loadAudit()]);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  function renderGoldRuns(runs) {
+    goldRunsList.innerHTML = "";
+    if (!runs.length) {
+      goldRunsList.textContent = "Validation runs пока не создавались.";
+      return;
+    }
+    runs.forEach((run) => {
+      const node = document.createElement("div");
+      node.className = "batch-job";
+      const identity = document.createElement("div");
+      const title = document.createElement("strong");
+      title.textContent = `Validation run #${run.id}`;
+      const snapshot = run.settings_snapshot || {};
+      const meta = document.createElement("small");
+      meta.textContent = `${run.created_by_email || "system"} · ${run.created_at} · ${snapshot.lm_studio_model || "модель не указана"} · ${snapshot.active_prompt_version || ""}`;
+      identity.append(title, meta, pill(run.status === "completed" ? "завершён" : "пустой", run.status === "completed" ? "ok" : "warning"));
+
+      const progress = document.createElement("div");
+      const progressText = document.createElement("small");
+      progressText.textContent = `${run.evaluated_items || 0} из ${run.total_items || 0} · средний score ${run.avg_score_percent || 0}%`;
+      const track = document.createElement("div");
+      track.className = "progress-track";
+      const fill = document.createElement("div");
+      fill.className = "progress-fill";
+      fill.style.width = `${Math.max(0, Math.min(100, Number(run.avg_score_percent || 0)))}%`;
+      track.appendChild(fill);
+      progress.append(progressText, track);
+
+      const worst = (run.items || []).slice(0, 3).map((item) => `#${item.case_id}: ${item.score_percent}%`).join(" · ");
+      const details = document.createElement("small");
+      details.textContent = worst ? `Слабые места: ${worst}` : "Нет элементов для отображения.";
+      node.append(identity, progress, details);
+      goldRunsList.appendChild(node);
+    });
+  }
+
   async function loadAudit() {
     const response = await api("/api/admin/audit?limit=200");
+    const audit = response.audit || [];
+    updateCount("auditCount", audit.length);
     auditTable.innerHTML = "";
-    (response.audit || []).forEach((entry) => auditTable.appendChild(renderAuditRow(entry)));
+    audit.forEach((entry) => auditTable.appendChild(renderAuditRow(entry)));
   }
 
   function renderAuditRow(entry) {
@@ -572,13 +797,16 @@
       identity.append(title, meta, batchStatus(job.status));
 
       const progress = document.createElement("div");
+      const jobProgress = job.progress || {};
       const progressText = document.createElement("small");
-      progressText.textContent = `${job.completed_items || 0} из ${job.total_items || 0} · успешно ${job.success_items || 0} · ошибок ${job.error_items || 0}`;
+      const eta = Number(jobProgress.eta_seconds || 0) ? ` · осталось ${duration(Number(jobProgress.eta_seconds || 0) * 1000)}` : "";
+      const speed = Number(jobProgress.throughput_per_hour || 0) ? ` · ${Number(jobProgress.throughput_per_hour).toFixed(1)} кейсов/ч` : "";
+      progressText.textContent = `${job.completed_items || 0} из ${job.total_items || 0} · успешно ${job.success_items || 0} · ошибок ${job.error_items || 0}${eta}${speed}`;
       const track = document.createElement("div");
       track.className = "progress-track";
       const fill = document.createElement("div");
       fill.className = "progress-fill";
-      fill.style.width = `${job.total_items ? Math.round(Number(job.completed_items || 0) * 100 / Number(job.total_items)) : 0}%`;
+      fill.style.width = `${jobProgress.progress_percent ?? (job.total_items ? Math.round(Number(job.completed_items || 0) * 100 / Number(job.total_items)) : 0)}%`;
       track.appendChild(fill);
       progress.append(progressText, track);
 
@@ -665,6 +893,9 @@
   document.getElementById("refreshUsersButton").addEventListener("click", () => loadUsers().catch((err) => toast(err.message)));
   document.getElementById("refreshRequestsButton").addEventListener("click", () => loadRequests().catch((err) => toast(err.message)));
   document.getElementById("refreshQualityButton").addEventListener("click", () => loadQuality().catch((err) => toast(err.message)));
+  document.getElementById("refreshGoldSetButton").addEventListener("click", () => loadGoldSet().catch((err) => toast(err.message)));
+  goldSetForm.addEventListener("submit", (event) => saveGoldCase(event).catch((err) => toast(err.message)));
+  document.getElementById("startGoldRunButton").addEventListener("click", () => startGoldRun().catch((err) => toast(err.message)));
   document.getElementById("refreshAuditButton").addEventListener("click", () => loadAudit().catch((err) => toast(err.message)));
   document.getElementById("refreshReviewsButton").addEventListener("click", () => loadReviews().catch((err) => toast(err.message)));
   document.getElementById("refreshDashboardButton").addEventListener("click", () => Promise.all([loadDashboard(), loadModelHealth()]).catch((err) => toast(err.message)));
@@ -678,6 +909,6 @@
   document.getElementById("logoutButton").addEventListener("click", () => logout().catch((err) => toast(err.message)));
 
   const settingsAndModels = loadSettings().then(loadModels);
-  Promise.all([loadStats(), loadDashboard(), loadModelHealth(), loadBatch(), settingsAndModels, loadUsers(), loadRequests(), loadQuality(), loadAudit(), loadReviews()]).catch((err) => toast(err.message));
+  Promise.all([loadStats(), loadDashboard(), loadModelHealth(), loadBatch(), settingsAndModels, loadUsers(), loadRequests(), loadQuality(), loadGoldSet(), loadAudit(), loadReviews()]).catch((err) => toast(err.message));
   window.setInterval(() => Promise.all([loadDashboard(), loadBatch()]).catch(() => {}), 10000);
 })();

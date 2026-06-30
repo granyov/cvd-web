@@ -562,6 +562,92 @@ body[data-theme="dark"] .notice.error-note {
   color: var(--muted);
 }
 
+.collapsible-panel {
+  overflow: hidden;
+}
+
+.collapsible-summary {
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.collapsible-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.collapsible-toggle:hover {
+  color: var(--accent);
+}
+
+.collapsible-title {
+  display: block;
+  font-size: 1.05rem;
+  font-weight: 700;
+}
+
+.muted-pill {
+  background: var(--panel-2);
+  color: var(--muted);
+}
+
+.collapsible-summary::-webkit-details-marker,
+.record-history-summary::-webkit-details-marker {
+  display: none;
+}
+
+.collapse-indicator {
+  width: 0.55rem;
+  height: 0.55rem;
+  border-right: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+  transform: rotate(-45deg);
+  transition: transform 0.16s ease;
+  color: var(--muted);
+  flex: 0 0 auto;
+}
+
+.collapsible-panel[open] > .collapsible-summary .collapse-indicator,
+.collapsible-panel[open] > .record-history-summary .collapse-indicator,
+.collapsible-panel.is-open .collapsible-toggle .collapse-indicator {
+  transform: rotate(45deg);
+}
+
+.record-history-panel {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--field-bg);
+}
+
+.record-history-summary {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 10px 12px;
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.record-history-summary h3 {
+  margin: 0;
+}
+
+.record-history-panel > .compact-scroll {
+  margin: 0 12px 12px;
+}
+
 .record-empty {
   display: grid;
   place-content: center;

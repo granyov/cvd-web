@@ -349,6 +349,7 @@ def _call_text_structuring_chunk(
     timeout_seconds: int,
     max_tokens: int,
     call_guard: Callable[[], ContextManager[Any]] | None = None,
+    extra_headers: dict[str, str] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], int]:
     request_body = build_structuring_request(text, model=model, max_tokens=max_tokens)
     with call_guard() if call_guard else nullcontext():
@@ -356,6 +357,7 @@ def _call_text_structuring_chunk(
             api_url=api_url,
             request_body=request_body,
             timeout_seconds=min(timeout_seconds, TEXT_MODEL_TIMEOUT_SECONDS),
+            extra_headers=extra_headers,
         )
     response_payload = {"raw": response_json, "content": content}
     finish_reason = _response_finish_reason(response_json)
@@ -394,6 +396,7 @@ def call_text_structuring(
     timeout_seconds: int,
     max_tokens: int,
     call_guard: Callable[[], ContextManager[Any]] | None = None,
+    extra_headers: dict[str, str] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], int]:
     source_chunks = split_clinical_text(text)
     if not source_chunks:
@@ -426,6 +429,7 @@ def call_text_structuring(
                 timeout_seconds=timeout_seconds,
                 max_tokens=max_tokens,
                 call_guard=call_guard,
+                extra_headers=extra_headers,
             )
         except LMStudioError as exc:
             last_error = exc
