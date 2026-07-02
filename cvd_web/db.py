@@ -72,6 +72,8 @@ CREATE TABLE IF NOT EXISTS model_requests (
   finish_reason TEXT NOT NULL DEFAULT '',
   request_source TEXT NOT NULL DEFAULT 'interactive',
   queue_wait_ms INTEGER NOT NULL DEFAULT 0,
+  input_data_hash TEXT NOT NULL DEFAULT '',
+  input_patient_data_json TEXT,
   created_at TEXT NOT NULL
 );
 
@@ -316,6 +318,8 @@ SETTINGS_KEYS = [
     "lm_studio_queue_limit",
     "lm_studio_per_user_limit",
     "lm_studio_queue_timeout_seconds",
+    "inference_queue_backend",
+    "inference_queue_dsn",
     "deidentify_before_model",
     "active_prompt_version",
     "active_prompt_template",
@@ -351,6 +355,8 @@ def default_settings(config: Config) -> dict[str, tuple[str, str]]:
         "lm_studio_queue_limit": ("64", "Максимальное число запросов, ожидающих LM Studio."),
         "lm_studio_per_user_limit": ("2", "Максимальное число активных и ожидающих AI-запросов одного пользователя."),
         "lm_studio_queue_timeout_seconds": ("1800", "Максимальное ожидание свободного слота LM Studio в секундах."),
+        "inference_queue_backend": ("memory", "Backend очереди: memory, redis или postgresql. Redis/PostgreSQL требуют отдельного worker-адаптера."),
+        "inference_queue_dsn": ("", "DSN внешней очереди Redis/PostgreSQL без публикации пользователям."),
         "deidentify_before_model": ("1", "Удалять явные идентификаторы из данных перед отправкой в LM Studio: 1 или 0."),
         "active_prompt_version": (MODEL_PROMPT_VERSION, "Активная версия prompt для запросов к модели."),
         "active_prompt_template": (USER_PROMPT_TEMPLATE, "Шаблон user prompt. Должен содержать {{PATIENT_JSON}}."),
@@ -386,6 +392,8 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
         "finish_reason": "ALTER TABLE model_requests ADD COLUMN finish_reason TEXT NOT NULL DEFAULT ''",
         "request_source": "ALTER TABLE model_requests ADD COLUMN request_source TEXT NOT NULL DEFAULT 'interactive'",
         "queue_wait_ms": "ALTER TABLE model_requests ADD COLUMN queue_wait_ms INTEGER NOT NULL DEFAULT 0",
+        "input_data_hash": "ALTER TABLE model_requests ADD COLUMN input_data_hash TEXT NOT NULL DEFAULT ''",
+        "input_patient_data_json": "ALTER TABLE model_requests ADD COLUMN input_patient_data_json TEXT",
     }
     for column, statement in migrations.items():
         if column not in columns:

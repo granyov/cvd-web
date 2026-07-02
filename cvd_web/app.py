@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import mimetypes
+import sqlite3
 import re
 import threading
 import time
@@ -34,7 +35,7 @@ from .inference_queue import InferenceQueue, InferenceQueueError
 from .lmstudio import call_lm_studio
 from .lmstudio_models import LMStudioManagementError, activate_lm_model, list_lm_models
 from .privacy import deidentify_patient_data
-from .quality import case_quality_summary
+from .quality import case_quality_summary, has_clinical_input, patient_data_changes, patient_data_hash
 from .rate_limit import MemoryRateLimiter
 from .reporting import build_html_report
 from .text_structuring import TEXT_MAX_INPUT_CHARS, TEXT_STRUCTURING_VERSION, call_text_structuring
@@ -281,9 +282,25 @@ class CVDApplication:
         if request.path == "/api/admin/dashboard" and request.method == "GET":
             self.require_admin(user)
             return self.admin_dashboard()
+        if request.path == "/api/admin/model-quality" and request.method == "GET":
+            self.require_admin(user)
+            return self.admin_model_quality()
         if request.path == "/api/admin/model-health" and request.method == "GET":
             self.require_admin(user)
             return self.admin_model_health()
+        if request.path == "/api/admin/backups" and request.method == "GET":
+            self.require_admin(user)
+            return self.admin_list_backups()
+        if request.path == "/api/admin/backups" and request.method == "POST":
+            self.require_admin(user)
+            return self.admin_create_backup(user)
+        if match := re.fullmatch(r"/api/admin/backups/([A-Za-z0-9_.-]+)", request.path):
+            if request.method == "GET":
+                self.require_admin(user)
+                return self.admin_download_backup(match.group(1))
+        if request.path == "/api/admin/restore" and request.method == "POST":
+            self.require_admin(user)
+            return self.admin_restore_backup(request, user)
         if request.path == "/api/admin/ai-gateway/test" and request.method == "POST":
             self.require_admin(user)
             return self.admin_ai_gateway_test(request, user)
@@ -415,6 +432,26 @@ class CVDApplication:
             per_user_limit=self.setting_int(settings, "lm_studio_per_user_limit", 2),
         )
         return self.setting_int(settings, "lm_studio_queue_timeout_seconds", 1800)
+
+    def production_queue_status(self, settings: dict[str, str]) -> dict[str, Any]:
+        backend = str(settings.get("inference_queue_backend") or "memory").strip().lower()
+        if backend not in {"memory", "redis", "postgresql"}:
+            backend = "memory"
+        dsn_configured = bool(str(settings.get("inference_queue_dsn") or "").strip())
+        external = backend in {"redis", "postgresql"}
+        return {
+            "backend": backend,
+            "active_backend": "memory",
+            "external_requested": external,
+            "dsn_configured": dsn_configured,
+            "production_ready": (not external),
+            "status": "memory-active" if not external else "adapter-not-installed",
+            "message": (
+                "In-process queue active. Use a single backend process or configure an external adapter before multi-process deployment."
+                if not external else
+                "Redis/PostgreSQL backend is configured for rollout, but this build still uses the in-process queue adapter."
+            ),
+        }
 
     def inference_status(self, user: dict[str, Any]):
         settings = self.load_settings()
@@ -568,40 +605,17 @@ class CVDApplication:
     def list_cases(self, request: Request, user: dict[str, Any]):
         query = str(request.query.get("q", [""])[0]).strip()[:200]
         analysis_filter = str(request.query.get("analysis", [""])[0]).strip().lower()
-        if analysis_filter not in {"", "with", "without"}:
+        allowed_filters = {"", "with", "without", "attention", "error", "ready", "incomplete", "critical", "stale", "reviewed"}
+        if analysis_filter not in allowed_filters:
             raise HTTPError(400, "Некорректный фильтр результатов")
         limit = self.query_int(request, "limit", 100, 1, 200)
         offset = self.query_int(request, "offset", 0, 0, 1_000_000)
         escaped_query = query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
         search = f"%{escaped_query}%"
         with connect(self.config.db_path) as conn:
-            total = conn.execute(
-                """
-                SELECT COUNT(*)
-                FROM cases c
-                WHERE c.user_id = ?
-                  AND (? = '' OR c.title LIKE ? ESCAPE '\\' OR c.patient_id LIKE ? ESCAPE '\\'
-                       OR CAST(c.id AS TEXT) LIKE ? ESCAPE '\\')
-                  AND (
-                    ? = ''
-                    OR (? = 'with' AND EXISTS (
-                      SELECT 1 FROM model_requests r
-                      WHERE r.case_id = c.id AND r.user_id = c.user_id AND r.status = 'success'
-                    ))
-                    OR (? = 'without' AND NOT EXISTS (
-                      SELECT 1 FROM model_requests r
-                      WHERE r.case_id = c.id AND r.user_id = c.user_id AND r.status = 'success'
-                    ))
-                  )
-                """,
-                (
-                    user["id"], query, search, search, search,
-                    analysis_filter, analysis_filter, analysis_filter,
-                ),
-            ).fetchone()[0]
             rows = conn.execute(
                 """
-                SELECT c.id, c.title, c.patient_id, c.created_at, c.updated_at,
+                SELECT c.id, c.title, c.patient_id, c.data_json, c.created_at, c.updated_at,
                        (
                          SELECT r.id
                          FROM model_requests r
@@ -611,40 +625,83 @@ class CVDApplication:
                          LIMIT 1
                        ) AS latest_result_id,
                        (
+                         SELECT r.input_data_hash
+                         FROM model_requests r
+                         WHERE r.case_id = c.id AND r.user_id = c.user_id
+                           AND r.status = 'success' AND r.parsed_output_json IS NOT NULL
+                         ORDER BY r.created_at DESC, r.id DESC
+                         LIMIT 1
+                       ) AS latest_result_input_hash,
+                       (
                          SELECT COUNT(*)
                          FROM model_requests r
                          WHERE r.case_id = c.id AND r.user_id = c.user_id
-                       ) AS analysis_count
+                       ) AS analysis_count,
+                       (
+                         SELECT r.status
+                         FROM model_requests r
+                         WHERE r.case_id = c.id AND r.user_id = c.user_id
+                         ORDER BY r.created_at DESC, r.id DESC
+                         LIMIT 1
+                       ) AS latest_request_status,
+                       EXISTS (
+                         SELECT 1 FROM model_request_reviews rv
+                         JOIN model_requests rr ON rr.id = rv.model_request_id
+                         WHERE rr.case_id = c.id AND rr.user_id = c.user_id
+                       ) AS has_review
                 FROM cases c
                 WHERE c.user_id = ?
                   AND (? = '' OR c.title LIKE ? ESCAPE '\\' OR c.patient_id LIKE ? ESCAPE '\\'
                        OR CAST(c.id AS TEXT) LIKE ? ESCAPE '\\')
-                  AND (
-                    ? = ''
-                    OR (? = 'with' AND EXISTS (
-                      SELECT 1 FROM model_requests r
-                      WHERE r.case_id = c.id AND r.user_id = c.user_id AND r.status = 'success'
-                    ))
-                    OR (? = 'without' AND NOT EXISTS (
-                      SELECT 1 FROM model_requests r
-                      WHERE r.case_id = c.id AND r.user_id = c.user_id AND r.status = 'success'
-                    ))
-                  )
                 ORDER BY c.updated_at DESC
-                LIMIT ? OFFSET ?
                 """,
-                (
-                    user["id"], query, search, search, search,
-                    analysis_filter, analysis_filter, analysis_filter, limit, offset,
-                ),
+                (user["id"], query, search, search, search),
             ).fetchall()
+        items = []
+        for item in rows_to_dicts(rows):
+            data = json.loads(item.pop("data_json") or "{}")
+            quality = case_quality_summary(data)
+            current_hash = patient_data_hash(data)
+            item["quality"] = quality
+            item["current_data_hash"] = current_hash
+            item["ai_result_stale"] = bool(item.get("latest_result_id") and item.get("latest_result_input_hash") and item.get("latest_result_input_hash") != current_hash)
+            item["has_review"] = bool(item.get("has_review"))
+            if self.case_matches_analysis_filter(item, analysis_filter):
+                items.append(item)
+        page_items = items[offset:offset + limit]
         return self.json_response({
-            "cases": rows_to_dicts(rows),
-            "total": int(total),
+            "cases": page_items,
+            "total": len(items),
             "limit": limit,
             "offset": offset,
-            "has_more": offset + len(rows) < int(total),
+            "has_more": offset + len(page_items) < len(items),
         })
+
+    @staticmethod
+    def case_matches_analysis_filter(item: dict[str, Any], analysis_filter: str) -> bool:
+        if not analysis_filter:
+            return True
+        latest_result = bool(item.get("latest_result_id"))
+        quality = item.get("quality") or {}
+        if analysis_filter == "with":
+            return latest_result
+        if analysis_filter == "without":
+            return not latest_result
+        if analysis_filter == "attention":
+            return bool(item.get("ai_result_stale") or item.get("latest_request_status") == "error" or quality.get("missing_required") or quality.get("critical_signals"))
+        if analysis_filter == "error":
+            return item.get("latest_request_status") == "error"
+        if analysis_filter == "ready":
+            return int(quality.get("readiness_percent") or 0) == 100 and not latest_result
+        if analysis_filter == "incomplete":
+            return int(quality.get("readiness_percent") or 0) < 100
+        if analysis_filter == "critical":
+            return int(quality.get("critical_signals") or 0) > 0
+        if analysis_filter == "stale":
+            return bool(item.get("ai_result_stale"))
+        if analysis_filter == "reviewed":
+            return bool(item.get("has_review"))
+        return True
 
     def library_summary(self, user: dict[str, Any]):
         with connect(self.config.db_path) as conn:
@@ -1044,6 +1101,8 @@ class CVDApplication:
 
         data = request.json()
         patient_data = self.normalized_patient_data(data.get("patient_data"))
+        if not has_clinical_input(patient_data):
+            raise HTTPError(400, "Добавьте данные пациента перед запуском AI-анализа")
         case_id = data.get("case_id")
         if case_id is not None:
             try:
@@ -1212,6 +1271,7 @@ class CVDApplication:
         duration_ms = 0
         queue_wait_ms = 0
         queue_error = False
+        input_data_hash = patient_data_hash(patient_data)
         status = "error"
         error = None
         try:
@@ -1252,8 +1312,8 @@ class CVDApplication:
                    parsed_output_json, prompt_version, schema_version, output_schema_version,
                    settings_snapshot_json, deidentified_input_json, phi_signals_json,
                    error, duration_ms, prompt_tokens, completion_tokens, total_tokens,
-                   tokens_per_second, finish_reason, request_source, queue_wait_ms, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   tokens_per_second, finish_reason, request_source, queue_wait_ms, input_data_hash, input_patient_data_json, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     user_id,
@@ -1279,6 +1339,8 @@ class CVDApplication:
                     metrics["finish_reason"],
                     request_source,
                     queue_wait_ms,
+                    input_data_hash,
+                    json.dumps(patient_data, ensure_ascii=False),
                     utc_now(),
                 ),
             )
@@ -1520,8 +1582,8 @@ class CVDApplication:
                 SELECT r.id, r.case_id, r.status, r.model, r.error, r.duration_ms, r.created_at,
                        r.parsed_output_json, r.prompt_version, r.schema_version, r.output_schema_version,
                        r.phi_signals_json, r.prompt_tokens, r.completion_tokens, r.total_tokens,
-                       r.tokens_per_second, r.finish_reason, r.request_source,
-                       c.title AS case_title, c.patient_id,
+                       r.tokens_per_second, r.finish_reason, r.request_source, r.input_data_hash,
+                       r.input_patient_data_json, c.title AS case_title, c.patient_id, c.data_json AS case_data_json,
                        rv.rating AS review_rating, rv.issue_types_json AS review_issue_types_json,
                        rv.comment AS review_comment, rv.corrected_diagnosis AS review_corrected_diagnosis,
                        rv.corrected_icd10_json AS review_corrected_icd10_json
@@ -1602,8 +1664,8 @@ class CVDApplication:
                 SELECT r.id, r.case_id, r.status, r.model, r.error, r.duration_ms, r.created_at,
                        r.parsed_output_json, r.prompt_version, r.schema_version, r.output_schema_version,
                        r.phi_signals_json, r.prompt_tokens, r.completion_tokens, r.total_tokens,
-                       r.tokens_per_second, r.finish_reason, r.request_source,
-                       c.title AS case_title, c.patient_id,
+                       r.tokens_per_second, r.finish_reason, r.request_source, r.input_data_hash,
+                       r.input_patient_data_json, c.title AS case_title, c.patient_id, c.data_json AS case_data_json,
                        rv.rating AS review_rating, rv.issue_types_json AS review_issue_types_json,
                        rv.comment AS review_comment, rv.corrected_diagnosis AS review_corrected_diagnosis,
                        rv.corrected_icd10_json AS review_corrected_icd10_json
@@ -1622,6 +1684,18 @@ class CVDApplication:
     def serialize_request_rows(self, rows) -> list[dict[str, Any]]:
         items = rows_to_dicts(rows)
         for item in items:
+            case_data_json = item.pop("case_data_json", None)
+            input_patient_data_json = item.pop("input_patient_data_json", None)
+            item["ai_result_stale"] = False
+            item["ai_result_changes"] = []
+            if case_data_json and item.get("input_data_hash"):
+                try:
+                    current_data = json.loads(case_data_json)
+                    item["ai_result_stale"] = patient_data_hash(current_data) != item["input_data_hash"]
+                    if item["ai_result_stale"] and input_patient_data_json:
+                        item["ai_result_changes"] = patient_data_changes(json.loads(input_patient_data_json), current_data)
+                except (json.JSONDecodeError, TypeError):
+                    item["ai_result_stale"] = True
             item["parsed_output"] = json.loads(item.pop("parsed_output_json")) if item.get("parsed_output_json") else None
             item["phi_signals"] = json.loads(item.pop("phi_signals_json")) if item.get("phi_signals_json") else []
             review_rating = item.pop("review_rating")
@@ -1854,6 +1928,61 @@ class CVDApplication:
             item["details"] = json.loads(item.pop("details_json")) if item.get("details_json") else {}
         return self.json_response({"audit": items})
 
+
+    def backup_dir(self) -> Path:
+        path = self.config.db_path.parent / "backups"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+
+    def backup_path(self, filename: str) -> Path:
+        if not re.fullmatch(r"cvd-[0-9TZ-]+\.sqlite3", filename):
+            raise HTTPError(400, "Некорректное имя backup-файла")
+        path = (self.backup_dir() / filename).resolve()
+        if not str(path).startswith(str(self.backup_dir().resolve())) or not path.is_file():
+            raise HTTPError(404, "Backup не найден")
+        return path
+
+    def admin_list_backups(self):
+        backups = []
+        for path in sorted(self.backup_dir().glob("cvd-*.sqlite3"), key=lambda item: item.stat().st_mtime, reverse=True):
+            stat = path.stat()
+            backups.append({"filename": path.name, "size_bytes": stat.st_size, "created_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat()})
+        return self.json_response({"backups": backups[:100]})
+
+    def admin_create_backup(self, admin: dict[str, Any]):
+        filename = f"cvd-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.sqlite3"
+        target = self.backup_dir() / filename
+        with sqlite3.connect(self.config.db_path) as source, sqlite3.connect(target) as dest:
+            source.backup(dest)
+        with connect(self.config.db_path) as conn:
+            audit(conn, user_id=admin["id"], action="backup_create", target_type="backup", details={"filename": filename})
+        return self.json_response({"ok": True, "backup": {"filename": filename, "size_bytes": target.stat().st_size}}, status=201)
+
+    def admin_download_backup(self, filename: str):
+        path = self.backup_path(filename)
+        return self.response(200, path.read_bytes(), [
+            ("Content-Type", "application/octet-stream"),
+            ("Content-Disposition", f'attachment; filename="{path.name}"'),
+        ])
+
+    def admin_restore_backup(self, request: Request, admin: dict[str, Any]):
+        data = request.json()
+        filename = str(data.get("filename") or "").strip()
+        source_path = self.backup_path(filename)
+        with sqlite3.connect(source_path) as source:
+            integrity = source.execute("PRAGMA quick_check").fetchone()[0]
+            if integrity != "ok":
+                raise HTTPError(400, f"Backup повреждён: {integrity}")
+        safety_name = f"cvd-before-restore-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.sqlite3"
+        safety_path = self.backup_dir() / safety_name
+        with sqlite3.connect(self.config.db_path) as current, sqlite3.connect(safety_path) as safety:
+            current.backup(safety)
+        with sqlite3.connect(source_path) as source, sqlite3.connect(self.config.db_path) as dest:
+            source.backup(dest)
+        with connect(self.config.db_path) as conn:
+            audit(conn, user_id=admin["id"], action="backup_restore", target_type="backup", details={"filename": filename, "safety_backup": safety_name})
+        return self.json_response({"ok": True, "restored_from": filename, "safety_backup": safety_name})
+
     def admin_get_settings(self):
         with connect(self.config.db_path) as conn:
             items = get_app_settings_full(conn)
@@ -1886,6 +2015,8 @@ class CVDApplication:
             "lm_studio_queue_limit": str(incoming.get("lm_studio_queue_limit", "64")).strip(),
             "lm_studio_per_user_limit": str(incoming.get("lm_studio_per_user_limit", "2")).strip(),
             "lm_studio_queue_timeout_seconds": str(incoming.get("lm_studio_queue_timeout_seconds", "1800")).strip(),
+            "inference_queue_backend": str(incoming.get("inference_queue_backend", "memory")).strip().lower(),
+            "inference_queue_dsn": str(incoming.get("inference_queue_dsn", "")).strip()[:1000],
             "deidentify_before_model": "1" if str(incoming.get("deidentify_before_model", "1")).strip().lower() in {"1", "true", "yes", "on"} else "0",
             "active_prompt_version": str(incoming.get("active_prompt_version", MODEL_PROMPT_VERSION)).strip()[:120],
             "active_prompt_template": str(incoming.get("active_prompt_template", "")).strip()[:12000],
@@ -1898,6 +2029,10 @@ class CVDApplication:
             raise HTTPError(400, "Тема по умолчанию должна быть light или dark")
         if values["ai_gateway_profile"] not in {"local", "lan", "wsl2", "cloudflared"}:
             raise HTTPError(400, "AI Gateway профиль должен быть local, lan, wsl2 или cloudflared")
+        if values["inference_queue_backend"] not in {"memory", "redis", "postgresql"}:
+            raise HTTPError(400, "inference_queue_backend должен быть memory, redis или postgresql")
+        if values["inference_queue_backend"] != "memory" and not values["inference_queue_dsn"]:
+            raise HTTPError(400, "Для Redis/PostgreSQL очереди укажите inference_queue_dsn")
         self.ai_gateway_headers(values)
         if not values["lm_studio_api_url"].startswith(("http://", "https://")):
             raise HTTPError(400, "API URL должен начинаться с http:// или https://")
@@ -2378,6 +2513,7 @@ class CVDApplication:
             "reviews": reviews,
             "batch": batch,
             "inference_queue": self.inference_queue.snapshot(),
+            "production_queue": self.production_queue_status(settings),
             "daily": daily,
             "system": {
                 "app_version": APP_VERSION,
@@ -2408,6 +2544,20 @@ class CVDApplication:
         settings = self.load_settings()
         api_url = settings.get("lm_studio_api_url") or self.config.lm_studio_api_url
         selected_model = settings.get("lm_studio_model") or self.config.lm_studio_model
+        with connect(self.config.db_path) as conn:
+            request_stats = row_to_dict(conn.execute(
+                """
+                SELECT COUNT(*) AS total,
+                       SUM(CASE WHEN status = 'success' THEN 1 ELSE 0 END) AS success,
+                       SUM(CASE WHEN status = 'error' THEN 1 ELSE 0 END) AS errors,
+                       MAX(CASE WHEN status = 'success' THEN created_at END) AS last_success_at,
+                       MAX(CASE WHEN status = 'error' THEN created_at END) AS last_error_at,
+                       ROUND(AVG(CASE WHEN status = 'success' THEN duration_ms END)) AS avg_success_duration_ms
+                FROM model_requests
+                WHERE model = ?
+                """,
+                (selected_model,),
+            ).fetchone())
         started = time.monotonic()
         try:
             catalog = list_lm_models(api_url, timeout_seconds=10, extra_headers=self.ai_gateway_headers(settings))
@@ -2420,6 +2570,9 @@ class CVDApplication:
                 "gateway": self.ai_gateway_public_profile(settings),
                 "latency_ms": latency_ms,
                 "error": str(exc),
+                "request_stats": request_stats,
+                "queue": self.inference_queue.snapshot(),
+                "production_queue": self.production_queue_status(settings),
             })
 
         latency_ms = int((time.monotonic() - started) * 1000)
@@ -2441,6 +2594,9 @@ class CVDApplication:
             "max_context_length": selected["max_context_length"] if selected else None,
             "loaded_models": loaded_models,
             "latency_ms": latency_ms,
+            "request_stats": request_stats,
+            "queue": self.inference_queue.snapshot(),
+            "production_queue": self.production_queue_status(settings),
         })
 
     def admin_models(self):
@@ -2535,6 +2691,171 @@ class CVDApplication:
             "selected_state": selected.get("state") if selected else "not-found",
             "loaded_models": loaded,
             "models_count": len(models),
+        })
+
+
+    def admin_model_quality(self):
+        with connect(self.config.db_path) as conn:
+            request_rows = conn.execute(
+                """
+                SELECT id, case_id, model, status, duration_ms, tokens_per_second, total_tokens,
+                       parsed_output_json, created_at
+                FROM model_requests
+                WHERE model <> ''
+                ORDER BY created_at DESC, id DESC
+                LIMIT 2000
+                """
+            ).fetchall()
+            review_rows = conn.execute(
+                """
+                SELECT r.model, rv.rating, rv.issue_types_json, rv.created_at
+                FROM model_request_reviews rv
+                JOIN model_requests r ON r.id = rv.model_request_id
+                WHERE r.model <> ''
+                ORDER BY rv.created_at DESC
+                LIMIT 2000
+                """
+            ).fetchall()
+            gold_rows = conn.execute(
+                """
+                SELECT g.id, g.case_id, g.title, g.expected_diagnosis, g.expected_icd10_json,
+                       g.expected_red_flags_json, g.expected_abstain, g.notes, g.created_at, g.updated_at,
+                       c.patient_id, c.updated_at AS case_updated_at
+                FROM gold_cases g
+                JOIN cases c ON c.id = g.case_id
+                ORDER BY g.updated_at DESC
+                LIMIT 500
+                """
+            ).fetchall()
+
+        per_model: dict[str, dict[str, Any]] = {}
+        latest_gold_requests: dict[tuple[int, str], dict[str, Any]] = {}
+        gold_case_ids = {row["case_id"] for row in gold_rows}
+        comparable_cases: dict[int, set[str]] = {}
+        for row in request_rows:
+            item = row_to_dict(row)
+            model_name = item.get("model") or "unknown"
+            stats = per_model.setdefault(model_name, {
+                "model": model_name,
+                "requests": 0,
+                "success": 0,
+                "errors": 0,
+                "durations": [],
+                "tokens_per_second_values": [],
+                "total_tokens": 0,
+                "reviews": {"total": 0, "useful": 0, "partial": 0, "wrong": 0, "unsafe": 0},
+                "gold_scores": [],
+            })
+            stats["requests"] += 1
+            if item["status"] == "success":
+                stats["success"] += 1
+                if item.get("duration_ms"):
+                    stats["durations"].append(int(item["duration_ms"]))
+                if item.get("tokens_per_second"):
+                    stats["tokens_per_second_values"].append(float(item["tokens_per_second"]))
+                if item.get("case_id"):
+                    comparable_cases.setdefault(int(item["case_id"]), set()).add(model_name)
+            else:
+                stats["errors"] += 1
+            stats["total_tokens"] += int(item.get("total_tokens") or 0)
+            if item.get("case_id") in gold_case_ids and item["status"] == "success" and item.get("parsed_output_json"):
+                key = (int(item["case_id"]), model_name)
+                latest_gold_requests.setdefault(key, item)
+
+        for row in review_rows:
+            model_name = row["model"] or "unknown"
+            stats = per_model.setdefault(model_name, {
+                "model": model_name, "requests": 0, "success": 0, "errors": 0, "durations": [],
+                "tokens_per_second_values": [], "total_tokens": 0,
+                "reviews": {"total": 0, "useful": 0, "partial": 0, "wrong": 0, "unsafe": 0},
+                "gold_scores": [],
+            })
+            rating = row["rating"] if row["rating"] in {"useful", "partial", "wrong", "unsafe"} else "partial"
+            stats["reviews"]["total"] += 1
+            stats["reviews"][rating] += 1
+
+        comparisons = []
+        for row in gold_rows:
+            base = row_to_dict(row)
+            gold_item = {
+                **base,
+                "expected_icd10": json.loads(base.pop("expected_icd10_json") or "[]"),
+                "expected_red_flags": json.loads(base.pop("expected_red_flags_json") or "[]"),
+                "expected_abstain": bool(base["expected_abstain"]),
+            }
+            model_results = []
+            for model_name in sorted(per_model):
+                request_item = latest_gold_requests.get((int(gold_item["case_id"]), model_name))
+                if not request_item:
+                    continue
+                parsed = json.loads(request_item.get("parsed_output_json") or "{}")
+                evaluation = self.evaluate_gold_case(gold_item, parsed)
+                per_model[model_name]["gold_scores"].append(evaluation["score_percent"])
+                model_results.append({
+                    "model": model_name,
+                    "request_id": request_item["id"],
+                    "created_at": request_item["created_at"],
+                    "evaluation": evaluation,
+                })
+            if model_results:
+                model_results.sort(key=lambda item: (-int(item["evaluation"].get("score_percent") or 0), item["model"]))
+                comparisons.append({
+                    "case_id": gold_item["case_id"],
+                    "title": gold_item["title"],
+                    "patient_id": gold_item.get("patient_id") or "",
+                    "models": model_results,
+                    "best_model": model_results[0]["model"],
+                    "best_score_percent": model_results[0]["evaluation"]["score_percent"],
+                })
+
+        models = []
+        for stats in per_model.values():
+            durations = sorted(stats.pop("durations"))
+            tps_values = stats.pop("tokens_per_second_values")
+            gold_scores = stats.pop("gold_scores")
+            total = stats["requests"]
+            reviews = stats["reviews"]
+            stats["success_rate_percent"] = round(stats["success"] * 100 / total, 1) if total else 0
+            stats["avg_duration_ms"] = round(sum(durations) / len(durations)) if durations else 0
+            p95_index = max(0, ((95 * len(durations) + 99) // 100) - 1) if durations else 0
+            stats["p95_duration_ms"] = durations[p95_index] if durations else 0
+            stats["avg_tokens_per_second"] = round(sum(tps_values) / len(tps_values), 2) if tps_values else 0
+            stats["review_useful_rate_percent"] = round(reviews["useful"] * 100 / reviews["total"], 1) if reviews["total"] else 0
+            stats["unsafe_rate_percent"] = round(reviews["unsafe"] * 100 / reviews["total"], 1) if reviews["total"] else 0
+            stats["gold_cases_evaluated"] = len(gold_scores)
+            stats["gold_avg_score_percent"] = round(sum(gold_scores) / len(gold_scores)) if gold_scores else 0
+            models.append(stats)
+        models.sort(key=lambda item: (-item["gold_avg_score_percent"], -item["review_useful_rate_percent"], item["model"]))
+
+        review_totals = {"total": 0, "useful": 0, "partial": 0, "wrong": 0, "unsafe": 0}
+        issue_counts: dict[str, int] = {}
+        for row in review_rows:
+            rating = row["rating"] if row["rating"] in review_totals else "partial"
+            review_totals["total"] += 1
+            review_totals[rating] += 1
+            for issue in json.loads(row["issue_types_json"] or "[]"):
+                issue_counts[str(issue)] = issue_counts.get(str(issue), 0) + 1
+
+        multi_model_cases = sum(1 for models_for_case in comparable_cases.values() if len(models_for_case) > 1)
+        return self.json_response({
+            "summary": {
+                "models": len(models),
+                "gold_cases": len(gold_rows),
+                "gold_comparisons": len(comparisons),
+                "multi_model_cases": multi_model_cases,
+                "reviews": review_totals["total"],
+                "unsafe_reviews": review_totals["unsafe"],
+            },
+            "models": models,
+            "comparisons": comparisons[:100],
+            "reviews": {
+                **review_totals,
+                "useful_rate_percent": round(review_totals["useful"] * 100 / review_totals["total"], 1) if review_totals["total"] else 0,
+                "issue_counts": sorted(
+                    ({"issue": issue, "count": count} for issue, count in issue_counts.items()),
+                    key=lambda item: (-item["count"], item["issue"]),
+                )[:20],
+            },
         })
 
     def admin_quality(self):

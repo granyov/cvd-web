@@ -1,6 +1,6 @@
 # CVD Web
 
-**Текущая версия: `v0.8.2`**
+**Текущая версия: `v0.9.0`**
 
 Веб-приложение для структурированных CVD-кейсов, простой авторизации, админки пользователей и журналирования запросов к LM Studio.
 
@@ -22,6 +22,7 @@
 - AI Gateway профили для same-host, WSL2, локальной сети и cloudflared tunnel с auth headers и диагностикой в админке.
 - Review before AI: перед отправкой в модель пользователь видит полноту кейса, сигналы и JSON payload.
 - Структурированный CDS-ответ модели: summary, возможные диагнозы, supporting findings, missing data, red flags, confidence, limitations и совместимый `MODEL_OUTPUT`.
+- Карточки результата AI с предупреждением об устаревшем анализе и diff полей, изменённых после запуска модели.
 - LM Studio structured output через JSON Schema с серверной нормализацией ответа.
 - Метрики генерации в истории: prompt/completion tokens, tok/s, finish reason и длительность.
 - Экспертная оценка ответа модели в рабочем месте: useful/partial/wrong/unsafe, типы ошибок, корректный диагноз, корректные МКБ-10 и комментарий.
@@ -39,6 +40,8 @@
 - Операционный dashboard: пользователи, кейсы, успешность и p95 модели, tok/s, качество данных, импорты, AI-подготовка, пакетные задания, SQLite integrity и состояние worker.
 - Админка: пользователи, роли, активность, сброс пароля, системные настройки, каталог и переключение моделей LM Studio, параметры API, prompt template, health-check, история запросов и ошибок модели, оценки ответов, журнал аудита.
 - Админская аналитика качества данных: средняя заполненность, готовность, сигналы и пропущенные обязательные поля.
+- Dashboard качества моделей: сравнение моделей по Gold Set, экспертным оценкам, unsafe-rate, скорости и успешности запросов.
+- Production-надежность: admin backup/download/restore SQLite, readiness-настройки Redis/PostgreSQL очереди и расширенный monitoring LM Studio.
 - Светлая и тёмная темы с переключателем.
 - Базовые защитные меры: CSRF, Fetch Metadata/Origin checks, security headers, лимит размера JSON, парольная политика и in-memory rate limit для логина/запросов к модели.
 - Без обязательных pip/npm зависимостей, только Python 3.11+ stdlib.
@@ -83,7 +86,7 @@ sudo ./install.sh \
 
 ```bash
 scripts/install_from_release.sh \
-  --url https://storage.example.com/cvd-web/v0.8.2/cvd-web-v0.8.2.tar.gz \
+  --url https://storage.example.com/cvd-web/v0.9.0/cvd-web-v0.9.0.tar.gz \
   --sha256 <archive-sha256> \
   -- --target local
 ```
@@ -105,8 +108,8 @@ scripts/install_from_release.sh -- --target local --unattended
 export GH_TOKEN=<github-token-with-repo-or-public_repo-scope>
 export GH_REPO=<owner>/<repo>
 scripts/publish_github_release.sh \
-  --tag v0.8.2 \
-  --archive /workspace/cvd-web-release/cvd-web-v0.8.2.tar.gz
+  --tag v0.9.0 \
+  --archive /workspace/cvd-web-release/cvd-web-v0.9.0.tar.gz
 ```
 
 Скрипт проверит авторизацию `gh`, создаст release, если его ещё нет, или перезальёт архив и `.sha256` через `gh release upload --clobber`, если release уже существует.
@@ -195,8 +198,8 @@ Structured output: включён
 1. **Clinical workspace**: summary, readiness, review before AI, timeline, FHIR export. Базовый пакет внедрён.
 2. **Controlled CDS**: структурированный ответ модели, версии промпта/схемы, snapshot настроек, режим abstain при нехватке данных. Базовый пакет внедрён.
 3. **Admin quality control**: аналитика заполненности, сигналов, ошибок модели, оценки ответов, audit log. Базовый пакет внедрён.
-4. **Production VPS**: Docker/compose, nginx/systemd примеры, backup SQLite. Базовый пакет внедрён.
-5. **Validation**: gold set кейсов, сравнение моделей, отчёты качества, клиническая/юридическая/ИБ-валидация. Следующий этап.
+4. **Production VPS**: nginx/systemd примеры, backup/restore SQLite и readiness-настройки внешней очереди. Базовый пакет внедрён; следующий шаг — полноценный Redis/PostgreSQL worker adapter.
+5. **Validation**: gold set кейсов, сравнение моделей и отчёты качества внедрены в админке; следующий этап — формальная клиническая/юридическая/ИБ-валидация.
 
 ## VPS-заметки
 
@@ -239,4 +242,4 @@ sh scripts/backup_sqlite.sh
 - Развить миграции БД до полноценной версионной системы.
 - Добавить мониторинг доступности LM Studio.
 - Определить политику хранения медицинских данных и деидентификации.
-- Добавить validation/gold set для сравнения моделей и промптов.
+- Расширить validation/gold set: запускать эталоны на выбранных моделях и промптах автоматически.

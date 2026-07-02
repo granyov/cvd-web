@@ -15,7 +15,15 @@
   const statsNode = document.getElementById("stats");
   const settingsForm = document.getElementById("settingsForm");
   const modelHealthStatus = document.getElementById("modelHealthStatus");
+  const backupsList = document.getElementById("backupsList");
+  const backupStatus = document.getElementById("backupStatus");
   const dashboardMetrics = document.getElementById("dashboardMetrics");
+  const modelQualityDashboard = document.getElementById("modelQualityDashboard");
+  const modelQualityModels = document.getElementById("modelQualityModels");
+  const modelQualityReviews = document.getElementById("modelQualityReviews");
+  const modelComparisonList = document.getElementById("modelComparisonList");
+  const goldCockpitSummary = document.getElementById("goldCockpitSummary");
+  const goldCockpitList = document.getElementById("goldCockpitList");
   const activityChart = document.getElementById("activityChart");
   const systemHealthGrid = document.getElementById("systemHealthGrid");
   const dashboardUpdated = document.getElementById("dashboardUpdated");
@@ -76,6 +84,24 @@
   }
 
   initCollapsiblePanels();
+
+  function applyAdminMode(mode) {
+    const nextMode = ["admin", "researcher", "doctor"].includes(mode) ? mode : "admin";
+    document.body.dataset.interfaceMode = nextMode;
+    try { localStorage.setItem("cvd:admin-mode", nextMode); } catch (_) {}
+    document.getElementById("adminModeSelect")?.querySelectorAll("option").forEach((option) => {
+      option.selected = option.value === nextMode;
+    });
+  }
+
+  function initAdminMode() {
+    let mode = "admin";
+    try { mode = localStorage.getItem("cvd:admin-mode") || "admin"; } catch (_) {}
+    applyAdminMode(mode);
+    document.getElementById("adminModeSelect")?.addEventListener("change", (event) => applyAdminMode(event.target.value));
+  }
+
+  initAdminMode();
 
   function toast(message) {
     const node = document.createElement("div");
@@ -199,6 +225,7 @@
       ["База данных", system.db_integrity === "ok" ? "integrity ok" : system.db_integrity || "нет данных", system.db_integrity === "ok" ? "ok" : "error"],
       ["Фоновый worker", system.worker_running ? "работает" : "остановлен", system.worker_running ? "ok" : "error"],
       ["Очередь LM Studio", `${number(queue.active_count)} активно · ${number(queue.queued_count)} ожидает · лимит ${number(queue.max_concurrent)}`, Number(queue.queued_count) > 0 ? "warning" : "ok"],
+      ["Production queue", dashboard.production_queue?.backend ? `${dashboard.production_queue.active_backend} active · target ${dashboard.production_queue.backend}` : "нет данных", dashboard.production_queue?.external_requested ? "warning" : "ok"],
       ["Размер БД", `${(Number(system.db_size_bytes || 0) / 1024 / 1024).toFixed(2)} МБ`, ""],
       ["Время работы", uptime(system.uptime_seconds), ""],
       ["Версия", system.app_version || "", ""]
@@ -235,7 +262,140 @@
     ].forEach((card) => dashboardMetrics.appendChild(card));
     renderActivity(dashboard.daily || []);
     renderSystemHealth(dashboard);
+    renderModelQualityDashboard(dashboard);
     dashboardUpdated.textContent = `обновлено ${new Date(dashboard.generated_at).toLocaleTimeString("ru-RU", {hour: "2-digit", minute: "2-digit", second: "2-digit"})}`;
+  }
+
+  async function loadModelQuality() {
+    const quality = await api("/api/admin/model-quality");
+    renderModelQualityDashboard(quality);
+  }
+
+  function renderModelQualityDashboard(quality) {
+    if (!modelQualityDashboard) return;
+    const summary = quality.summary || {};
+    const reviews = quality.reviews || {};
+    modelQualityDashboard.innerHTML = "";
+    [
+      metricCard("Моделей", number(summary.models), `${number(summary.multi_model_cases)} кейсов с несколькими моделями`),
+      metricCard("Gold comparisons", number(summary.gold_comparisons), `${number(summary.gold_cases)} gold cases`),
+      metricCard("Экспертные оценки", number(summary.reviews), `${Number(reviews.useful_rate_percent || 0).toFixed(1)}% useful`, Number(summary.unsafe_reviews || 0) ? "warning" : "ok"),
+      metricCard("Unsafe", number(summary.unsafe_reviews), "ответов с экспертной оценкой unsafe", Number(summary.unsafe_reviews || 0) ? "error" : "ok")
+    ].forEach((card) => modelQualityDashboard.appendChild(card));
+
+    if (modelQualityModels) {
+      modelQualityModels.innerHTML = "";
+      const models = quality.models || [];
+      if (!models.length) modelQualityModels.textContent = "Нет данных по моделям.";
+      models.forEach((item) => {
+        const row = document.createElement("div");
+        row.className = "review-cockpit-item";
+        const title = document.createElement("strong");
+        title.textContent = item.model;
+        const details = document.createElement("small");
+        details.textContent = `${number(item.requests)} запросов · success ${Number(item.success_rate_percent || 0).toFixed(1)}% · gold ${item.gold_avg_score_percent || 0}% · useful ${Number(item.review_useful_rate_percent || 0).toFixed(1)}%`;
+        const perf = document.createElement("small");
+        perf.textContent = `latency ${duration(item.avg_duration_ms)} · p95 ${duration(item.p95_duration_ms)} · ${Number(item.avg_tokens_per_second || 0).toFixed(1)} tok/s`;
+        row.append(title, details, perf, pill(`${item.reviews?.unsafe || 0} unsafe`, Number(item.reviews?.unsafe || 0) ? "error" : "ok"));
+        modelQualityModels.appendChild(row);
+      });
+    }
+
+    if (modelQualityReviews) {
+      modelQualityReviews.innerHTML = "";
+      const rating = document.createElement("div");
+      rating.className = "review-cockpit-item";
+      rating.append(
+        document.createElement("strong"),
+        pill(`useful ${reviews.useful || 0}`, "ok"),
+        pill(`partial ${reviews.partial || 0}`, "warning"),
+        pill(`wrong ${reviews.wrong || 0}`, "error"),
+        pill(`unsafe ${reviews.unsafe || 0}`, Number(reviews.unsafe || 0) ? "error" : "ok")
+      );
+      rating.querySelector("strong").textContent = "Распределение оценок";
+      modelQualityReviews.appendChild(rating);
+      const issues = reviews.issue_counts || [];
+      if (!issues.length) {
+        const empty = document.createElement("div");
+        empty.className = "review-cockpit-item";
+        empty.textContent = "Типы ошибок пока не отмечались.";
+        modelQualityReviews.appendChild(empty);
+      }
+      issues.slice(0, 6).forEach((issue) => {
+        const row = document.createElement("div");
+        row.className = "review-cockpit-item";
+        const name = document.createElement("strong");
+        name.textContent = issue.issue;
+        row.append(name, pill(`${issue.count}×`, "warning"));
+        modelQualityReviews.appendChild(row);
+      });
+    }
+
+    if (modelComparisonList) {
+      modelComparisonList.innerHTML = "";
+      const comparisons = quality.comparisons || [];
+      if (!comparisons.length) modelComparisonList.textContent = "Для сравнения нужны gold cases с успешными результатами моделей.";
+      comparisons.slice(0, 10).forEach((item) => {
+        const row = document.createElement("div");
+        row.className = "review-cockpit-item";
+        const title = document.createElement("strong");
+        title.textContent = `#${item.case_id} · ${item.title}`;
+        const details = document.createElement("small");
+        details.textContent = `Лучше: ${item.best_model} · ${item.best_score_percent}%`;
+        const models = document.createElement("small");
+        models.textContent = (item.models || []).map((model) => `${model.model}: ${model.evaluation?.score_percent || 0}% (#${model.request_id})`).join(" · ");
+        row.append(title, details, models);
+        modelComparisonList.appendChild(row);
+      });
+    }
+  }
+
+  function renderGoldCockpit(goldCases, runs) {
+    if (!goldCockpitSummary || !goldCockpitList) return;
+    const latestRun = runs[0] || {};
+    const evaluated = goldCases.filter((item) => item.evaluation?.status === "evaluated");
+    const lowScore = evaluated.filter((item) => Number(item.evaluation?.score_percent || 0) < 80);
+    goldCockpitSummary.innerHTML = "";
+    [
+      metricCard("Gold cases", number(goldCases.length), `${number(evaluated.length)} evaluated`),
+      metricCard("Latest run", latestRun.id ? `#${latestRun.id}` : "—", latestRun.id ? `${latestRun.avg_score_percent || 0}% avg score` : "run not created", latestRun.id && Number(latestRun.avg_score_percent || 0) < 80 ? "warning" : ""),
+      metricCard("Needs review", number(lowScore.length), "score below 80%", lowScore.length ? "warning" : "ok"),
+      metricCard("Coverage", `${goldCases.length ? Math.round(evaluated.length * 100 / goldCases.length) : 0}%`, "evaluated gold cases")
+    ].forEach((card) => goldCockpitSummary.appendChild(card));
+    goldCockpitList.innerHTML = "";
+    const items = [...lowScore, ...goldCases.filter((item) => item.evaluation?.status !== "evaluated")].slice(0, 6);
+    if (!items.length) {
+      goldCockpitList.textContent = "Критичных элементов для ревью нет.";
+      return;
+    }
+    items.forEach((item) => {
+      const row = document.createElement("div");
+      row.className = "review-cockpit-item";
+      const title = document.createElement("strong");
+      title.textContent = `#${item.case_id} · ${item.title}`;
+      const details = document.createElement("small");
+      details.textContent = item.evaluation?.status === "evaluated"
+        ? `score ${item.evaluation.score_percent}% · проверьте расхождения`
+        : "нет успешного результата для оценки";
+      const actions = document.createElement("div");
+      actions.className = "toolbar";
+      actions.appendChild(actionLink("Открыть кейс", `/app?case=${item.case_id}`));
+      if (item.latest_request_id) actions.appendChild(actionLink("Отчёт", `/reports/${item.latest_request_id}`, true));
+      row.append(title, details, actions);
+      goldCockpitList.appendChild(row);
+    });
+  }
+
+  function actionLink(label, href, primary = false) {
+    const link = document.createElement("a");
+    link.className = `button ${primary ? "primary-link" : ""}`.trim();
+    link.href = href;
+    if (href.startsWith("/reports/")) {
+      link.target = "_blank";
+      link.rel = "noopener";
+    }
+    link.textContent = label;
+    return link;
   }
 
   function gatewayProfileHint(profile) {
@@ -286,7 +446,9 @@
     if (response.ok) {
       const context = response.loaded_context_length ? ` · ctx ${response.loaded_context_length}` : "";
       const profile = response.gateway?.profile ? `${response.gateway.profile} · ` : "";
-      modelHealthStatus.textContent = `AI Gateway: ${profile}loaded · ${response.latency_ms} мс${context}`;
+      const stats = response.request_stats || {};
+      const recent = stats.last_error_at ? ` · last err ${stats.last_error_at}` : stats.last_success_at ? ` · last ok ${stats.last_success_at}` : "";
+      modelHealthStatus.textContent = `AI Gateway: ${profile}loaded · ${response.latency_ms} мс${context}${recent}`;
       modelHealthStatus.className = "pill ok";
       return;
     }
@@ -378,7 +540,7 @@
       });
       window.APP_SETTINGS = { ...(window.APP_SETTINGS || {}), lm_studio_model: response.selected_model };
       toast(`Активна модель ${response.selected_model}`);
-      await Promise.all([loadSettings(), loadModels(), loadModelHealth(), loadStats(), loadDashboard()]);
+      await Promise.all([loadSettings(), loadModels(), loadModelHealth(), loadStats(), loadDashboard(), loadModelQuality()]);
     } finally {
       activateModelButton.disabled = false;
     }
@@ -606,7 +768,9 @@
     updateCount("goldSetCount", goldCases.length, "эталонов");
     goldSetTable.innerHTML = "";
     goldCases.forEach((item) => goldSetTable.appendChild(renderGoldSetRow(item)));
-    renderGoldRuns(runsResponse.runs || []);
+    const runs = runsResponse.runs || [];
+    renderGoldRuns(runs);
+    renderGoldCockpit(goldCases, runs);
   }
 
   function boolMark(value) {
@@ -715,6 +879,63 @@
     updateCount("auditCount", audit.length);
     auditTable.innerHTML = "";
     audit.forEach((entry) => auditTable.appendChild(renderAuditRow(entry)));
+  }
+
+  function bytesText(bytes) {
+    const value = Number(bytes || 0);
+    if (value > 1024 * 1024) return `${(value / 1024 / 1024).toFixed(1)} MB`;
+    if (value > 1024) return `${(value / 1024).toFixed(1)} KB`;
+    return `${value} B`;
+  }
+
+  async function loadBackups() {
+    if (!backupsList) return;
+    const response = await api("/api/admin/backups");
+    const backups = response.backups || [];
+    backupsList.innerHTML = "";
+    if (!backups.length) {
+      backupsList.textContent = "Backup пока не создавались.";
+      return;
+    }
+    backups.forEach((backup) => {
+      const row = document.createElement("div");
+      row.className = "batch-job";
+      const title = document.createElement("strong");
+      title.textContent = backup.filename;
+      const meta = document.createElement("small");
+      meta.textContent = `${backup.created_at} · ${bytesText(backup.size_bytes)}`;
+      const actions = document.createElement("div");
+      actions.className = "toolbar";
+      const download = actionLink("Скачать", `/api/admin/backups/${encodeURIComponent(backup.filename)}`, true);
+      const restore = document.createElement("button");
+      restore.type = "button";
+      restore.textContent = "Restore";
+      restore.addEventListener("click", () => restoreBackup(backup.filename).catch((err) => toast(err.message)));
+      actions.append(download, restore);
+      row.append(title, meta, actions);
+      backupsList.appendChild(row);
+    });
+  }
+
+  async function createBackup() {
+    const button = document.getElementById("createBackupButton");
+    button.disabled = true;
+    try {
+      const response = await api("/api/admin/backups", {method: "POST", body: "{}"});
+      backupStatus.textContent = `Backup создан: ${response.backup?.filename || "ok"}`;
+      toast("Backup создан");
+      await Promise.all([loadBackups(), loadAudit()]);
+    } finally {
+      button.disabled = false;
+    }
+  }
+
+  async function restoreBackup(filename) {
+    if (!window.confirm(`Восстановить базу из ${filename}? Текущая база будет сохранена safety backup.`)) return;
+    const response = await api("/api/admin/restore", {method: "POST", body: JSON.stringify({filename})});
+    backupStatus.textContent = `Restore выполнен из ${response.restored_from}; safety backup: ${response.safety_backup}`;
+    toast("База восстановлена из backup");
+    await Promise.all([loadBackups(), loadDashboard(), loadStats(), loadAudit()]);
   }
 
   function renderAuditRow(entry) {
@@ -899,6 +1120,8 @@
   document.getElementById("refreshAuditButton").addEventListener("click", () => loadAudit().catch((err) => toast(err.message)));
   document.getElementById("refreshReviewsButton").addEventListener("click", () => loadReviews().catch((err) => toast(err.message)));
   document.getElementById("refreshDashboardButton").addEventListener("click", () => Promise.all([loadDashboard(), loadModelHealth()]).catch((err) => toast(err.message)));
+  document.getElementById("refreshModelQualityButton")?.addEventListener("click", () => loadModelQuality().catch((err) => toast(err.message)));
+  document.getElementById("refreshGoldCockpitButton")?.addEventListener("click", () => loadGoldSet().catch((err) => toast(err.message)));
   document.getElementById("refreshBatchButton").addEventListener("click", () => loadBatch().catch((err) => toast(err.message)));
   document.getElementById("selectUnprocessedButton").addEventListener("click", selectUnprocessedCases);
   document.getElementById("clearBatchSelectionButton").addEventListener("click", () => {
@@ -909,6 +1132,6 @@
   document.getElementById("logoutButton").addEventListener("click", () => logout().catch((err) => toast(err.message)));
 
   const settingsAndModels = loadSettings().then(loadModels);
-  Promise.all([loadStats(), loadDashboard(), loadModelHealth(), loadBatch(), settingsAndModels, loadUsers(), loadRequests(), loadQuality(), loadGoldSet(), loadAudit(), loadReviews()]).catch((err) => toast(err.message));
+  Promise.all([loadStats(), loadDashboard(), loadModelQuality(), loadModelHealth(), loadBatch(), loadBackups(), settingsAndModels, loadUsers(), loadRequests(), loadQuality(), loadGoldSet(), loadAudit(), loadReviews()]).catch((err) => toast(err.message));
   window.setInterval(() => Promise.all([loadDashboard(), loadBatch()]).catch(() => {}), 10000);
 })();

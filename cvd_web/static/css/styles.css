@@ -268,8 +268,8 @@ body[data-theme="dark"] .notice.error-note {
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 15px 18px;
-  background: var(--hero);
-  box-shadow: var(--shadow);
+  background: color-mix(in srgb, var(--panel) 92%, var(--panel-2));
+  box-shadow: none;
 }
 
 .records-hero h1 {
@@ -708,8 +708,8 @@ body[data-theme="dark"] .notice.error-note {
   padding: 20px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  background: var(--hero);
-  box-shadow: var(--shadow);
+  background: color-mix(in srgb, var(--panel) 92%, var(--panel-2));
+  box-shadow: none;
 }
 
 .clinical-hero h1 {
@@ -889,10 +889,32 @@ details.section {
 details.section > summary {
   display: flex;
   justify-content: space-between;
+  gap: 12px;
   align-items: center;
   padding: 11px 13px;
   cursor: pointer;
   font-weight: 700;
+}
+
+.section-fill-badge {
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  background: var(--panel-2);
+  font-size: 0.78rem;
+  font-weight: 700;
+  padding: 3px 8px;
+}
+
+.section-fill-badge.ok {
+  border-color: color-mix(in srgb, var(--ok) 45%, var(--border));
+  color: var(--ok);
+}
+
+.section-fill-badge.warning {
+  border-color: color-mix(in srgb, var(--warning) 45%, var(--border));
+  color: var(--warning);
 }
 
 details.section[open] > summary {
@@ -1128,6 +1150,47 @@ body[data-theme="dark"] .pill.warning {
 .model-section .check-row {
   grid-template-columns: 1fr;
   line-height: 1.4;
+}
+
+.model-stale-card {
+  display: grid;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--warning) 45%, var(--border));
+  border-left: 3px solid var(--warning);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--warning) 10%, var(--field-bg));
+}
+
+.model-stale-card p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.stale-diff-list {
+  display: grid;
+  gap: 8px;
+}
+
+.stale-diff-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 8px;
+  align-items: center;
+  padding: 9px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel);
+}
+
+.stale-diff-row small {
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.stale-diff-row small:last-child {
+  color: var(--text);
 }
 
 .diagnosis-card {
@@ -2059,5 +2122,441 @@ body[data-theme="dark"] .check-row.warning .check-mark {
   .activity-chart {
     gap: 4px;
     padding-inline: 7px;
+  }
+}
+
+.workflow-actions {
+  align-items: center;
+  gap: 8px;
+}
+
+.action-group {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.secondary-actions button {
+  color: var(--muted);
+}
+
+.workflow-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.workflow-step {
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--muted);
+  background: var(--panel-2);
+  font-size: 0.82rem;
+  font-weight: 700;
+  padding: 8px 10px;
+  text-align: center;
+}
+
+.workflow-step.active,
+.workflow-step.done {
+  border-color: rgba(10, 102, 194, 0.35);
+  color: var(--accent-dark);
+  background: var(--accent-soft);
+}
+
+.workflow-step.done::before {
+  content: "✓ ";
+}
+
+.next-action-card {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: center;
+  border: 1px solid rgba(10, 102, 194, 0.24);
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  margin-bottom: 12px;
+  padding: 12px 14px;
+}
+
+.next-action-card span {
+  color: var(--muted);
+  text-align: right;
+}
+
+.side-next-action {
+  margin-bottom: 16px;
+}
+
+.side-next-action span {
+  text-align: left;
+}
+
+.section-progress-list {
+  display: grid;
+  gap: 8px;
+}
+
+.section-progress-item {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  width: 100%;
+  text-align: left;
+}
+
+.section-progress-item strong {
+  color: var(--muted);
+}
+
+.section-progress-item.ok strong {
+  color: var(--ok);
+}
+
+.section-progress-item.warning strong {
+  color: var(--warning);
+}
+
+.settings-group-title {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: baseline;
+  border-bottom: 1px solid var(--border);
+  margin-top: 8px;
+  padding: 12px 0 8px;
+}
+
+.settings-group-title strong {
+  font-size: 1rem;
+}
+
+.settings-group-title span {
+  color: var(--muted);
+  font-size: 0.86rem;
+  text-align: right;
+}
+
+.prompt-advanced {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+  padding: 12px;
+}
+
+.prompt-advanced summary {
+  cursor: pointer;
+  font-weight: 700;
+  margin-bottom: 10px;
+}
+
+@media (max-width: 700px) {
+  .workflow-strip {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .next-action-card,
+  .settings-group-title {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .next-action-card span,
+  .settings-group-title span {
+    text-align: left;
+  }
+}
+.section-nav {
+  position: sticky;
+  top: 8px;
+  z-index: 2;
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--panel) 94%, transparent);
+  margin-bottom: 12px;
+  padding: 8px;
+  scrollbar-width: thin;
+}
+
+.section-nav-item {
+  flex: 0 0 auto;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  padding: 7px 10px;
+  white-space: nowrap;
+}
+
+.section-nav-item.ok {
+  border-color: color-mix(in srgb, var(--ok) 45%, var(--border));
+  color: var(--ok);
+}
+
+.section-nav-item.warning {
+  border-color: color-mix(in srgb, var(--warning) 45%, var(--border));
+  color: var(--warning);
+}
+
+.import-review-summary,
+.model-meta-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.import-review-card,
+.model-meta-item {
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--panel-2);
+  padding: 9px 10px;
+}
+
+.import-review-card strong,
+.model-meta-item strong {
+  display: block;
+  font-size: 1rem;
+}
+
+.import-review-card span,
+.model-meta-item span {
+  color: var(--muted);
+  font-size: 0.78rem;
+}
+
+.import-review-card.ok,
+.model-meta-item.ok {
+  border-color: color-mix(in srgb, var(--ok) 45%, var(--border));
+}
+
+.import-review-card.warning,
+.model-meta-item.warning {
+  border-color: color-mix(in srgb, var(--warning) 45%, var(--border));
+}
+
+.model-meta-item.danger {
+  border-color: color-mix(in srgb, var(--danger) 45%, var(--border));
+}
+
+.model-summary-card.warning {
+  border-left-color: var(--warning);
+}
+
+.model-summary-card.danger {
+  border-left-color: var(--danger);
+}
+
+.model-summary-title {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: flex-start;
+}
+
+.ok-text {
+  color: var(--ok) !important;
+  font-weight: 700;
+}
+
+@media (max-width: 700px) {
+  .import-review-summary,
+  .model-meta-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .section-nav {
+    top: 0;
+  }
+}
+
+.mode-select {
+  width: auto;
+  min-width: 130px;
+  padding: 8px 10px;
+}
+
+.admin-shell {
+  display: grid;
+  gap: 16px;
+}
+
+.admin-nav {
+  position: sticky;
+  top: 8px;
+  z-index: 5;
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: color-mix(in srgb, var(--panel) 94%, transparent);
+  padding: 8px;
+  scrollbar-width: thin;
+}
+
+.admin-nav a {
+  flex: 0 0 auto;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text);
+  background: var(--panel-2);
+  font-size: 0.84rem;
+  font-weight: 700;
+  padding: 8px 11px;
+  text-decoration: none;
+}
+
+.admin-anchor {
+  scroll-margin-top: 76px;
+}
+
+.clinical-workflow {
+  display: grid;
+  gap: 8px;
+}
+
+.clinical-workflow-step {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 2px 9px;
+  align-items: center;
+  width: 100%;
+  text-align: left;
+}
+
+.clinical-workflow-step > span {
+  grid-row: span 2;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--panel-2);
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.clinical-workflow-step.done > span {
+  background: var(--ok);
+  color: #fff;
+}
+
+.clinical-workflow-step.active > span {
+  background: var(--warning);
+  color: #fff;
+}
+
+.clinical-workflow-step small {
+  color: var(--muted);
+}
+
+.review-cockpit-list {
+  display: grid;
+  gap: 10px;
+}
+
+.review-cockpit-item {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--field-bg);
+  padding: 12px;
+}
+
+.review-cockpit-item small {
+  color: var(--muted);
+}
+
+body[data-interface-mode="doctor"] .clinical-hero .hero-metrics,
+body[data-interface-mode="doctor"] #tab-json,
+body[data-interface-mode="doctor"] .secondary-actions,
+body[data-interface-mode="doctor"] .model-actions,
+body[data-interface-mode="doctor"] .section-nav,
+body[data-interface-mode="doctor"] #admin-logs-section,
+body[data-interface-mode="doctor"] #admin-settings-section {
+  display: none !important;
+}
+
+body[data-interface-mode="doctor"] .layout {
+  grid-template-columns: minmax(0, 1fr) minmax(280px, 360px);
+}
+
+body[data-interface-mode="researcher"] .layout {
+  grid-template-columns: minmax(0, 1fr) minmax(360px, 520px);
+}
+
+body[data-interface-mode="researcher"] .model-output,
+body[data-interface-mode="admin"] .model-output {
+  max-height: none;
+}
+
+body[data-interface-mode="admin"] .panel-body,
+body[data-interface-mode="researcher"] .panel-body {
+  padding: 14px;
+}
+
+body[data-interface-mode="doctor"] .panel-body {
+  padding: 18px;
+}
+
+@media (max-width: 700px) {
+  .admin-nav {
+    top: 0;
+  }
+
+  .clinical-workflow-step {
+    grid-template-columns: 24px minmax(0, 1fr);
+  }
+}
+
+button.check-row {
+  color: inherit;
+  cursor: pointer;
+  font-family: inherit;
+  text-align: left;
+  width: 100%;
+}
+
+button.check-row:disabled {
+  cursor: default;
+  opacity: 1;
+}
+
+button.check-row.warning:hover,
+button.check-row.warning:focus-visible {
+  border-color: color-mix(in srgb, var(--warning) 70%, var(--border));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--warning) 16%, transparent);
+}
+
+.signal-row.critical {
+  border-color: #fecaca;
+  background: color-mix(in srgb, #fee2e2 55%, var(--field-bg));
+}
+
+.signal-row.critical strong {
+  color: var(--danger);
+}
+
+body[data-theme="dark"] .signal-row.critical {
+  background: color-mix(in srgb, rgba(248, 113, 113, 0.14) 70%, var(--field-bg));
+}
+
+.quality-dashboard-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 14px;
+}
+
+@media (max-width: 900px) {
+  .quality-dashboard-grid {
+    grid-template-columns: 1fr;
   }
 }

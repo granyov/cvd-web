@@ -18,7 +18,7 @@ Usage:
   scripts/install_from_release.sh --url URL [--sha256 HEX|--sha256-url URL] [--] [install.sh args]
 
 Examples:
-  scripts/install_from_release.sh --url https://storage.example.com/cvd-web/v0.8.2/cvd-web-v0.8.2.tar.gz -- --target local
+  scripts/install_from_release.sh --url https://storage.example.com/cvd-web/v0.9.0/cvd-web-v0.9.0.tar.gz -- --target local
   CVD_RELEASE_URL=https://github.com/org/cvd-web/releases/latest/download/cvd-web.tar.gz scripts/install_from_release.sh -- --target wsl2 --unattended
 
 Options before -- are consumed by this wrapper:

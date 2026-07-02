@@ -58,8 +58,15 @@
           <input id="caseSearchInput" type="search" autocomplete="off" placeholder="Название, ID пациента или номер кейса" aria-label="Поиск по кейсам">
           <select id="caseAnalysisFilter" aria-label="Фильтр кейсов по результатам">
             <option value="">Все кейсы</option>
+            <option value="attention">Требуют внимания</option>
+            <option value="ready">Готовы к AI</option>
+            <option value="incomplete">Неполные данные</option>
+            <option value="critical">С критическими сигналами</option>
+            <option value="stale">Данные изменены после AI</option>
+            <option value="reviewed">Проверены врачом</option>
             <option value="with">С готовым результатом</option>
             <option value="without">Без готового результата</option>
+            <option value="error">С ошибкой AI</option>
           </select>
           <button type="button" id="clearCaseFiltersButton">Сбросить</button>
           <span id="caseCount" class="pill">0</span>
@@ -190,6 +197,7 @@
   <div id="toastRegion" aria-live="polite"></div>
   <script>window.CURRENT_USER = {{user_json}}; window.APP_SETTINGS = {{settings_json}};</script>
   <script src="/static/js/theme.js"></script>
+  <script src="/static/js/clinical-quality.js"></script>
   <script src="/static/js/cases.js"></script>
 </body>
 </html>

@@ -133,6 +133,30 @@
     return link;
   }
 
+  function caseWorkflowStatus(item) {
+    const quality = item.quality || {};
+    if (item.ai_result_stale) return ["Данные изменены после AI", "warning"];
+    if (item.latest_request_status === "error") return ["AI завершился ошибкой", "error"];
+    if (item.has_review) return ["Проверен врачом", "ok"];
+    if (item.latest_result_id) return ["Ожидает экспертной проверки", "warning"];
+    if (Number(quality.critical_signals || 0) > 0) return ["Есть критические сигналы", "error"];
+    if (Number(quality.readiness_percent || 0) === 100) return ["Готов к AI", "ok"];
+    if (Number(quality.readiness_percent || 0) > 0) return ["Черновик: данные неполные", "warning"];
+    return ["Черновик без AI", "warning"];
+  }
+
+  function caseStatusDescription(item) {
+    const quality = item.quality || {};
+    if (item.ai_result_stale) return "данные кейса изменились после последнего AI-результата";
+    if (item.latest_request_status === "error") return "последний запуск требует внимания";
+    if (item.has_review) return "результат содержит экспертную оценку";
+    if (item.latest_result_id) return `последний отчёт #${item.latest_result_id}`;
+    if (Number(quality.critical_signals || 0) > 0) return `${quality.critical_signals} крит. сигналов, проверьте данные`;
+    if (Number(quality.readiness_percent || 0) === 100) return "ключевые данные заполнены, можно запускать AI";
+    if (Number(item.analysis_count || 0) > 0) return "результаты есть, проверьте актуальность";
+    return "сохранённые данные ещё не отправлялись в AI";
+  }
+
   function actionButton(label, onClick, options = {}) {
     const button = document.createElement("button");
     button.type = "button";
@@ -191,11 +215,13 @@
       head.className = "record-list-head";
       const title = document.createElement("strong");
       title.textContent = item.title;
-      head.append(title, pill(item.latest_result_id ? `${item.analysis_count} анализов` : "без результата", item.latest_result_id ? "ok" : ""));
+      const [statusText, statusKind] = caseWorkflowStatus(item);
+      head.append(title, pill(statusText, statusKind));
       const patient = document.createElement("span");
       patient.textContent = item.patient_id ? `ID пациента: ${item.patient_id}` : "ID пациента не указан";
       const meta = document.createElement("small");
-      meta.textContent = `Кейс #${item.id} · ${formatDateTime(item.updated_at)}`;
+      const quality = item.quality || {};
+      meta.textContent = `Кейс #${item.id} · готовность ${quality.readiness_percent || 0}% · сигналов ${(quality.signals || []).length} · ${item.analysis_count || 0} анализов · ${caseStatusDescription(item)} · ${formatDateTime(item.updated_at)}`;
       button.append(head, patient, meta);
       button.addEventListener("click", () => selectCase(item.id).catch(handleError));
       nodes.casesList.appendChild(button);
@@ -238,6 +264,8 @@
     nodes.detailMeta.append(
       pill(`Кейс #${caseItem.id}`),
       pill(caseItem.patient_id ? `ID ${caseItem.patient_id}` : "без ID", caseItem.patient_id ? "ok" : "warning"),
+      pill(...caseWorkflowStatus(listItem || {analysis_count: results.length, latest_result_id: state.latestResultId, latest_request_status: results[0]?.status, quality: caseItem.quality || {}})),
+      pill(caseStatusDescription(listItem || {analysis_count: results.length, latest_result_id: state.latestResultId, latest_request_status: results[0]?.status, quality: caseItem.quality || {}})),
       pill(`${listItem?.analysis_count || results.length} анализов`)
     );
     nodes.editCase.href = `/app?case=${caseItem.id}`;
@@ -253,7 +281,8 @@
     const values = [
       ["Заполненность", `${quality.completeness_percent || 0}%`],
       ["Готовность", `${quality.readiness_percent || 0}%`],
-      ["Сигналы", String((quality.signals || []).length)]
+      ["Сигналы", String((quality.signals || []).length)],
+      ["Критические", String(quality.critical_signals || 0)]
     ];
     values.forEach(([label, value]) => {
       const card = document.createElement("div");

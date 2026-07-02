@@ -19,11 +19,11 @@ Publishes an already built install archive to GitHub Releases with GitHub CLI.
 Use non-interactive auth by exporting GH_TOKEN, or login once with `gh auth login`.
 
 Usage:
-  scripts/publish_github_release.sh --repo OWNER/REPO --tag v0.8.2 --archive PATH [options]
+  scripts/publish_github_release.sh --repo OWNER/REPO --tag v0.9.0 --archive PATH [options]
 
 Options:
   --repo OWNER/REPO     GitHub repository. Can also be GH_REPO.
-  --tag TAG             Release tag, for example v0.8.2.
+  --tag TAG             Release tag, for example v0.9.0.
   --title TITLE         Release title. Defaults to "CVD Web TAG".
   --notes-file PATH     Release notes markdown. Defaults to RELEASE_NOTES.md.
   --archive PATH        Built .tar.gz/.zip archive to upload.
@@ -59,7 +59,7 @@ done
 [[ -n "$REPO" ]] || fail "Repository is required. Use --repo OWNER/REPO or GH_REPO."
 [[ "$REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || fail "Repository must look like OWNER/REPO."
 [[ -n "$TAG" ]] || fail "Tag is required. Use --tag vX.Y.Z."
-[[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([A-Za-z0-9._-]+)?$ ]] || fail "Tag must look like v0.8.2 or v0.8.2-beta.1."
+[[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([A-Za-z0-9._-]+)?$ ]] || fail "Tag must look like v0.9.0 or v0.9.0-beta.1."
 [[ -n "$ARCHIVE" ]] || fail "Archive path is required."
 [[ -f "$ARCHIVE" ]] || fail "Archive not found: $ARCHIVE"
 [[ -f "$NOTES_FILE" ]] || fail "Release notes file not found: $NOTES_FILE"

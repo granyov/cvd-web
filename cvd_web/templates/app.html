@@ -23,6 +23,11 @@
       <span id="userLabel" class="pill"></span>
       <a class="button" href="/cases">Кейсы и история</a>
       <a id="adminLink" class="button hidden" href="/admin">Админка</a>
+      <select id="interfaceModeSelect" class="mode-select" aria-label="Режим интерфейса">
+        <option value="doctor">Врач</option>
+        <option value="researcher">Исследователь</option>
+        <option value="admin">Админ</option>
+      </select>
       <button type="button" data-theme-toggle>Тема</button>
       <button id="changePasswordButton" type="button">Сменить пароль</button>
       <button id="logoutButton" type="button">Выйти</button>
@@ -47,22 +52,38 @@
       <section class="panel">
         <div class="panel-header">
           <h2>Данные пациента</h2>
-          <div class="toolbar">
-            <button type="button" id="newCaseButton">Новый кейс</button>
-            <button type="button" id="importJsonButton">Импорт данных</button>
-            <button type="button" id="structureTextButton">Подготовить текст с AI</button>
-            <button type="button" id="downloadJsonButton">Экспорт JSON</button>
+          <div class="toolbar workflow-actions" aria-label="Действия с кейсом">
+            <div class="action-group">
+              <button type="button" id="newCaseButton">Новый кейс</button>
+              <button type="button" id="importJsonButton">Импорт</button>
+              <button type="button" id="structureTextButton">AI-подготовка</button>
+            </div>
+            <div class="action-group secondary-actions">
+              <button type="button" id="downloadJsonButton">JSON</button>
+              <button type="button" id="reviewButton">Проверить</button>
+            </div>
             <button type="button" id="saveCaseButton">Сохранить</button>
-            <button type="button" id="reviewButton">Проверить перед AI</button>
             <button type="button" id="diagnoseButton" class="primary">Запустить AI-анализ</button>
             <input id="importJsonInput" class="hidden" type="file" accept="application/json,application/xml,text/xml,.json,.xml">
           </div>
         </div>
         <div class="panel-body">
+          <div class="workflow-strip" aria-label="Маршрут кейса">
+            <span class="workflow-step active" id="workflowStepData">1. Данные</span>
+            <span class="workflow-step" id="workflowStepCheck">2. Проверка</span>
+            <span class="workflow-step" id="workflowStepAi">3. AI-анализ</span>
+            <span class="workflow-step" id="workflowStepResult">4. Результат</span>
+          </div>
+          <div class="next-action-card" id="nextActionCard" role="status" aria-live="polite">
+            <strong>Следующее действие</strong>
+            <span id="nextActionText">Заполните ключевые поля пациента.</span>
+          </div>
           <div class="status-line" style="margin-bottom: 12px;">
             <span id="saveStatus" class="pill">не сохранено</span>
             <span id="modelStatus" class="pill">AI не запускался</span>
+            <span id="queueStatus" class="pill hidden">очередь AI</span>
           </div>
+          <nav id="sectionNav" class="section-nav" aria-label="Навигация по разделам формы"></nav>
           <div id="resultReadyBanner" class="result-ready hidden" role="status" aria-live="polite">
             <div>
               <strong>Результат анализа готов</strong>
@@ -83,6 +104,18 @@
         <div class="panel-body">
           <section id="tab-quality">
             <div id="patientSnapshot" class="clinical-cards"></div>
+            <div class="quality-section">
+              <h3>Клинический workflow</h3>
+              <div id="clinicalWorkflowPanel" class="clinical-workflow"></div>
+            </div>
+            <div class="quality-section next-action-card side-next-action" role="status" aria-live="polite">
+              <strong>Следующее действие</strong>
+              <span id="sideNextActionText">Заполните ключевые поля пациента.</span>
+            </div>
+            <div class="quality-section">
+              <h3>Прогресс по разделам</h3>
+              <div id="sectionProgressPanel" class="section-progress-list"></div>
+            </div>
             <div class="quality-section">
               <h3>Готовность к анализу</h3>
               <div id="readinessPanel" class="quality-list"></div>
@@ -216,8 +249,10 @@
           <div id="correctedTextContent"></div>
         </div>
         <div id="importWarnings" class="notice warning-note hidden"></div>
+        <div id="importReviewSummary" class="import-review-summary"></div>
         <div class="toolbar import-toolbar">
           <button type="button" id="selectNewImportButton">Выбрать новые</button>
+          <button type="button" id="selectConflictsImportButton">Выбрать конфликты</button>
           <button type="button" id="clearImportSelectionButton">Снять выбор</button>
           <span id="importSelectionStatus" class="pill">выбрано: 0</span>
         </div>
@@ -262,6 +297,7 @@
   <script src="/static/js/theme.js"></script>
   <script src="/static/js/schema.js"></script>
   <script src="/static/js/patient-transfer.js"></script>
+  <script src="/static/js/clinical-quality.js"></script>
   <script src="/static/js/app.js"></script>
 </body>
 </html>

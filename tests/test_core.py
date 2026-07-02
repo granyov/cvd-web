@@ -22,6 +22,7 @@ from cvd_web.lmstudio import (
 )
 from cvd_web.lmstudio_models import activate_lm_model, list_lm_models
 from cvd_web.privacy import deidentify_patient_data
+from cvd_web.quality import case_quality_summary, has_clinical_input, patient_data_changes, patient_data_hash
 from cvd_web.rate_limit import MemoryRateLimiter
 from cvd_web.reporting import build_html_report
 
@@ -87,6 +88,129 @@ def call_wsgi(
 
 
 class CoreTests(unittest.TestCase):
+
+    def test_clinical_quality_rules_and_hash_ignore_model_output(self):
+        patient_data = {
+            "GENERAL_INFO": {"Patient_ID": "Q-1", "Age": 78, "Sex": "female"},
+            "COMPLAINTS": {"Main_complaint": "Боль в груди и одышка"},
+            "PHYSICAL_EXAM": {
+                "Blood_pressure_right_systolic_mmHg": 88,
+                "Blood_pressure_right_diastolic_mmHg": 55,
+                "Heart_rate_bpm": 128,
+                "SpO2_room_air_percent": 89,
+            },
+            "ECG_AND_BP_MONITORING": {},
+            "ECHOCARDIOGRAPHY": {"LVEF_percent": 35},
+            "LABS_CARDIAC_MARKERS": {"Troponin_ng_L": 1.2},
+            "FINAL_DIAGNOSES": {"Main_cardiovascular_diagnosis_text": "ОКС?"},
+            "MODEL_OUTPUT": {"Final_model_diagnosis": "old"},
+        }
+        quality = case_quality_summary(patient_data)
+        titles = {signal["title"] for signal in quality["signals"]}
+        self.assertIn("Боль в груди без ЭКГ", titles)
+        self.assertIn("Низкая SpO2 + тахикардия", titles)
+        self.assertGreaterEqual(quality["critical_signals"], 3)
+        without_model_change = dict(patient_data)
+        without_model_change["MODEL_OUTPUT"] = {"Final_model_diagnosis": "new"}
+        self.assertEqual(patient_data_hash(patient_data), patient_data_hash(without_model_change))
+        changed_clinical_data = dict(patient_data)
+        changed_clinical_data["GENERAL_INFO"] = {**patient_data["GENERAL_INFO"], "Age": 79}
+        self.assertNotEqual(patient_data_hash(patient_data), patient_data_hash(changed_clinical_data))
+        self.assertFalse(has_clinical_input({"MODEL_OUTPUT": {"Final_model_diagnosis": "old"}}))
+        self.assertTrue(has_clinical_input({"GENERAL_INFO": {"Patient_ID": "Q-2"}}))
+        changes = patient_data_changes({"GENERAL_INFO": {"Age": 70}}, {"GENERAL_INFO": {"Age": 71, "Sex": "female"}})
+        self.assertEqual([item["path"] for item in changes], ["GENERAL_INFO.Sex", "GENERAL_INFO.Age"])
+        self.assertEqual(changes[1]["kind"], "changed")
+
+
+    def test_case_ai_freshness_workflow_filters_stale_results(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = CVDApplication(make_test_config(Path(tmp) / "cvd.sqlite3"), start_batch_worker=False)
+            status, headers, body = call_wsgi(
+                app,
+                "/api/login",
+                method="POST",
+                body={"email": "admin@test.local", "password": "admin12345"},
+            )
+            self.assertTrue(status.startswith("200"), body)
+            cookie = headers["Set-Cookie"].split(";", 1)[0]
+            status, _, body = call_wsgi(app, "/api/me", cookie=cookie)
+            csrf = json.loads(body.decode("utf-8"))["csrfToken"]
+            patient_data = {
+                "GENERAL_INFO": {"Patient_ID": "E2E-1", "Age": 62, "Sex": "male"},
+                "COMPLAINTS": {"Main_complaint": "Боль в груди"},
+                "PHYSICAL_EXAM": {"Blood_pressure_right_systolic_mmHg": 145, "Heart_rate_bpm": 82},
+                "ECG_AND_BP_MONITORING": {"Resting_ECG_summary": "Синусовый ритм"},
+                "FINAL_DIAGNOSES": {"Main_cardiovascular_diagnosis_text": "ИБС?"},
+            }
+            status, _, body = call_wsgi(
+                app,
+                "/api/cases",
+                method="POST",
+                cookie=cookie,
+                csrf=csrf,
+                body={"patient_data": patient_data},
+            )
+            self.assertTrue(status.startswith("200"), body)
+            case_id = json.loads(body.decode("utf-8"))["case_id"]
+
+            parsed = {
+                "CDS_OUTPUT": {
+                    "summary": "Проверить ишемический генез симптомов.",
+                    "possible_diagnoses": [],
+                    "red_flags": [],
+                    "missing_data": [],
+                    "recommended_next_data": [],
+                    "limitations": [],
+                    "model_should_abstain": False,
+                },
+                "MODEL_OUTPUT": {"Final_model_diagnosis": "ИБС под вопросом", "Model_ICD10_codes": ["I25.9"]},
+            }
+            with patch("cvd_web.app.call_lm_studio", return_value=({"messages": []}, {"choices": []}, parsed, 1200)):
+                status, _, body = call_wsgi(
+                    app,
+                    "/api/model/diagnose",
+                    method="POST",
+                    cookie=cookie,
+                    csrf=csrf,
+                    body={"case_id": case_id, "patient_data": patient_data},
+                )
+            self.assertTrue(status.startswith("200"), body)
+            request_id = json.loads(body.decode("utf-8"))["request_id"]
+
+            status, _, body = call_wsgi(app, "/api/cases?analysis=with", cookie=cookie)
+            self.assertTrue(status.startswith("200"), body)
+            item = json.loads(body.decode("utf-8"))["cases"][0]
+            self.assertEqual(item["latest_result_id"], request_id)
+            self.assertFalse(item["ai_result_stale"])
+            status, _, body = call_wsgi(app, f"/api/requests/{request_id}", cookie=cookie)
+            self.assertTrue(status.startswith("200"), body)
+            self.assertFalse(json.loads(body.decode("utf-8"))["request"]["ai_result_stale"])
+
+            changed_data = dict(patient_data)
+            changed_data["PHYSICAL_EXAM"] = {**patient_data["PHYSICAL_EXAM"], "Heart_rate_bpm": 96}
+            status, _, body = call_wsgi(
+                app,
+                "/api/cases",
+                method="POST",
+                cookie=cookie,
+                csrf=csrf,
+                body={"case_id": case_id, "patient_data": changed_data},
+            )
+            self.assertTrue(status.startswith("200"), body)
+            status, _, body = call_wsgi(app, "/api/cases?analysis=stale", cookie=cookie)
+            self.assertTrue(status.startswith("200"), body)
+            stale_cases = json.loads(body.decode("utf-8"))["cases"]
+            self.assertEqual([item["id"] for item in stale_cases], [case_id])
+            self.assertTrue(stale_cases[0]["ai_result_stale"])
+            status, _, body = call_wsgi(app, f"/api/requests/{request_id}", cookie=cookie)
+            self.assertTrue(status.startswith("200"), body)
+            request = json.loads(body.decode("utf-8"))["request"]
+            self.assertTrue(request["ai_result_stale"])
+            self.assertEqual(request["ai_result_changes"][0]["path"], "PHYSICAL_EXAM.Heart_rate_bpm")
+            self.assertEqual(request["ai_result_changes"][0]["before"], 82)
+            self.assertEqual(request["ai_result_changes"][0]["after"], 96)
+
     def test_lm_studio_memory_error_is_user_friendly(self):
         message = lm_studio_http_error_message(
             400,
@@ -318,6 +442,19 @@ class CoreTests(unittest.TestCase):
             self.assertTrue(status.startswith("200"), body)
             csrf = json.loads(body.decode("utf-8"))["csrfToken"]
 
+            status, _, body = call_wsgi(
+                app,
+                "/api/model/diagnose",
+                method="POST",
+                cookie=cookie,
+                csrf=csrf,
+                body={"patient_data": {"GENERAL_INFO": {"Patient_ID": None}}},
+            )
+            self.assertTrue(status.startswith("400"), body)
+            self.assertIn("Добавьте данные пациента", body.decode("utf-8"))
+            with connect(app.config.db_path) as conn:
+                self.assertEqual(conn.execute("SELECT COUNT(*) FROM model_requests").fetchone()[0], 0)
+
             status, _, body = call_wsgi(app, "/app", cookie=cookie)
             app_html = body.decode("utf-8")
             self.assertTrue(status.startswith("200"), body)
@@ -508,6 +645,8 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(settings["lm_studio_max_concurrent"], "1")
             self.assertEqual(settings["lm_studio_queue_limit"], "64")
             self.assertEqual(settings["lm_studio_per_user_limit"], "2")
+            self.assertEqual(settings["inference_queue_backend"], "memory")
+            self.assertIn("inference_queue_dsn", settings)
             self.assertIn("text_structuring_model", settings)
             self.assertIn("deidentify_before_model", settings)
             self.assertIn("active_prompt_version", settings)
@@ -520,6 +659,8 @@ class CoreTests(unittest.TestCase):
             updated_settings["ai_gateway_auth_header_value"] = "Bearer test-token"
             updated_settings["active_prompt_version"] = "test-prompt-v2"
             updated_settings["active_prompt_template"] = "Clinical prompt\n{{PATIENT_JSON}}"
+            updated_settings["inference_queue_backend"] = "redis"
+            updated_settings["inference_queue_dsn"] = "redis://localhost:6379/0"
             status, _, body = call_wsgi(
                 app,
                 "/api/admin/settings",
@@ -529,6 +670,13 @@ class CoreTests(unittest.TestCase):
                 body={"settings": updated_settings},
             )
             self.assertTrue(status.startswith("200"), body)
+
+            status, _, body = call_wsgi(app, "/api/admin/dashboard", cookie=cookie)
+            self.assertTrue(status.startswith("200"), body)
+            production_queue = json.loads(body.decode("utf-8"))["production_queue"]
+            self.assertEqual(production_queue["backend"], "redis")
+            self.assertEqual(production_queue["active_backend"], "memory")
+            self.assertFalse(production_queue["production_ready"])
 
             with patch("cvd_web.app.list_lm_models", return_value={"api_version": "v1", "models": [{"id": "healtheart-cvd-engine", "state": "loaded", "loaded_context_length": 8192}]}) as list_models:
                 status, _, body = call_wsgi(
@@ -544,6 +692,19 @@ class CoreTests(unittest.TestCase):
             self.assertTrue(gateway_test["ok"])
             self.assertEqual(gateway_test["gateway"]["profile"], "cloudflared")
             self.assertEqual(list_models.call_args.kwargs["extra_headers"], {"Authorization": "Bearer test-token"})
+
+            invalid_queue_settings = dict(updated_settings)
+            invalid_queue_settings["inference_queue_backend"] = "postgresql"
+            invalid_queue_settings["inference_queue_dsn"] = ""
+            status, _, body = call_wsgi(
+                app,
+                "/api/admin/settings",
+                method="POST",
+                cookie=cookie,
+                csrf=csrf,
+                body={"settings": invalid_queue_settings},
+            )
+            self.assertTrue(status.startswith("400"), body)
 
             invalid_settings = dict(updated_settings)
             invalid_settings["active_prompt_template"] = "Clinical prompt without placeholder"
@@ -566,6 +727,7 @@ class CoreTests(unittest.TestCase):
             self.assertIn("tokens_per_second", columns)
             self.assertIn("finish_reason", columns)
             self.assertIn("queue_wait_ms", columns)
+            self.assertIn("input_data_hash", columns)
 
             status, _, body = call_wsgi(app, "/api/inference/status", cookie=cookie)
             self.assertTrue(status.startswith("200"), body)
@@ -674,6 +836,21 @@ class CoreTests(unittest.TestCase):
             library_summary = json.loads(body.decode("utf-8"))["summary"]
             self.assertEqual(library_summary["cases_total"], 2)
             self.assertEqual(library_summary["requests_success"], 1)
+
+            status, _, body = call_wsgi(app, "/api/admin/backups", method="POST", cookie=cookie, csrf=csrf, body={})
+            self.assertTrue(status.startswith("201"), body)
+            backup = json.loads(body.decode("utf-8"))["backup"]
+            self.assertTrue(backup["filename"].startswith("cvd-"))
+            status, backup_headers, backup_body = call_wsgi(app, f"/api/admin/backups/{backup['filename']}", cookie=cookie)
+            self.assertTrue(status.startswith("200"), backup_body)
+            self.assertEqual(backup_headers["Content-Type"], "application/octet-stream")
+            self.assertGreater(len(backup_body), 100)
+            status, _, body = call_wsgi(app, "/api/admin/backups", cookie=cookie)
+            self.assertTrue(status.startswith("200"), body)
+            self.assertEqual(json.loads(body.decode("utf-8"))["backups"][0]["filename"], backup["filename"])
+            status, _, body = call_wsgi(app, "/api/admin/restore", method="POST", cookie=cookie, csrf=csrf, body={"filename": backup["filename"]})
+            self.assertTrue(status.startswith("200"), body)
+            self.assertIn("safety_backup", json.loads(body.decode("utf-8")))
 
             status, _, body = call_wsgi(
                 app,
@@ -802,6 +979,79 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(gold_runs[0]["id"], gold_run["run_id"])
             self.assertEqual(gold_runs[0]["items"][0]["model_request_id"], request_id)
             self.assertEqual(gold_runs[0]["items"][0]["evaluation"]["icd10_match"], True)
+
+            alt_output = {
+                "CDS_OUTPUT": {
+                    "summary": "Данных недостаточно, требуется очная оценка.",
+                    "possible_diagnoses": [],
+                    "red_flags": ["нестабильность"],
+                    "missing_data": [],
+                    "recommended_next_data": [],
+                    "limitations": [],
+                    "model_should_abstain": True,
+                },
+                "MODEL_OUTPUT": {"Final_model_diagnosis": "Неясно", "Model_ICD10_codes": []},
+            }
+            with connect(app.config.db_path) as conn:
+                alt_cur = conn.execute(
+                    """
+                    INSERT INTO model_requests
+                      (user_id, case_id, status, api_url, model, request_json, response_json,
+                       parsed_output_json, prompt_version, schema_version, output_schema_version,
+                       settings_snapshot_json, deidentified_input_json, phi_signals_json,
+                       error, duration_ms, tokens_per_second, total_tokens, created_at)
+                    VALUES (?, ?, 'success', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?, ?, ?, ?)
+                    """,
+                    (
+                        1,
+                        2,
+                        "http://127.0.0.1:1234/v1/chat/completions",
+                        "alt-cvd-model",
+                        json.dumps({"messages": []}, ensure_ascii=False),
+                        json.dumps({"choices": []}, ensure_ascii=False),
+                        json.dumps(alt_output, ensure_ascii=False),
+                        "test-prompt-v2",
+                        "patient-schema-test",
+                        "output-schema-test",
+                        json.dumps({"active_prompt_version": "test-prompt-v2"}, ensure_ascii=False),
+                        json.dumps(patient_data, ensure_ascii=False),
+                        json.dumps([], ensure_ascii=False),
+                        84,
+                        12.5,
+                        100,
+                        utc_now(),
+                    ),
+                )
+                alt_request_id = alt_cur.lastrowid
+
+            status, _, body = call_wsgi(
+                app,
+                f"/api/requests/{alt_request_id}/review",
+                method="POST",
+                cookie=cookie,
+                csrf=csrf,
+                body={
+                    "rating": "unsafe",
+                    "issue_types": ["unsafe_reasoning"],
+                    "corrected_diagnosis": "АГ",
+                    "corrected_icd10": ["I10"],
+                    "comment": "Модель необоснованно отказалась.",
+                },
+            )
+            self.assertTrue(status.startswith("200"), body)
+
+            status, _, body = call_wsgi(app, "/api/admin/model-quality", cookie=cookie)
+            self.assertTrue(status.startswith("200"), body)
+            model_quality = json.loads(body.decode("utf-8"))
+            self.assertEqual(model_quality["summary"]["models"], 2)
+            self.assertEqual(model_quality["summary"]["gold_comparisons"], 1)
+            self.assertEqual(model_quality["summary"]["unsafe_reviews"], 1)
+            comparison = model_quality["comparisons"][0]
+            self.assertEqual(comparison["case_id"], 2)
+            self.assertEqual({item["model"] for item in comparison["models"]}, {"healtheart-cvd-engine", "alt-cvd-model"})
+            self.assertEqual(comparison["best_model"], "healtheart-cvd-engine")
+            review_dashboard = model_quality["reviews"]
+            self.assertEqual(review_dashboard["issue_counts"][0]["issue"], "missing_data")
 
             status, _, body = call_wsgi(app, "/api/admin/gold-set", method="POST", cookie=cookie, csrf=csrf, body={"case_id": 999})
             self.assertTrue(status.startswith("404"), body)
