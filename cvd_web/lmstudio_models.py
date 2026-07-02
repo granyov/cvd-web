@@ -24,13 +24,17 @@ def _request_json(
     method: str = "GET",
     payload: dict[str, Any] | None = None,
     timeout_seconds: int = 10,
+    extra_headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     body = json.dumps(payload).encode("utf-8") if payload is not None else None
+    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    if extra_headers:
+        headers.update(extra_headers)
     request = urllib.request.Request(
         url,
         data=body,
         method=method,
-        headers={"Accept": "application/json", "Content-Type": "application/json"},
+        headers=headers,
     )
     try:
         with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
@@ -101,10 +105,10 @@ def _normalize_v0_model(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def list_lm_models(api_url: str, *, timeout_seconds: int = 10) -> dict[str, Any]:
+def list_lm_models(api_url: str, *, timeout_seconds: int = 10, extra_headers: dict[str, str] | None = None) -> dict[str, Any]:
     base_url = management_base_url(api_url)
     try:
-        payload = _request_json(f"{base_url}/api/v1/models", timeout_seconds=timeout_seconds)
+        payload = _request_json(f"{base_url}/api/v1/models", timeout_seconds=timeout_seconds, extra_headers=extra_headers)
         raw_models = payload.get("models") if isinstance(payload.get("models"), list) else []
         models = [_normalize_v1_model(item) for item in raw_models if isinstance(item, dict)]
         return {"api_version": "v1", "models": [item for item in models if item["id"]]}
@@ -113,7 +117,7 @@ def list_lm_models(api_url: str, *, timeout_seconds: int = 10) -> dict[str, Any]
             raise LMStudioManagementError(f"LM Studio HTTP {exc.code}") from exc
 
     try:
-        payload = _request_json(f"{base_url}/api/v0/models", timeout_seconds=timeout_seconds)
+        payload = _request_json(f"{base_url}/api/v0/models", timeout_seconds=timeout_seconds, extra_headers=extra_headers)
     except urllib.error.HTTPError as exc:
         raise LMStudioManagementError(f"LM Studio HTTP {exc.code}") from exc
     raw_models = payload.get("data") if isinstance(payload.get("data"), list) else []
@@ -128,12 +132,13 @@ def activate_lm_model(
     previous_model_id: str = "",
     unload_previous: bool = True,
     timeout_seconds: int = 300,
+    extra_headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     selected_id = str(model_id or "").strip()
     if not selected_id:
         raise LMStudioManagementError("Не выбрана модель")
 
-    catalog = list_lm_models(api_url, timeout_seconds=min(timeout_seconds, 30))
+    catalog = list_lm_models(api_url, timeout_seconds=min(timeout_seconds, 30), extra_headers=extra_headers)
     models = catalog["models"]
     selected = next((item for item in models if item["id"] == selected_id), None)
     if not selected:
@@ -166,6 +171,7 @@ def activate_lm_model(
                         method="POST",
                         payload={"instance_id": instance_id},
                         timeout_seconds=min(timeout_seconds, 60),
+                        extra_headers=extra_headers,
                     )
                     unloaded_instances.append(instance_id)
                 except urllib.error.HTTPError as exc:
@@ -180,11 +186,12 @@ def activate_lm_model(
                 method="POST",
                 payload={"model": selected_id, "echo_load_config": True},
                 timeout_seconds=timeout_seconds,
+                extra_headers=extra_headers,
             )
         except urllib.error.HTTPError as exc:
             raise LMStudioManagementError(f"Не удалось загрузить модель: LM Studio HTTP {exc.code}") from exc
 
-    refreshed = list_lm_models(api_url, timeout_seconds=min(timeout_seconds, 30))
+    refreshed = list_lm_models(api_url, timeout_seconds=min(timeout_seconds, 30), extra_headers=extra_headers)
     active = next((item for item in refreshed["models"] if item["id"] == selected_id), None)
     if not active or active["state"] != "loaded":
         raise LMStudioManagementError("LM Studio не подтвердила загрузку выбранной модели")

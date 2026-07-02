@@ -340,14 +340,18 @@ def call_json_lm_studio(
     api_url: str,
     request_body: dict[str, Any],
     timeout_seconds: int,
+    extra_headers: dict[str, str] | None = None,
 ) -> tuple[dict[str, Any], str, int]:
     """Send an OpenAI-compatible chat request and return its JSON payload and content."""
     encoded = json.dumps(request_body, ensure_ascii=False).encode("utf-8")
+    headers = {"Content-Type": "application/json"}
+    if extra_headers:
+        headers.update(extra_headers)
     request = urllib.request.Request(
         api_url,
         data=encoded,
         method="POST",
-        headers={"Content-Type": "application/json"},
+        headers=headers,
     )
 
     started = time.monotonic()
@@ -410,6 +414,7 @@ def call_lm_studio(
     prompt_template: str | None = None,
     prompt_version: str = MODEL_PROMPT_VERSION,
     structured_output: bool = True,
+    extra_headers: dict[str, str] | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any], int]:
     request_body = build_chat_request(
         patient_data,
@@ -424,6 +429,7 @@ def call_lm_studio(
         api_url=api_url,
         request_body=request_body,
         timeout_seconds=timeout_seconds,
+        extra_headers=extra_headers,
     )
 
     response_payload = {"raw": response_json, "content": content}

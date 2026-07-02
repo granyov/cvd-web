@@ -1,5 +1,47 @@
 # Changelog
 
+## v0.9.0 - 2026-07-02
+
+- Add a clinical-validation Gold Set with versioned validation runs and per-case scoring.
+- Add model-quality comparison across Gold Set scores, expert reviews, unsafe rate, latency, throughput, and request success.
+- Add an expert-review cockpit for low-scoring, unsafe, and unevaluated cases.
+- Add production-readiness controls for SQLite backup/restore, queue backend planning, and LM Studio monitoring.
+- Improve AI-result traceability with saved input snapshots, stale-result warnings, and field-level changes.
+
+## v0.8.6 - 2026-07-02
+
+- Add admin SQLite backup, download, and restore with an automatic safety backup before restore.
+- Add production queue backend readiness settings for Redis/PostgreSQL rollout while keeping the in-process adapter active in this build.
+- Extend LM Studio monitoring with request history, queue status, and production queue readiness signals.
+
+## v0.8.5 - 2026-07-02
+
+- Add an admin model-quality API that compares models by success rate, latency, expert reviews, unsafe rate, and Gold Set score.
+- Show model comparison, review distribution, common issue types, and per-case Gold Set comparisons in the admin dashboard.
+- Extend tests for multi-model Gold Set comparison and expert-review dashboard metrics.
+
+## v0.8.4 - 2026-07-02
+
+- Improve the AI-result UX with clearer result cards and stale-result warnings.
+- Store the original clinical input snapshot for each model request.
+- Show a field-level diff explaining what changed in the case after the AI result was generated.
+
+## v0.8.3 - 2026-07-01
+
+- Fix the missing UI badge helper that mislabeled successfully saved model responses as AI-analysis errors.
+- Reject completely empty clinical cases in both the browser and backend before calling LM Studio.
+- Distinguish AI service failures from client-side result-rendering failures.
+- Compare saved result freshness consistently after reloading the workspace.
+
+## v0.8.2 - 2026-06-30
+
+- Define the v0.8 roadmap for AI Gateway, result center, model compare, text structuring, and validation/gold set work.
+- Add AI Gateway profiles for same-host, WSL2, LAN, and cloudflared tunnel deployments.
+- Add optional admin-only auth header settings for tunnel-protected LM Studio endpoints.
+- Pass AI Gateway auth headers to model catalog, activation, diagnosis, and text-structuring calls.
+- Add an admin AI Gateway diagnostic endpoint and UI action.
+- Add a cloud-release installer wrapper for downloading, verifying, and locally deploying release archives.
+
 ## v0.7.0-beta.8 - 2026-06-29
 
 - Move cases, analysis history, and imports into a dedicated bounded-height medical archive.

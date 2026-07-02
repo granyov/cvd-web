@@ -17,7 +17,7 @@ from cvd_web.text_structuring import (
     normalize_structuring_output,
     split_clinical_text,
 )
-from test_core import call_wsgi, test_config
+from test_core import call_wsgi, make_test_config
 
 
 class OperationsTests(unittest.TestCase):
@@ -190,7 +190,7 @@ class OperationsTests(unittest.TestCase):
 
     def test_text_structuring_error_persists_finish_reason(self):
         with tempfile.TemporaryDirectory() as tmp:
-            app = CVDApplication(test_config(Path(tmp) / "cvd.sqlite3"), start_batch_worker=False)
+            app = CVDApplication(make_test_config(Path(tmp) / "cvd.sqlite3"), start_batch_worker=False)
             cookie, csrf = self.login(app)
             response_payload = {
                 "raw": {
@@ -222,7 +222,7 @@ class OperationsTests(unittest.TestCase):
 
     def test_truncated_response_is_stored_as_error_with_metrics(self):
         with tempfile.TemporaryDirectory() as tmp:
-            app = CVDApplication(test_config(Path(tmp) / "cvd.sqlite3"), start_batch_worker=False)
+            app = CVDApplication(make_test_config(Path(tmp) / "cvd.sqlite3"), start_batch_worker=False)
             response_payload = {
                 "raw": {
                     "usage": {"prompt_tokens": 100, "completion_tokens": 768, "total_tokens": 868},
@@ -336,7 +336,7 @@ class OperationsTests(unittest.TestCase):
 
     def test_batch_processing_dashboard_and_text_preparation(self):
         with tempfile.TemporaryDirectory() as tmp:
-            app = CVDApplication(test_config(Path(tmp) / "cvd.sqlite3"), start_batch_worker=False)
+            app = CVDApplication(make_test_config(Path(tmp) / "cvd.sqlite3"), start_batch_worker=False)
             cookie, csrf = self.login(app)
             case_ids = [
                 self.save_case(app, cookie, csrf, "BATCH_1"),
@@ -391,6 +391,8 @@ class OperationsTests(unittest.TestCase):
             job = json.loads(body.decode("utf-8"))["job"]
             self.assertEqual(job["status"], "completed")
             self.assertEqual(job["success_items"], 2)
+            self.assertEqual(job["progress"]["progress_percent"], 100)
+            self.assertEqual(job["progress"]["remaining_items"], 0)
 
             structuring_result = {
                 "corrected_text": "Пациент 61 года. Жалуется на одышку.",
@@ -420,6 +422,13 @@ class OperationsTests(unittest.TestCase):
             self.assertEqual(preview["source_format"], "ai-text")
             self.assertEqual(preview["mappings"][0]["path"], "GENERAL_INFO.Age")
 
+            status, _, body = call_wsgi(app, "/api/text-preparations", cookie=cookie)
+            self.assertTrue(status.startswith("200"), body)
+            preparations = json.loads(body.decode("utf-8"))["text_preparations"]
+            self.assertEqual(preparations[0]["status"], "prepared")
+            self.assertEqual(preparations[0]["mappings"][0]["path"], "GENERAL_INFO.Age")
+            self.assertIn("Пациент 61 года", preparations[0]["corrected_text_preview"])
+
             status, _, body = call_wsgi(app, "/api/admin/dashboard", cookie=cookie)
             self.assertTrue(status.startswith("200"), body)
             dashboard = json.loads(body.decode("utf-8"))
@@ -432,10 +441,13 @@ class OperationsTests(unittest.TestCase):
             with connect(app.config.db_path) as conn:
                 sources = [row["request_source"] for row in conn.execute("SELECT request_source FROM model_requests")]
                 preparation = conn.execute("SELECT * FROM data_preparation_requests").fetchone()
+                text_item = conn.execute("SELECT * FROM text_preparation_items").fetchone()
             self.assertEqual(sources, ["batch", "batch"])
             self.assertEqual(len(preparation["input_sha256"]), 64)
             self.assertEqual(preparation["chunk_count"], 1)
             self.assertEqual(preparation["finish_reason"], "stop")
+            self.assertEqual(text_item["mapped_fields"], 1)
+            self.assertEqual(text_item["status"], "prepared")
             self.assertNotIn("пациэнт", preparation.keys())
 
 

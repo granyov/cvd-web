@@ -161,21 +161,36 @@ class InferenceQueue:
                 user_pending = [item for item in pending if item.user_id == user_id]
                 user_active = [item for item in active if item.user_id == user_id]
                 positions = [pending.index(item) + 1 for item in user_pending]
+                average_wait_ms = round(self._total_wait_ms / self._completed) if self._completed else 0
+                fallback_wait_ms = average_wait_ms or 30000
                 user_by_kind: dict[str, dict[str, int | str]] = {}
                 for item in user_pending:
                     kind_state = user_by_kind.setdefault(
                         item.kind,
-                        {"active_count": 0, "queued_count": 0, "position": 0, "state": "idle"},
+                        {
+                            "active_count": 0,
+                            "queued_count": 0,
+                            "position": 0,
+                            "state": "idle",
+                            "estimated_wait_ms": 0,
+                        },
                     )
                     kind_state["queued_count"] = int(kind_state["queued_count"]) + 1
                     position = pending.index(item) + 1
                     current_position = int(kind_state["position"])
                     kind_state["position"] = min(current_position, position) if current_position else position
                     kind_state["state"] = "queued"
+                    kind_state["estimated_wait_ms"] = int(kind_state["position"]) * fallback_wait_ms
                 for item in user_active:
                     kind_state = user_by_kind.setdefault(
                         item.kind,
-                        {"active_count": 0, "queued_count": 0, "position": 0, "state": "idle"},
+                        {
+                            "active_count": 0,
+                            "queued_count": 0,
+                            "position": 0,
+                            "state": "idle",
+                            "estimated_wait_ms": 0,
+                        },
                     )
                     kind_state["active_count"] = int(kind_state["active_count"]) + 1
                     kind_state["state"] = "running"
@@ -184,6 +199,7 @@ class InferenceQueue:
                     "queued_count": len(user_pending),
                     "position": min(positions) if positions else 0,
                     "state": "running" if user_active else "queued" if user_pending else "idle",
+                    "estimated_wait_ms": (min(positions) * fallback_wait_ms) if positions else 0,
                     "kinds": sorted({item.kind for item in [*user_pending, *user_active]}),
                     "by_kind": user_by_kind,
                 }

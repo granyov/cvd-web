@@ -7,13 +7,15 @@
     cases: [],
     results: [],
     imports: [],
+    preparations: [],
     selectedCaseId: null,
     selectedCase: null,
     latestResultId: null,
     caseSequence: 0,
     detailSequence: 0,
     resultSequence: 0,
-    importSequence: 0
+    importSequence: 0,
+    preparationSequence: 0
   };
 
   const nodes = {
@@ -43,6 +45,10 @@
     deleteCase: document.getElementById("deleteCaseButton"),
     resultSearch: document.getElementById("resultSearchInput"),
     resultStatus: document.getElementById("resultStatusFilter"),
+    resultModel: document.getElementById("resultModelFilter"),
+    resultReview: document.getElementById("resultReviewFilter"),
+    resultRedFlags: document.getElementById("resultRedFlagsFilter"),
+    resultAbstain: document.getElementById("resultAbstainFilter"),
     resultsCount: document.getElementById("resultsCount"),
     resultsList: document.getElementById("resultsList"),
     moreResults: document.getElementById("loadMoreResultsButton"),
@@ -50,12 +56,18 @@
     importStatus: document.getElementById("importStatusFilter"),
     importsCount: document.getElementById("importsCount"),
     importsList: document.getElementById("importsList"),
-    moreImports: document.getElementById("loadMoreImportsButton")
+    moreImports: document.getElementById("loadMoreImportsButton"),
+    preparationSearch: document.getElementById("preparationSearchInput"),
+    preparationStatus: document.getElementById("preparationStatusFilter"),
+    preparationsCount: document.getElementById("preparationsCount"),
+    preparationsList: document.getElementById("preparationsList"),
+    morePreparations: document.getElementById("loadMorePreparationsButton")
   };
 
   let caseSearchTimer = null;
   let resultSearchTimer = null;
   let importSearchTimer = null;
+  let preparationSearchTimer = null;
 
   async function api(path, options = {}) {
     const response = await fetch(path, {
@@ -121,6 +133,30 @@
     return link;
   }
 
+  function caseWorkflowStatus(item) {
+    const quality = item.quality || {};
+    if (item.ai_result_stale) return ["Данные изменены после AI", "warning"];
+    if (item.latest_request_status === "error") return ["AI завершился ошибкой", "error"];
+    if (item.has_review) return ["Проверен врачом", "ok"];
+    if (item.latest_result_id) return ["Ожидает экспертной проверки", "warning"];
+    if (Number(quality.critical_signals || 0) > 0) return ["Есть критические сигналы", "error"];
+    if (Number(quality.readiness_percent || 0) === 100) return ["Готов к AI", "ok"];
+    if (Number(quality.readiness_percent || 0) > 0) return ["Черновик: данные неполные", "warning"];
+    return ["Черновик без AI", "warning"];
+  }
+
+  function caseStatusDescription(item) {
+    const quality = item.quality || {};
+    if (item.ai_result_stale) return "данные кейса изменились после последнего AI-результата";
+    if (item.latest_request_status === "error") return "последний запуск требует внимания";
+    if (item.has_review) return "результат содержит экспертную оценку";
+    if (item.latest_result_id) return `последний отчёт #${item.latest_result_id}`;
+    if (Number(quality.critical_signals || 0) > 0) return `${quality.critical_signals} крит. сигналов, проверьте данные`;
+    if (Number(quality.readiness_percent || 0) === 100) return "ключевые данные заполнены, можно запускать AI";
+    if (Number(item.analysis_count || 0) > 0) return "результаты есть, проверьте актуальность";
+    return "сохранённые данные ещё не отправлялись в AI";
+  }
+
   function actionButton(label, onClick, options = {}) {
     const button = document.createElement("button");
     button.type = "button";
@@ -179,11 +215,13 @@
       head.className = "record-list-head";
       const title = document.createElement("strong");
       title.textContent = item.title;
-      head.append(title, pill(item.latest_result_id ? `${item.analysis_count} анализов` : "без результата", item.latest_result_id ? "ok" : ""));
+      const [statusText, statusKind] = caseWorkflowStatus(item);
+      head.append(title, pill(statusText, statusKind));
       const patient = document.createElement("span");
       patient.textContent = item.patient_id ? `ID пациента: ${item.patient_id}` : "ID пациента не указан";
       const meta = document.createElement("small");
-      meta.textContent = `Кейс #${item.id} · ${formatDateTime(item.updated_at)}`;
+      const quality = item.quality || {};
+      meta.textContent = `Кейс #${item.id} · готовность ${quality.readiness_percent || 0}% · сигналов ${(quality.signals || []).length} · ${item.analysis_count || 0} анализов · ${caseStatusDescription(item)} · ${formatDateTime(item.updated_at)}`;
       button.append(head, patient, meta);
       button.addEventListener("click", () => selectCase(item.id).catch(handleError));
       nodes.casesList.appendChild(button);
@@ -226,6 +264,8 @@
     nodes.detailMeta.append(
       pill(`Кейс #${caseItem.id}`),
       pill(caseItem.patient_id ? `ID ${caseItem.patient_id}` : "без ID", caseItem.patient_id ? "ok" : "warning"),
+      pill(...caseWorkflowStatus(listItem || {analysis_count: results.length, latest_result_id: state.latestResultId, latest_request_status: results[0]?.status, quality: caseItem.quality || {}})),
+      pill(caseStatusDescription(listItem || {analysis_count: results.length, latest_result_id: state.latestResultId, latest_request_status: results[0]?.status, quality: caseItem.quality || {}})),
       pill(`${listItem?.analysis_count || results.length} анализов`)
     );
     nodes.editCase.href = `/app?case=${caseItem.id}`;
@@ -241,7 +281,8 @@
     const values = [
       ["Заполненность", `${quality.completeness_percent || 0}%`],
       ["Готовность", `${quality.readiness_percent || 0}%`],
-      ["Сигналы", String((quality.signals || []).length)]
+      ["Сигналы", String((quality.signals || []).length)],
+      ["Критические", String(quality.critical_signals || 0)]
     ];
     values.forEach(([label, value]) => {
       const card = document.createElement("div");
@@ -329,15 +370,38 @@
     const sequence = ++state.resultSequence;
     const query = nodes.resultSearch.value.trim();
     const status = nodes.resultStatus.value;
+    const model = nodes.resultModel.value;
+    const review = nodes.resultReview.value;
+    const redFlags = nodes.resultRedFlags.value;
+    const abstain = nodes.resultAbstain.value;
     const offset = append ? state.results.length : 0;
     const response = await api(
-      `/api/requests?q=${encodeURIComponent(query)}&status=${encodeURIComponent(status)}&limit=50&offset=${offset}`
+      `/api/requests?q=${encodeURIComponent(query)}&status=${encodeURIComponent(status)}&model=${encodeURIComponent(model)}&review=${encodeURIComponent(review)}&red_flags=${encodeURIComponent(redFlags)}&abstain=${encodeURIComponent(abstain)}&limit=50&offset=${offset}`
     );
     if (sequence !== state.resultSequence) return;
     state.results = append ? [...state.results, ...(response.requests || [])] : (response.requests || []);
+    updateModelFilter(response.filters?.models || []);
     nodes.resultsCount.textContent = `${response.total || 0} результатов`;
     nodes.moreResults.classList.toggle("hidden", !response.has_more);
     renderResults();
+  }
+
+  function updateModelFilter(models) {
+    const selected = nodes.resultModel.value;
+    const known = new Set(Array.from(nodes.resultModel.options).map((option) => option.value));
+    models.forEach((model) => {
+      if (!known.has(model)) {
+        const option = document.createElement("option");
+        option.value = model;
+        option.textContent = model;
+        nodes.resultModel.appendChild(option);
+      }
+    });
+    nodes.resultModel.value = selected;
+  }
+
+  function reviewLabel(rating) {
+    return {useful: "полезно", partial: "частично", wrong: "неверно", unsafe: "небезопасно"}[rating] || "без оценки";
   }
 
   function renderResults() {
@@ -356,6 +420,10 @@
       const title = document.createElement("strong");
       title.textContent = `Результат #${item.id}`;
       heading.append(title, pill(item.status === "success" ? "готов" : "ошибка", item.status === "success" ? "ok" : "error"));
+      const flags = item.result_flags || {};
+      if (flags.red_flags_count) heading.appendChild(pill(`red flags: ${flags.red_flags_count}`, "error"));
+      if (flags.model_should_abstain) heading.appendChild(pill("abstain", "warning"));
+      heading.appendChild(pill(reviewLabel(item.review?.rating), item.review ? "ok" : ""));
       const caseText = document.createElement("small");
       caseText.textContent = item.case_id
         ? `${item.case_title || `Кейс #${item.case_id}`} · ${item.patient_id || "ID не указан"}`
@@ -367,7 +435,7 @@
       const footer = document.createElement("div");
       footer.className = "result-record-footer";
       const meta = document.createElement("span");
-      meta.textContent = `${formatDateTime(item.created_at)} · ${(Number(item.duration_ms || 0) / 1000).toFixed(1)} с`;
+      meta.textContent = `${formatDateTime(item.created_at)} · ${item.model || "модель не указана"} · ${(Number(item.duration_ms || 0) / 1000).toFixed(1)} с`;
       const actions = document.createElement("div");
       actions.className = "toolbar";
       if (item.status === "success") actions.appendChild(actionLink("Открыть отчёт", `/reports/${item.id}`, true));
@@ -423,6 +491,53 @@
     });
   }
 
+  async function loadPreparations(append = false) {
+    const sequence = ++state.preparationSequence;
+    const query = nodes.preparationSearch.value.trim();
+    const status = nodes.preparationStatus.value;
+    const offset = append ? state.preparations.length : 0;
+    const response = await api(
+      `/api/text-preparations?q=${encodeURIComponent(query)}&status=${encodeURIComponent(status)}&limit=50&offset=${offset}`
+    );
+    if (sequence !== state.preparationSequence) return;
+    state.preparations = append ? [...state.preparations, ...(response.text_preparations || [])] : (response.text_preparations || []);
+    nodes.preparationsCount.textContent = `${response.total || 0} подготовок`;
+    nodes.morePreparations.classList.toggle("hidden", !response.has_more);
+    renderPreparations();
+  }
+
+  function renderPreparations() {
+    nodes.preparationsList.innerHTML = "";
+    if (!state.preparations.length) {
+      nodes.preparationsList.className = "import-records record-empty";
+      nodes.preparationsList.textContent = "AI-подготовки не найдены.";
+      return;
+    }
+    nodes.preparationsList.className = "import-records";
+    state.preparations.forEach((item) => {
+      const card = document.createElement("article");
+      card.className = "import-record";
+      const heading = document.createElement("div");
+      heading.className = "result-record-heading";
+      const title = document.createElement("strong");
+      title.textContent = `${item.source_label || "AI-подготовка"} #${item.id}`;
+      const statusKind = item.status === "applied" ? "ok" : item.status === "archived" ? "" : "warning";
+      heading.append(title, pill(item.status === "applied" ? "применено" : item.status === "archived" ? "архив" : "подготовлено", statusKind));
+      const meta = document.createElement("p");
+      meta.textContent = `полей: ${item.mapped_fields || 0} · предупреждений: ${item.warning_count || 0} · импорт #${item.import_id || "—"}`;
+      const preview = document.createElement("p");
+      preview.textContent = item.corrected_text_preview || "Текстовый фрагмент не сохранён.";
+      const footer = document.createElement("div");
+      footer.className = "result-record-footer";
+      const date = document.createElement("span");
+      date.textContent = formatDateTime(item.applied_at || item.updated_at || item.created_at);
+      footer.appendChild(date);
+      if (item.case_id) footer.appendChild(actionLink(item.case_title || `Кейс #${item.case_id}`, `/app?case=${item.case_id}`));
+      card.append(heading, meta, preview, footer);
+      nodes.preparationsList.appendChild(card);
+    });
+  }
+
   async function switchView(view) {
     state.view = view;
     document.querySelectorAll(".records-tab").forEach((button) => {
@@ -433,6 +548,7 @@
     });
     if (view === "results" && !state.results.length) await loadResults();
     if (view === "imports" && !state.imports.length) await loadImports();
+    if (view === "preparations" && !state.preparations.length) await loadPreparations();
   }
 
   async function refreshActiveView() {
@@ -441,7 +557,7 @@
     try {
       await Promise.all([
         loadSummary(),
-        state.view === "cases" ? loadCases() : state.view === "results" ? loadResults() : loadImports()
+        state.view === "cases" ? loadCases() : state.view === "results" ? loadResults() : state.view === "imports" ? loadImports() : loadPreparations()
       ]);
     } catch (error) {
       showError(error.message);
@@ -459,10 +575,12 @@
     if (timerName === "case" && caseSearchTimer) window.clearTimeout(caseSearchTimer);
     if (timerName === "result" && resultSearchTimer) window.clearTimeout(resultSearchTimer);
     if (timerName === "import" && importSearchTimer) window.clearTimeout(importSearchTimer);
+    if (timerName === "preparation" && preparationSearchTimer) window.clearTimeout(preparationSearchTimer);
     const timer = window.setTimeout(() => callback().catch(handleError), 250);
     if (timerName === "case") caseSearchTimer = timer;
     if (timerName === "result") resultSearchTimer = timer;
     if (timerName === "import") importSearchTimer = timer;
+    if (timerName === "preparation") preparationSearchTimer = timer;
   }
 
   function setupActions() {
@@ -487,9 +605,17 @@
     nodes.moreCases.addEventListener("click", () => loadCases(true).catch(handleError));
     nodes.resultSearch.addEventListener("input", () => debounce("result", () => loadResults()));
     nodes.resultStatus.addEventListener("change", () => loadResults().catch(handleError));
+    nodes.resultModel.addEventListener("change", () => loadResults().catch(handleError));
+    nodes.resultReview.addEventListener("change", () => loadResults().catch(handleError));
+    nodes.resultRedFlags.addEventListener("change", () => loadResults().catch(handleError));
+    nodes.resultAbstain.addEventListener("change", () => loadResults().catch(handleError));
     document.getElementById("clearResultFiltersButton").addEventListener("click", () => {
       nodes.resultSearch.value = "";
       nodes.resultStatus.value = "";
+      nodes.resultModel.value = "";
+      nodes.resultReview.value = "";
+      nodes.resultRedFlags.value = "";
+      nodes.resultAbstain.value = "";
       loadResults().catch(handleError);
     });
     nodes.moreResults.addEventListener("click", () => loadResults(true).catch(handleError));
@@ -501,6 +627,14 @@
       loadImports().catch(handleError);
     });
     nodes.moreImports.addEventListener("click", () => loadImports(true).catch(handleError));
+    nodes.preparationSearch.addEventListener("input", () => debounce("preparation", () => loadPreparations()));
+    nodes.preparationStatus.addEventListener("change", () => loadPreparations().catch(handleError));
+    document.getElementById("clearPreparationFiltersButton").addEventListener("click", () => {
+      nodes.preparationSearch.value = "";
+      nodes.preparationStatus.value = "";
+      loadPreparations().catch(handleError);
+    });
+    nodes.morePreparations.addEventListener("click", () => loadPreparations(true).catch(handleError));
     nodes.caseResult.addEventListener("click", () => {
       if (state.latestResultId) window.open(`/reports/${state.latestResultId}`, "_blank", "noopener,noreferrer");
     });

@@ -6,3 +6,5 @@ __pycache__/
 .DS_Store
 backups/
 *.log
+cvd-web-*.tar.gz
+cvd-web-*.tar.gz.sha256
