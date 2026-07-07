@@ -60,6 +60,8 @@ tar -C "$ROOT_DIR" \
   --exclude='data' \
   --exclude='backups' \
   --exclude='dist' \
+  --exclude='cvd-web-*.tar.gz' \
+  --exclude='cvd-web-*.tar.gz.sha256' \
   --exclude='__pycache__' \
   --exclude='*.pyc' \
   --exclude='.DS_Store' \
