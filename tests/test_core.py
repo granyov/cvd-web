@@ -29,6 +29,7 @@ from cvd_web.reporting import build_html_report
 
 def make_test_config(db_path: Path) -> Config:
     return Config(
+        app_env="test",
         project_root=PROJECT_ROOT,
         db_path=db_path,
         host="127.0.0.1",
@@ -419,6 +420,12 @@ class CoreTests(unittest.TestCase):
             status, _, body = call_wsgi(app, "/healthz")
             self.assertTrue(status.startswith("200"), body)
             self.assertEqual(json.loads(body.decode("utf-8"))["ok"], True)
+            status, _, body = call_wsgi(app, "/readyz")
+            self.assertTrue(status.startswith("200"), body)
+            readiness = json.loads(body.decode("utf-8"))
+            self.assertTrue(readiness["ok"])
+            self.assertTrue(readiness["checks"]["database"]["ok"])
+            self.assertFalse(readiness["checks"]["security"]["production_mode"])
             _, health_headers, _ = call_wsgi(app, "/healthz")
             self.assertIn("Content-Security-Policy", health_headers)
             self.assertEqual(health_headers["X-Frame-Options"], "DENY")
@@ -721,6 +728,7 @@ class CoreTests(unittest.TestCase):
 
             with connect(app.config.db_path) as conn:
                 columns = {row["name"] for row in conn.execute("PRAGMA table_info(model_requests)").fetchall()}
+                schema_migrations = conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0]
             self.assertIn("prompt_version", columns)
             self.assertIn("settings_snapshot_json", columns)
             self.assertIn("completion_tokens", columns)
@@ -728,6 +736,7 @@ class CoreTests(unittest.TestCase):
             self.assertIn("finish_reason", columns)
             self.assertIn("queue_wait_ms", columns)
             self.assertIn("input_data_hash", columns)
+            self.assertGreaterEqual(schema_migrations, 1)
 
             status, _, body = call_wsgi(app, "/api/inference/status", cookie=cookie)
             self.assertTrue(status.startswith("200"), body)
@@ -953,6 +962,8 @@ class CoreTests(unittest.TestCase):
                     "expected_diagnosis": "артериальная гипертензия",
                     "expected_icd10": "I10",
                     "expected_red_flags": "",
+                    "expected_missing_data": "Суточный профиль АД",
+                    "severity": "high",
                     "expected_abstain": False,
                     "notes": "Базовый эталон",
                 },
@@ -965,7 +976,9 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(gold_set["summary"]["gold_cases"], 1)
             self.assertEqual(gold_set["summary"]["evaluated"], 1)
             self.assertEqual(gold_set["gold_cases"][0]["evaluation"]["icd10_match"], True)
+            self.assertEqual(gold_set["gold_cases"][0]["evaluation"]["missing_data_match"], True)
             self.assertEqual(gold_set["gold_cases"][0]["evaluation"]["abstain_match"], True)
+            self.assertEqual(gold_set["gold_cases"][0]["severity"], "high")
 
             status, _, body = call_wsgi(app, "/api/admin/gold-runs", method="POST", cookie=cookie, csrf=csrf, body={})
             self.assertTrue(status.startswith("201"), body)
@@ -1108,6 +1121,37 @@ class CoreTests(unittest.TestCase):
             )
             self.assertTrue(status.startswith("429"), body)
             self.assertIn("Retry-After", headers)
+
+    def test_production_rejects_default_admin_password_and_requires_secure_cookie_for_readiness(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            insecure_config = make_test_config(Path(tmp) / "insecure.sqlite3")
+            insecure_config = Config(
+                **{
+                    **insecure_config.__dict__,
+                    "app_env": "production",
+                    "admin_email": "admin@example.local",
+                    "admin_password": "admin12345",
+                }
+            )
+            with self.assertRaisesRegex(RuntimeError, "default administrator password"):
+                CVDApplication(insecure_config, start_batch_worker=False)
+
+            ready_config = make_test_config(Path(tmp) / "ready.sqlite3")
+            ready_config = Config(
+                **{
+                    **ready_config.__dict__,
+                    "app_env": "production",
+                    "admin_password": "Strong-production-password-2026!",
+                    "cookie_secure": False,
+                }
+            )
+            app = CVDApplication(ready_config, start_batch_worker=False)
+            status, _, body = call_wsgi(app, "/readyz")
+            self.assertTrue(status.startswith("503"), body)
+            readiness = json.loads(body.decode("utf-8"))
+            self.assertFalse(readiness["ok"])
+            self.assertFalse(readiness["checks"]["security"]["ok"])
+            self.assertFalse(readiness["checks"]["runtime"]["ok"])
 
     def test_memory_rate_limiter_window(self):
         now = [100.0]

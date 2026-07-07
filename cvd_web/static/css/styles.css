@@ -700,12 +700,10 @@ body[data-theme="dark"] .notice.error-note {
 }
 
 .clinical-hero {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 18px;
+  display: flex;
   align-items: center;
-  margin-bottom: 16px;
-  padding: 20px;
+  margin-bottom: 14px;
+  padding: 16px 20px;
   border: 1px solid var(--border);
   border-radius: var(--radius);
   background: color-mix(in srgb, var(--panel) 92%, var(--panel-2));
@@ -713,8 +711,8 @@ body[data-theme="dark"] .notice.error-note {
 }
 
 .clinical-hero h1 {
-  margin: 0 0 8px;
-  font-size: clamp(1.55rem, 2vw, 2.2rem);
+  margin: 0;
+  font-size: 1.55rem;
 }
 
 .clinical-hero p {
@@ -1955,7 +1953,6 @@ body[data-theme="dark"] .check-row.warning .check-mark {
 @media (max-width: 1000px) {
   .layout,
   .admin-grid,
-  .clinical-hero,
   .dashboard-columns {
     grid-template-columns: 1fr;
   }
@@ -2186,39 +2183,6 @@ body[data-theme="dark"] .check-row.warning .check-mark {
   text-align: right;
 }
 
-.side-next-action {
-  margin-bottom: 16px;
-}
-
-.side-next-action span {
-  text-align: left;
-}
-
-.section-progress-list {
-  display: grid;
-  gap: 8px;
-}
-
-.section-progress-item {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  width: 100%;
-  text-align: left;
-}
-
-.section-progress-item strong {
-  color: var(--muted);
-}
-
-.section-progress-item.ok strong {
-  color: var(--ok);
-}
-
-.section-progress-item.warning strong {
-  color: var(--warning);
-}
-
 .settings-group-title {
   display: flex;
   justify-content: space-between;
@@ -2415,47 +2379,6 @@ body[data-theme="dark"] .check-row.warning .check-mark {
   scroll-margin-top: 76px;
 }
 
-.clinical-workflow {
-  display: grid;
-  gap: 8px;
-}
-
-.clinical-workflow-step {
-  display: grid;
-  grid-template-columns: 28px minmax(0, 1fr);
-  gap: 2px 9px;
-  align-items: center;
-  width: 100%;
-  text-align: left;
-}
-
-.clinical-workflow-step > span {
-  grid-row: span 2;
-  display: grid;
-  place-items: center;
-  width: 24px;
-  height: 24px;
-  border-radius: 50%;
-  background: var(--panel-2);
-  color: var(--muted);
-  font-size: 0.78rem;
-  font-weight: 800;
-}
-
-.clinical-workflow-step.done > span {
-  background: var(--ok);
-  color: #fff;
-}
-
-.clinical-workflow-step.active > span {
-  background: var(--warning);
-  color: #fff;
-}
-
-.clinical-workflow-step small {
-  color: var(--muted);
-}
-
 .review-cockpit-list {
   display: grid;
   gap: 10px;
@@ -2474,7 +2397,6 @@ body[data-theme="dark"] .check-row.warning .check-mark {
   color: var(--muted);
 }
 
-body[data-interface-mode="doctor"] .clinical-hero .hero-metrics,
 body[data-interface-mode="doctor"] #tab-json,
 body[data-interface-mode="doctor"] .secondary-actions,
 body[data-interface-mode="doctor"] .model-actions,
@@ -2490,6 +2412,14 @@ body[data-interface-mode="doctor"] .layout {
 
 body[data-interface-mode="researcher"] .layout {
   grid-template-columns: minmax(0, 1fr) minmax(360px, 520px);
+}
+
+@media (max-width: 1000px) {
+  body[data-interface-mode="doctor"] .layout,
+  body[data-interface-mode="researcher"] .layout,
+  body[data-interface-mode="admin"] .layout {
+    grid-template-columns: 1fr;
+  }
 }
 
 body[data-interface-mode="researcher"] .model-output,
@@ -2509,10 +2439,6 @@ body[data-interface-mode="doctor"] .panel-body {
 @media (max-width: 700px) {
   .admin-nav {
     top: 0;
-  }
-
-  .clinical-workflow-step {
-    grid-template-columns: 24px minmax(0, 1fr);
   }
 }
 

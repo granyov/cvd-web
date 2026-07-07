@@ -450,11 +450,24 @@
             <label>Ожидаемые red flags</label>
             <input name="expected_red_flags" type="text" placeholder="боль в груди; SpO2 < 92%">
           </div>
+          <div class="field full">
+            <label>Ожидаемые missing data</label>
+            <input name="expected_missing_data" type="text" placeholder="ЭКГ; тропонин; ЭхоКГ">
+          </div>
           <div class="field">
             <label>Ожидается отказ модели</label>
             <select name="expected_abstain">
               <option value="0">Нет</option>
               <option value="1">Да</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Критичность эталона</label>
+            <select name="severity">
+              <option value="medium">Средняя</option>
+              <option value="low">Низкая</option>
+              <option value="high">Высокая</option>
+              <option value="critical">Критическая</option>
             </select>
           </div>
           <div class="field full">

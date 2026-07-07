@@ -758,6 +758,7 @@
       ["Средний score", `${summary.avg_score_percent || 0}%`],
       ["МКБ-10 hit", summary.icd10_hits || 0],
       ["Red flags match", summary.red_flag_matches || 0],
+      ["Missing data match", summary.missing_data_matches || 0],
       ["Abstain match", summary.abstain_matches || 0]
     ].forEach(([label, value]) => {
       const node = pill(`${label}: ${value}`);
@@ -787,13 +788,15 @@
       item.expected_diagnosis ? `диагноз: ${item.expected_diagnosis}` : "",
       (item.expected_icd10 || []).length ? `МКБ-10: ${(item.expected_icd10 || []).join(", ")}` : "",
       (item.expected_red_flags || []).length ? `red flags: ${(item.expected_red_flags || []).join("; ")}` : "red flags: нет",
-      `abstain: ${item.expected_abstain ? "да" : "нет"}`
+      (item.expected_missing_data || []).length ? `missing data: ${(item.expected_missing_data || []).join("; ")}` : "",
+      `abstain: ${item.expected_abstain ? "да" : "нет"}`,
+      `severity: ${item.severity || "medium"}`
     ].filter(Boolean).join("\n");
     const result = item.latest_request_id
       ? `#${item.latest_request_id} · ${item.latest_model || ""}\n${item.latest_prompt_version || ""}\n${item.latest_request_created_at || ""}`
       : "нет успешного результата";
     const score = evaluation.status === "evaluated"
-      ? `${evaluation.score_percent}%\nМКБ-10 ${boolMark(evaluation.icd10_match)} · red flags ${boolMark(evaluation.red_flags_match)} · abstain ${boolMark(evaluation.abstain_match)} · диагноз ${boolMark(evaluation.diagnosis_match)}`
+      ? `${evaluation.score_percent}%\nМКБ-10 ${boolMark(evaluation.icd10_match)} · red flags ${boolMark(evaluation.red_flags_match)} · missing data ${boolMark(evaluation.missing_data_match)} · abstain ${boolMark(evaluation.abstain_match)} · диагноз ${boolMark(evaluation.diagnosis_match)}`
       : "ожидает успешного результата";
     row.append(
       td(item.id),
@@ -815,7 +818,9 @@
         expected_diagnosis: form.expected_diagnosis.value,
         expected_icd10: form.expected_icd10.value,
         expected_red_flags: form.expected_red_flags.value,
+        expected_missing_data: form.expected_missing_data.value,
         expected_abstain: form.expected_abstain.value === "1",
+        severity: form.severity.value,
         notes: form.notes.value
       })
     });

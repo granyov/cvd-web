@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.9.3 - 2026-07-07
+
+- Add release archive build/publish tooling with SHA-256 checksums.
+- Add local, WSL2, and VPS installer paths with service-oriented runtime configuration.
+- Add `/readyz` checks and a WSGI entrypoint for reverse-proxy deployments.
+- Improve the clinical workspace by removing duplicated metrics, workflow panels, and repeated next-action guidance.
+- Fix narrow-screen workspace ordering so the patient form stays before the review sidebar.
+- Extend Gold Set validation with severity and expected missing-data checks.
+- Close SQLite backup/restore connections explicitly after backup operations.
+
 ## v0.9.0 - 2026-07-02
 
 - Add a clinical-validation Gold Set with versioned validation runs and per-case scoring.

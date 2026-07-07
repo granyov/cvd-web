@@ -11,17 +11,10 @@
   const queueStatus = document.getElementById("queueStatus");
   const sectionNav = document.getElementById("sectionNav");
   const icdSummary = document.getElementById("icdSummary");
-  const filledMetric = document.getElementById("filledMetric");
-  const readinessMetric = document.getElementById("readinessMetric");
-  const icdMetric = document.getElementById("icdMetric");
-  const requestMetric = document.getElementById("requestMetric");
   const patientSnapshot = document.getElementById("patientSnapshot");
   const readinessPanel = document.getElementById("readinessPanel");
-  const sectionProgressPanel = document.getElementById("sectionProgressPanel");
-  const clinicalWorkflowPanel = document.getElementById("clinicalWorkflowPanel");
   const signalsPanel = document.getElementById("signalsPanel");
   const nextActionText = document.getElementById("nextActionText");
-  const sideNextActionText = document.getElementById("sideNextActionText");
   const diagnoseButton = document.getElementById("diagnoseButton");
   const passwordModal = document.getElementById("passwordModal");
   const passwordForm = document.getElementById("passwordForm");
@@ -321,7 +314,6 @@
     const data = collectData();
     jsonPreview.textContent = JSON.stringify(data, null, 2);
     updateIcdComparison(data);
-    updateMetrics(data);
     updateSectionBadges(data);
     updateClinicalQuality(data);
     return data;
@@ -347,33 +339,12 @@
     });
   }
 
-  function updateMetrics(data) {
-    let total = 0;
-    let filled = 0;
-    window.CVD_SCHEMA.forEach((section) => {
-      section.fields.forEach((field) => {
-        total++;
-        const value = data[section.key]?.[field.key];
-        if (Array.isArray(value) ? value.length > 0 : value !== null && value !== "") {
-          filled++;
-        }
-      });
-    });
-    const percent = total ? Math.round((filled / total) * 100) : 0;
-    if (filledMetric) filledMetric.textContent = `${percent}%`;
-    const trueCodes = data.FINAL_DIAGNOSES?.ICD10_codes || [];
-    const modelCodes = data.MODEL_OUTPUT?.Model_ICD10_codes || [];
-    if (icdMetric) icdMetric.textContent = String(new Set([...trueCodes, ...modelCodes]).size);
-  }
-
   function missingRequiredData(data) {
     return qualityRules.missingRequiredData(data);
   }
 
   function updateClinicalQuality(data) {
     renderPatientSnapshot(data);
-    renderClinicalWorkflow(data);
-    renderSectionProgress(data);
     renderReadiness(data);
     renderSignals(data);
     updateModelFreshness(data);
@@ -405,68 +376,6 @@
     });
   }
 
-  function workflowStepStatus(data, requiredPaths = []) {
-    if (!requiredPaths.length) return "done";
-    const filled = requiredPaths.filter((path) => isFilled(getValue(data, path))).length;
-    if (filled === requiredPaths.length) return "done";
-    return filled > 0 ? "active" : "todo";
-  }
-
-  function renderClinicalWorkflow(data) {
-    if (!clinicalWorkflowPanel) return;
-    const hasResult = Boolean(currentModelRequestId);
-    const missing = missingRequiredData(data);
-    const steps = [
-      ["Идентификация", "Пациент и случай", ["GENERAL_INFO.Full_name", "GENERAL_INFO.Patient_ID", "GENERAL_INFO.Age", "GENERAL_INFO.Sex"]],
-      ["Жалобы", "Причина обращения", ["COMPLAINTS.Main_complaint"]],
-      ["Осмотр", "АД, ЧСС, SpO2", ["PHYSICAL_EXAM.Blood_pressure_right_systolic_mmHg", "PHYSICAL_EXAM.Heart_rate_bpm", "PHYSICAL_EXAM.SpO2_room_air_percent"]],
-      ["Диагностика", "ЭКГ / Эхо / лаборатория", ["ECG.Resting_ECG_summary", "ECHOCARDIOGRAPHY.LVEF_percent", "LABS_CARDIAC_MARKERS.Troponin_ng_L"]],
-      ["Диагноз врача", "Финальная клиническая версия", ["FINAL_DIAGNOSES.Main_cardiovascular_diagnosis_text"]],
-      ["AI-анализ", hasResult ? "результат получен" : "ожидает запуска", []],
-      ["Review", missing.length ? `${missing.length} ключ. полей не заполнено` : "готово к экспертной оценке", []]
-    ];
-    clinicalWorkflowPanel.innerHTML = "";
-    steps.forEach(([title, caption, paths], index) => {
-      const item = document.createElement("button");
-      item.type = "button";
-      const status = index === 5 ? hasResult ? "done" : "todo" : index === 6 ? missing.length ? "active" : "done" : workflowStepStatus(data, paths);
-      item.className = `clinical-workflow-step ${status}`;
-      const number = document.createElement("span");
-      number.textContent = String(index + 1);
-      const text = document.createElement("strong");
-      text.textContent = title;
-      const small = document.createElement("small");
-      small.textContent = caption;
-      item.append(number, text, small);
-      const firstPath = paths[0];
-      if (firstPath) {
-        item.addEventListener("click", () => focusSection(firstPath.split(".")[0]));
-      }
-      clinicalWorkflowPanel.appendChild(item);
-    });
-  }
-
-  function renderSectionProgress(data) {
-    if (!sectionProgressPanel) return;
-    sectionProgressPanel.innerHTML = "";
-    window.CVD_SCHEMA.forEach((section) => {
-      const {percent} = sectionFillPercent(section, data);
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = `section-progress-item ${percent === 100 ? "ok" : percent > 0 ? "warning" : ""}`.trim();
-      button.title = `Перейти к разделу: ${section.title}`;
-      const label = document.createElement("span");
-      label.textContent = section.title;
-      const value = document.createElement("strong");
-      value.textContent = `${percent}%`;
-      button.append(label, value);
-      button.addEventListener("click", () => {
-        focusSection(section.key);
-      });
-      sectionProgressPanel.appendChild(button);
-    });
-  }
-
   function updateWorkflow(data) {
     const missing = missingRequiredData(data);
     const hasCase = Boolean(currentCaseId);
@@ -492,7 +401,6 @@
       ctaText = "Обновить AI-анализ";
     }
     if (nextActionText) nextActionText.textContent = nextAction;
-    if (sideNextActionText) sideNextActionText.textContent = nextAction;
     if (diagnoseButton && !diagnoseButton.disabled) diagnoseButton.textContent = ctaText;
   }
 
@@ -519,7 +427,6 @@
     const missing = missingRequiredData(data);
     const ready = requiredDataPoints.length - missing.length;
     const percent = Math.round((ready / requiredDataPoints.length) * 100);
-    if (readinessMetric) readinessMetric.textContent = `${percent}%`;
     requiredDataPoints.forEach(([path, label]) => {
       const ok = isFilled(getValue(data, path));
       const row = document.createElement("button");
@@ -577,7 +484,6 @@
     if (currentModelRequestId) updateModelFreshness(data);
     saveStatus.textContent = `кейс #${currentCaseId} сохранён`;
     toast("Кейс сохранён");
-    await loadHistory();
   }
 
   function fillModelOutput(parsed) {
@@ -863,7 +769,6 @@
     reviewStatus.textContent = `оценено: ${payload.rating}`;
     reviewStatus.className = "pill ok";
     toast("Оценка сохранена");
-    await loadHistory();
   }
 
   function diagnose() {
@@ -934,7 +839,6 @@
       if (queueStatus) queueStatus.className = "pill hidden";
       updateWorkflow(patientData);
       toast("Результат AI-анализа готов");
-      await loadHistory();
     } catch (err) {
       const resultWasSaved = Boolean(response?.request_id);
       if (!resultWasSaved) modelPreview.textContent = err.message;
@@ -953,11 +857,6 @@
       button.textContent = idleButtonText;
       updateWorkflow(updatePreview());
     }
-  }
-
-  async function loadHistory() {
-    const response = await api("/api/library/summary");
-    if (requestMetric) requestMetric.textContent = String(response.summary?.requests_total || 0);
   }
 
   function requestErrorText() {
@@ -1388,7 +1287,6 @@
       saveStatus.textContent = currentCaseId ? `кейс #${currentCaseId} изменён импортом` : "импортировано · не сохранено";
       closeImportModal();
       toast(`Импортировано полей: ${selected.length}`);
-      await loadHistory();
     } finally {
       button.disabled = false;
     }
@@ -1431,13 +1329,15 @@
   function renderReviewContent(data) {
     reviewContent.innerHTML = "";
     const missing = missingRequiredData(data);
+    const ready = requiredDataPoints.length - missing.length;
+    const readinessPercent = Math.round((ready / requiredDataPoints.length) * 100);
     const signalRows = Array.from(signalsPanel.querySelectorAll(".signal-row"));
     const signals = signalRows.map((node) => node.textContent.trim());
     const cards = [
       ["Пациент", displayValue(getValue(data, "GENERAL_INFO.Full_name"))],
       ["Случай", displayValue(getValue(data, "GENERAL_INFO.Patient_ID"))],
       ["Возраст / пол", `${displayValue(getValue(data, "GENERAL_INFO.Age"), "?")} / ${displayValue(getValue(data, "GENERAL_INFO.Sex"), "?")}`],
-      ["Готовность", readinessMetric?.textContent || "0%"],
+      ["Готовность", `${readinessPercent}%`],
       ["Размер JSON", `${JSON.stringify(data).length} символов`]
     ];
     const cardGrid = document.createElement("div");
@@ -1630,7 +1530,6 @@
   }
 
   async function initializeWorkspace() {
-    await loadHistory();
     const params = new URLSearchParams(window.location.search);
     const caseId = Number(params.get("case") || 0);
     const requestId = Number(params.get("request") || 0);

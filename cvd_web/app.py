@@ -8,7 +8,7 @@ import re
 import threading
 import time
 import traceback
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from html import escape
 from datetime import datetime, timedelta, timezone
 from http import cookies
@@ -166,6 +166,8 @@ class CVDApplication:
             return self.serve_static(request.path.removeprefix("/static/"))
         if request.path == "/healthz" and request.method == "GET":
             return self.json_response({"ok": True})
+        if request.path == "/readyz" and request.method == "GET":
+            return self.readiness_response()
 
         user = self.current_user(request)
 
@@ -439,19 +441,68 @@ class CVDApplication:
             backend = "memory"
         dsn_configured = bool(str(settings.get("inference_queue_dsn") or "").strip())
         external = backend in {"redis", "postgresql"}
+        production_ready = not self.config.production_mode and not external
+        if self.config.production_mode:
+            production_ready = False
         return {
             "backend": backend,
             "active_backend": "memory",
             "external_requested": external,
             "dsn_configured": dsn_configured,
-            "production_ready": (not external),
+            "production_ready": production_ready,
             "status": "memory-active" if not external else "adapter-not-installed",
             "message": (
-                "In-process queue active. Use a single backend process or configure an external adapter before multi-process deployment."
-                if not external else
-                "Redis/PostgreSQL backend is configured for rollout, but this build still uses the in-process queue adapter."
+                "In-process queue/rate limit are acceptable for development or single-process controlled evaluation only."
+                if not self.config.production_mode and not external else
+                "Production readiness is blocked until Redis/PostgreSQL queue and external rate limit adapters are implemented."
             ),
         }
+
+    def readiness_response(self):
+        checks: dict[str, Any] = {
+            "database": {"ok": False},
+            "templates": {"ok": self.template_dir.is_dir()},
+            "static": {"ok": self.static_dir.is_dir()},
+            "security": {
+                "ok": True,
+                "production_mode": self.config.production_mode,
+                "cookie_secure": self.config.cookie_secure,
+            },
+            "runtime": {"ok": True},
+        }
+        status = 200
+        try:
+            with connect(self.config.db_path) as conn:
+                integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
+                user_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+                checks["database"] = {
+                    "ok": integrity == "ok" and user_count > 0,
+                    "integrity": integrity,
+                    "user_count": user_count,
+                }
+        except Exception as exc:
+            checks["database"] = {"ok": False, "error": exc.__class__.__name__}
+
+        if self.config.production_mode and not self.config.cookie_secure:
+            checks["security"] = {
+                **checks["security"],
+                "ok": False,
+                "message": "CVD_COOKIE_SECURE=1 is required for production readiness.",
+            }
+        if self.config.production_mode:
+            settings = self.load_settings()
+            queue_status = self.production_queue_status(settings)
+            checks["runtime"] = {
+                "ok": queue_status["production_ready"],
+                "queue": queue_status,
+                "rate_limit_backend": "memory",
+                "message": "External queue and rate-limit adapters are required before production readiness.",
+            }
+
+        ok = all(bool(item.get("ok")) for item in checks.values())
+        if not ok:
+            status = 503
+        return self.json_response({"ok": ok, "checks": checks}, status=status)
 
     def inference_status(self, user: dict[str, Any]):
         settings = self.load_settings()
@@ -1952,7 +2003,7 @@ class CVDApplication:
     def admin_create_backup(self, admin: dict[str, Any]):
         filename = f"cvd-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.sqlite3"
         target = self.backup_dir() / filename
-        with sqlite3.connect(self.config.db_path) as source, sqlite3.connect(target) as dest:
+        with closing(sqlite3.connect(self.config.db_path)) as source, closing(sqlite3.connect(target)) as dest:
             source.backup(dest)
         with connect(self.config.db_path) as conn:
             audit(conn, user_id=admin["id"], action="backup_create", target_type="backup", details={"filename": filename})
@@ -1969,15 +2020,15 @@ class CVDApplication:
         data = request.json()
         filename = str(data.get("filename") or "").strip()
         source_path = self.backup_path(filename)
-        with sqlite3.connect(source_path) as source:
+        with closing(sqlite3.connect(source_path)) as source:
             integrity = source.execute("PRAGMA quick_check").fetchone()[0]
             if integrity != "ok":
                 raise HTTPError(400, f"Backup повреждён: {integrity}")
         safety_name = f"cvd-before-restore-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.sqlite3"
         safety_path = self.backup_dir() / safety_name
-        with sqlite3.connect(self.config.db_path) as current, sqlite3.connect(safety_path) as safety:
+        with closing(sqlite3.connect(self.config.db_path)) as current, closing(sqlite3.connect(safety_path)) as safety:
             current.backup(safety)
-        with sqlite3.connect(source_path) as source, sqlite3.connect(self.config.db_path) as dest:
+        with closing(sqlite3.connect(source_path)) as source, closing(sqlite3.connect(self.config.db_path)) as dest:
             source.backup(dest)
         with connect(self.config.db_path) as conn:
             audit(conn, user_id=admin["id"], action="backup_restore", target_type="backup", details={"filename": filename, "safety_backup": safety_name})
@@ -2719,7 +2770,8 @@ class CVDApplication:
             gold_rows = conn.execute(
                 """
                 SELECT g.id, g.case_id, g.title, g.expected_diagnosis, g.expected_icd10_json,
-                       g.expected_red_flags_json, g.expected_abstain, g.notes, g.created_at, g.updated_at,
+                       g.expected_red_flags_json, g.expected_missing_data_json, g.expected_abstain,
+                       g.severity, g.notes, g.created_at, g.updated_at,
                        c.patient_id, c.updated_at AS case_updated_at
                 FROM gold_cases g
                 JOIN cases c ON c.id = g.case_id
@@ -2900,7 +2952,8 @@ class CVDApplication:
                 """
                 SELECT
                   g.id, g.case_id, g.title, g.expected_diagnosis, g.expected_icd10_json,
-                  g.expected_red_flags_json, g.expected_abstain, g.notes, g.created_at, g.updated_at,
+                  g.expected_red_flags_json, g.expected_missing_data_json, g.expected_abstain,
+                  g.severity, g.notes, g.created_at, g.updated_at,
                   c.patient_id, c.updated_at AS case_updated_at,
                   r.id AS latest_request_id, r.status AS latest_status, r.model AS latest_model,
                   r.prompt_version AS latest_prompt_version, r.output_schema_version AS latest_output_schema_version,
@@ -2927,6 +2980,7 @@ class CVDApplication:
             "avg_score_percent": avg_score,
             "icd10_hits": sum(1 for item in evaluated if item["evaluation"]["icd10_match"] is True),
             "red_flag_matches": sum(1 for item in evaluated if item["evaluation"]["red_flags_match"] is True),
+            "missing_data_matches": sum(1 for item in evaluated if item["evaluation"]["missing_data_match"] is True),
             "abstain_matches": sum(1 for item in evaluated if item["evaluation"]["abstain_match"] is True),
         }
         return self.json_response({"summary": summary, "gold_cases": items})
@@ -2940,7 +2994,11 @@ class CVDApplication:
         expected_diagnosis = str(data.get("expected_diagnosis", "")).strip()[:2000]
         expected_icd10 = self.normalized_text_list(data.get("expected_icd10"), upper=True, max_item_length=20)
         expected_red_flags = self.normalized_text_list(data.get("expected_red_flags"), max_item_length=240)
+        expected_missing_data = self.normalized_text_list(data.get("expected_missing_data"), max_item_length=240)
         expected_abstain = str(data.get("expected_abstain", "")).strip().lower() in {"1", "true", "yes", "on"}
+        severity = str(data.get("severity", "medium")).strip().lower()
+        if severity not in {"low", "medium", "high", "critical"}:
+            raise HTTPError(400, "severity должен быть low, medium, high или critical")
         notes = str(data.get("notes", "")).strip()[:4000]
         now = utc_now()
         with connect(self.config.db_path) as conn:
@@ -2951,14 +3009,16 @@ class CVDApplication:
                 """
                 INSERT INTO gold_cases
                   (case_id, title, expected_diagnosis, expected_icd10_json, expected_red_flags_json,
-                   expected_abstain, notes, created_by_user_id, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   expected_missing_data_json, expected_abstain, severity, notes, created_by_user_id, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(case_id) DO UPDATE SET
                   title = excluded.title,
                   expected_diagnosis = excluded.expected_diagnosis,
                   expected_icd10_json = excluded.expected_icd10_json,
                   expected_red_flags_json = excluded.expected_red_flags_json,
+                  expected_missing_data_json = excluded.expected_missing_data_json,
                   expected_abstain = excluded.expected_abstain,
+                  severity = excluded.severity,
                   notes = excluded.notes,
                   updated_at = excluded.updated_at
                 """,
@@ -2968,7 +3028,9 @@ class CVDApplication:
                     expected_diagnosis,
                     json.dumps(expected_icd10, ensure_ascii=False),
                     json.dumps(expected_red_flags, ensure_ascii=False),
+                    json.dumps(expected_missing_data, ensure_ascii=False),
                     1 if expected_abstain else 0,
+                    severity,
                     notes,
                     admin["id"],
                     now,
@@ -2984,7 +3046,9 @@ class CVDApplication:
                 details={
                     "expected_icd10": expected_icd10,
                     "expected_red_flags": expected_red_flags,
+                    "expected_missing_data": expected_missing_data,
                     "expected_abstain": expected_abstain,
+                    "severity": severity,
                 },
             )
         return self.json_response({"ok": True}, status=201)
@@ -3047,7 +3111,8 @@ class CVDApplication:
                 """
                 SELECT
                   g.id, g.case_id, g.title, g.expected_diagnosis, g.expected_icd10_json,
-                  g.expected_red_flags_json, g.expected_abstain, g.notes, g.created_at, g.updated_at,
+                  g.expected_red_flags_json, g.expected_missing_data_json, g.expected_abstain,
+                  g.severity, g.notes, g.created_at, g.updated_at,
                   c.patient_id, c.updated_at AS case_updated_at,
                   r.id AS latest_request_id, r.status AS latest_status, r.model AS latest_model,
                   r.prompt_version AS latest_prompt_version, r.output_schema_version AS latest_output_schema_version,
@@ -3143,6 +3208,7 @@ class CVDApplication:
         item = row_to_dict(row)
         item["expected_icd10"] = json.loads(item.pop("expected_icd10_json") or "[]")
         item["expected_red_flags"] = json.loads(item.pop("expected_red_flags_json") or "[]")
+        item["expected_missing_data"] = json.loads(item.pop("expected_missing_data_json") or "[]")
         item["expected_abstain"] = bool(item["expected_abstain"])
         parsed = json.loads(item.pop("latest_parsed_output_json")) if item.get("latest_parsed_output_json") else None
         item["evaluation"] = self.evaluate_gold_case(item, parsed)
@@ -3155,10 +3221,12 @@ class CVDApplication:
                 "score_percent": 0,
                 "icd10_match": None,
                 "red_flags_match": None,
+                "missing_data_match": None,
                 "abstain_match": None,
                 "diagnosis_match": None,
                 "actual_icd10": [],
                 "actual_red_flags": [],
+                "actual_missing_data": [],
                 "actual_abstain": None,
             }
         cds = parsed_output.get("CDS_OUTPUT", {}) if isinstance(parsed_output, dict) else {}
@@ -3176,6 +3244,13 @@ class CVDApplication:
         actual_red_flags = cds.get("red_flags", []) if isinstance(cds, dict) else []
         if not isinstance(actual_red_flags, list):
             actual_red_flags = []
+        actual_missing_data = cds.get("missing_data", []) if isinstance(cds, dict) else []
+        if not isinstance(actual_missing_data, list):
+            actual_missing_data = []
+        if isinstance(possible, list):
+            for diagnosis in possible:
+                if isinstance(diagnosis, dict) and isinstance(diagnosis.get("missing_data"), list):
+                    actual_missing_data.extend(diagnosis.get("missing_data", []))
         actual_abstain = bool(cds.get("model_should_abstain")) if isinstance(cds, dict) else False
         summary_text = " ".join(
             str(value or "")
@@ -3187,6 +3262,7 @@ class CVDApplication:
 
         expected_icd10 = set(item.get("expected_icd10") or [])
         expected_red_flags = [str(flag).strip().lower() for flag in item.get("expected_red_flags") or [] if str(flag).strip()]
+        expected_missing_data = [str(value).strip().lower() for value in item.get("expected_missing_data") or [] if str(value).strip()]
         expected_diagnosis = str(item.get("expected_diagnosis") or "").strip().lower()
         icd10_match = bool(expected_icd10 & actual_icd10) if expected_icd10 else None
         if expected_red_flags:
@@ -3194,19 +3270,26 @@ class CVDApplication:
             red_flags_match = all(flag in red_flags_text for flag in expected_red_flags)
         else:
             red_flags_match = len(actual_red_flags) == 0
+        if expected_missing_data:
+            missing_data_text = " ".join(str(value).lower() for value in actual_missing_data)
+            missing_data_match = all(value in missing_data_text for value in expected_missing_data)
+        else:
+            missing_data_match = None
         abstain_match = actual_abstain == bool(item.get("expected_abstain"))
         diagnosis_match = expected_diagnosis in summary_text if expected_diagnosis else None
-        scored = [value for value in (icd10_match, red_flags_match, abstain_match, diagnosis_match) if value is not None]
+        scored = [value for value in (icd10_match, red_flags_match, missing_data_match, abstain_match, diagnosis_match) if value is not None]
         score_percent = round(sum(1 for value in scored if value) * 100 / len(scored)) if scored else 0
         return {
             "status": "evaluated",
             "score_percent": score_percent,
             "icd10_match": icd10_match,
             "red_flags_match": red_flags_match,
+            "missing_data_match": missing_data_match,
             "abstain_match": abstain_match,
             "diagnosis_match": diagnosis_match,
             "actual_icd10": sorted(actual_icd10),
             "actual_red_flags": actual_red_flags,
+            "actual_missing_data": actual_missing_data,
             "actual_abstain": actual_abstain,
         }
 
@@ -3300,6 +3383,7 @@ class CVDApplication:
             429: "Too Many Requests",
             500: "Internal Server Error",
             502: "Bad Gateway",
+            503: "Service Unavailable",
         }.get(status, "OK")
         security_headers = [
             ("X-Content-Type-Options", "nosniff"),
