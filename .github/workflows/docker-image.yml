@@ -65,3 +65,12 @@ jobs:
             org.opencontainers.image.description=Cardiovascular case workspace with local LLM review
             org.opencontainers.image.source=https://github.com/${{ github.repository }}
             org.opencontainers.image.version=${{ steps.version.outputs.version }}
+
+      - name: Make GHCR package public
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh api \
+            --method PATCH \
+            /user/packages/container/cvd-web/visibility \
+            -f visibility=public
