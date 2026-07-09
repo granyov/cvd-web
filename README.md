@@ -1,6 +1,6 @@
 # CVD Web
 
-**Текущая версия: `v0.9.0`**
+**Текущая версия: `v0.9.3`**
 
 Веб-приложение для структурированных CVD-кейсов, простой авторизации, админки пользователей и журналирования запросов к LM Studio.
 
@@ -52,6 +52,14 @@
 
 Требуется Python 3.11 или новее. В проекте нет обязательных Python/npm-зависимостей.
 
+### Сборка архива
+
+```bash
+scripts/build_release.sh --version v0.9.3
+```
+
+Скрипт запускает Python-тесты, собирает `dist/cvd-web-v0.9.3.tar.gz` и создаёт рядом `.sha256`. Этот архив можно передать в WSL2 или на VPS, распаковать и запустить bundled `install.sh`.
+
 ### Компьютер в домашней сети
 
 ```bash
@@ -66,18 +74,28 @@
 sudo ./install.sh \
   --target vps \
   --domain cvd.example.com \
-  --lm-url http://10.8.0.2:1234/v1/chat/completions
+  --lm-url http://10.8.0.2:1234/v1/chat/completions \
+  --unattended
 ```
 
-Создаются отдельный системный пользователь, каталоги `/opt/cvd-web`, `/var/lib/cvd-web`, закрытый EnvironmentFile, systemd unit и nginx-конфигурация. Backend слушает только `127.0.0.1`. После установки настройте TLS; HTTP нельзя использовать для реальных учётных или медицинских данных.
+Создаются отдельный системный пользователь, каталоги `/opt/cvd-web`, `/var/lib/cvd-web`, закрытый EnvironmentFile `/etc/cvd-web/cvd-web.env`, systemd unit `cvd-web.service` и nginx-конфигурация для домена. Backend слушает только `127.0.0.1`, а nginx проксирует публичный домен на локальный порт. После установки настройте TLS; HTTP нельзя использовать для реальных учётных или медицинских данных.
+
+Для строгого production-режима после настройки HTTPS и внешних adapter-ов очереди/rate limit можно переустановить или отредактировать `/etc/cvd-web/cvd-web.env`, задав `CVD_ENV=production` и `CVD_COOKIE_SECURE=1`. По умолчанию VPS installer использует `CVD_ENV=controlled`, чтобы первичная установка домена и вход администратора не ломались до выпуска TLS.
 
 ### WSL2
 
 ```bash
-./install.sh --target wsl2
+./install.sh --target wsl2 --unattended
 ```
 
-При включённом systemd создаётся пользовательский сервис, иначе процесс запускается через `nohup`. Для доступа с других устройств домашней сети установщик выводит PowerShell-команды `netsh portproxy` и правило Windows Firewall.
+При включённом systemd создаётся пользовательский systemd-сервис `cvd-web.service`, иначе процесс запускается через `nohup`. Из Windows на той же машине открывайте `http://localhost:8080`. Для доступа с других устройств домашней сети установщик выводит PowerShell-команды `netsh portproxy` и правило Windows Firewall.
+
+Проверка сервиса в WSL2:
+
+```bash
+systemctl --user status cvd-web.service
+journalctl --user -u cvd-web.service -f
+```
 
 
 ### Установка релиза из облака
@@ -86,12 +104,12 @@ sudo ./install.sh \
 
 ```bash
 scripts/install_from_release.sh \
-  --url https://storage.example.com/cvd-web/v0.9.0/cvd-web-v0.9.0.tar.gz \
+  --url https://storage.example.com/cvd-web/v0.9.3/cvd-web-v0.9.3.tar.gz \
   --sha256 <archive-sha256> \
   -- --target local
 ```
 
-Всё после `--` передаётся напрямую в `install.sh`, поэтому можно использовать `--target local`, `--target wsl2`, `--unattended`, `--lm-url` и остальные параметры установщика. Для постоянного канала релизов URL можно хранить в переменной окружения:
+Всё после `--` передаётся напрямую в `install.sh`, поэтому можно использовать `--target local`, `--target wsl2`, `--target vps`, `--domain`, `--unattended`, `--lm-url` и остальные параметры установщика. Для постоянного канала релизов URL можно хранить в переменной окружения:
 
 ```bash
 export CVD_RELEASE_URL=https://github.com/<org>/<repo>/releases/latest/download/cvd-web.tar.gz
@@ -108,8 +126,8 @@ scripts/install_from_release.sh -- --target local --unattended
 export GH_TOKEN=<github-token-with-repo-or-public_repo-scope>
 export GH_REPO=<owner>/<repo>
 scripts/publish_github_release.sh \
-  --tag v0.9.0 \
-  --archive /workspace/cvd-web-release/cvd-web-v0.9.0.tar.gz
+  --tag v0.9.3 \
+  --archive /workspace/cvd-web-release/cvd-web-v0.9.3.tar.gz
 ```
 
 Скрипт проверит авторизацию `gh`, создаст release, если его ещё нет, или перезальёт архив и `.sha256` через `gh release upload --clobber`, если release уже существует.
@@ -130,18 +148,20 @@ scripts/publish_github_release.sh \
 ## Запуск из исходников
 
 ```bash
-cd /Users/neo/Documents/cvd
-/Users/neo/.cache/codex-runtimes/codex-primary-runtime/dependencies/python/bin/python3 -m cvd_web
+cd /path/to/cvd-web
+python3 -m cvd_web
 ```
 
 Откройте `http://127.0.0.1:8080`.
+
+Для production-runner используйте WSGI entrypoint `cvd_web.wsgi:application` с выбранным сервером WSGI/reverse proxy. Встроенный `python3 -m cvd_web` остаётся удобным для локального запуска и controlled evaluation.
 
 При первом старте создаётся админ:
 
 - email: `admin@example.local`
 - пароль: `admin12345`
 
-Для реального окружения задайте `CVD_ADMIN_EMAIL` и `CVD_ADMIN_PASSWORD` до первого запуска.
+Для реального окружения задайте `CVD_ADMIN_EMAIL` и `CVD_ADMIN_PASSWORD` до первого запуска. В production-режиме (`CVD_ENV=production`) приложение откажется создавать первого администратора с дефолтным паролем.
 
 ## LM Studio через VPN
 
@@ -208,6 +228,7 @@ Structured output: включён
 ```bash
 export CVD_HOST=127.0.0.1
 export CVD_PORT=8080
+export CVD_ENV=production
 export CVD_COOKIE_SECURE=1
 export CVD_ADMIN_EMAIL=admin@example.com
 export CVD_ADMIN_PASSWORD='long-random-password'
@@ -215,7 +236,15 @@ export LM_STUDIO_API_URL=http://10.8.0.2:1234/v1/chat/completions
 python3 -m cvd_web
 ```
 
-Для nginx проксируйте HTTPS-домен на `127.0.0.1:8080`. В production включайте `CVD_COOKIE_SECURE=1`.
+Для nginx проксируйте HTTPS-домен на `127.0.0.1:8080`. В production включайте `CVD_ENV=production` и `CVD_COOKIE_SECURE=1`; `/readyz` вернёт `503`, если secure-cookie posture не готов для production.
+
+Для мониторинга доступны два endpoint:
+
+- `/healthz` — простой liveness-check процесса;
+- `/readyz` — readiness-check SQLite integrity, наличия template/static каталогов и production security posture.
+- `/api/admin/security-audit` — admin-only security checklist: default credentials, secure cookies, AI Gateway headers, backup posture, audit log и production runtime blockers.
+
+Важно: текущая сборка всё ещё использует in-process очередь LM Studio и in-memory rate limit. В `CVD_ENV=production` `/readyz` намеренно остаётся `503`, пока не внедрены внешние Redis/PostgreSQL adapter очереди и внешний rate limiter; это защищает от случайного запуска production в небезопасной многопроцессной конфигурации.
 
 Текущий rate limit хранится в памяти процесса: 10 попыток входа на 5 минут для пары IP/email и 30 запросов к модели в час на пользователя. На VPS это полезная базовая защита, но для нескольких процессов или нескольких серверов нужен внешний limiter на уровне nginx/Redis.
 
@@ -227,6 +256,25 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
+### umbrelOS
+
+Репозиторий можно добавить в umbrelOS как Community App Store:
+
+```text
+https://github.com/granyov/cvd-web
+```
+
+Umbrel package находится в `granyov-cvd-web/` и использует image `ghcr.io/granyov/cvd-web:v0.9.3`. GitHub Actions workflow `Docker Image` публикует этот image в GHCR на tag `v*` или при ручном запуске workflow.
+
+Данные приложения хранятся в `${APP_DATA_DIR}/data` и монтируются в контейнер как `/app/data`. Первый вход в Umbrel-сборке:
+
+```text
+admin@umbrel.local
+UmbrelCVD2026Pass!
+```
+
+После первого входа система попросит сменить пароль. LM Studio по умолчанию ожидается на `http://host.docker.internal:1234/v1/chat/completions`; другой endpoint, включая cloudflared tunnel, настраивается в админке CVD Web.
+
 ### Backup SQLite
 
 ```bash
@@ -235,11 +283,20 @@ sh scripts/backup_sqlite.sh
 
 Для cron/systemd timer задайте `CVD_DB_PATH` и `CVD_BACKUP_DIR`, если пути отличаются от стандартных.
 
+### Миграции SQLite
+
+```bash
+python3 -m cvd_web migrate --check
+python3 -m cvd_web migrate
+```
+
+Команда `migrate` применяет текущую схему через `schema_migrations`; если база уже существует и есть pending migrations, перед применением создаётся `cvd-pre-migration-*.sqlite3` backup.
+
 ## Следующие инженерные шаги
 
 - Заменить dev WSGI server на production runner или systemd socket setup.
 - Добавить полноценную страницу профиля вместо prompt-диалога смены пароля.
-- Развить миграции БД до полноценной версионной системы.
-- Добавить мониторинг доступности LM Studio.
+- Дальше развивать `schema_migrations`: вынести крупные миграции в отдельные файлы и добавить rollback-процедуры.
+- Расширить мониторинг доступности LM Studio и внешний экспорт метрик.
 - Определить политику хранения медицинских данных и деидентификации.
 - Расширить validation/gold set: запускать эталоны на выбранных моделях и промптах автоматически.

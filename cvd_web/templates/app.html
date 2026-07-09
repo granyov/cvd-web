@@ -40,12 +40,6 @@
         <p class="eyebrow">{{organization_name}}</p>
         <h1>Кардиологический кейс</h1>
       </div>
-      <div class="hero-metrics">
-        <div><strong id="filledMetric">0%</strong><span>заполнено</span></div>
-        <div><strong id="readinessMetric">0%</strong><span>готовность</span></div>
-        <div><strong id="icdMetric">0</strong><span>кодов МКБ</span></div>
-        <div><strong id="requestMetric">0</strong><span>запросов</span></div>
-      </div>
     </div>
 
     <div class="layout">
@@ -83,6 +77,13 @@
             <span id="modelStatus" class="pill">AI не запускался</span>
             <span id="queueStatus" class="pill hidden">очередь AI</span>
           </div>
+          <div id="draftBanner" class="draft-banner hidden" role="status" aria-live="polite">
+            <span id="draftBannerText">Найден локальный черновик.</span>
+            <div class="toolbar">
+              <button type="button" id="restoreDraftButton">Восстановить</button>
+              <button type="button" id="dismissDraftButton">Скрыть</button>
+            </div>
+          </div>
           <nav id="sectionNav" class="section-nav" aria-label="Навигация по разделам формы"></nav>
           <div id="resultReadyBanner" class="result-ready hidden" role="status" aria-live="polite">
             <div>
@@ -104,20 +105,12 @@
         <div class="panel-body">
           <section id="tab-quality">
             <div id="patientSnapshot" class="clinical-cards"></div>
+            <div id="lastModelSummary" class="last-model-summary hidden"></div>
             <div class="quality-section">
-              <h3>Клинический workflow</h3>
-              <div id="clinicalWorkflowPanel" class="clinical-workflow"></div>
-            </div>
-            <div class="quality-section next-action-card side-next-action" role="status" aria-live="polite">
-              <strong>Следующее действие</strong>
-              <span id="sideNextActionText">Заполните ключевые поля пациента.</span>
-            </div>
-            <div class="quality-section">
-              <h3>Прогресс по разделам</h3>
-              <div id="sectionProgressPanel" class="section-progress-list"></div>
-            </div>
-            <div class="quality-section">
-              <h3>Готовность к анализу</h3>
+              <div class="quality-heading">
+                <h3>Ключевые поля</h3>
+                <button type="button" id="jumpMissingButton">К первому незаполненному</button>
+              </div>
               <div id="readinessPanel" class="quality-list"></div>
             </div>
             <div class="quality-section">

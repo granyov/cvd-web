@@ -21,6 +21,7 @@ from cvd_web.lmstudio import (
     normalize_model_output,
 )
 from cvd_web.lmstudio_models import activate_lm_model, list_lm_models
+from cvd_web.migrations import migration_status, run_migrations
 from cvd_web.privacy import deidentify_patient_data
 from cvd_web.quality import case_quality_summary, has_clinical_input, patient_data_changes, patient_data_hash
 from cvd_web.rate_limit import MemoryRateLimiter
@@ -29,6 +30,7 @@ from cvd_web.reporting import build_html_report
 
 def make_test_config(db_path: Path) -> Config:
     return Config(
+        app_env="test",
         project_root=PROJECT_ROOT,
         db_path=db_path,
         host="127.0.0.1",
@@ -419,6 +421,12 @@ class CoreTests(unittest.TestCase):
             status, _, body = call_wsgi(app, "/healthz")
             self.assertTrue(status.startswith("200"), body)
             self.assertEqual(json.loads(body.decode("utf-8"))["ok"], True)
+            status, _, body = call_wsgi(app, "/readyz")
+            self.assertTrue(status.startswith("200"), body)
+            readiness = json.loads(body.decode("utf-8"))
+            self.assertTrue(readiness["ok"])
+            self.assertTrue(readiness["checks"]["database"]["ok"])
+            self.assertFalse(readiness["checks"]["security"]["production_mode"])
             _, health_headers, _ = call_wsgi(app, "/healthz")
             self.assertIn("Content-Security-Policy", health_headers)
             self.assertEqual(health_headers["X-Frame-Options"], "DENY")
@@ -638,6 +646,7 @@ class CoreTests(unittest.TestCase):
             self.assertTrue(status.startswith("200"), body)
             settings = {item["key"]: item["value"] for item in json.loads(body.decode("utf-8"))["settings"]}
             self.assertIn("ai_gateway_profile", settings)
+            self.assertIn("ai_gateway_headers_json", settings)
             self.assertIn("ai_gateway_auth_header_name", settings)
             self.assertIn("ai_gateway_auth_header_value", settings)
             self.assertIn("lm_studio_temperature", settings)
@@ -647,20 +656,31 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(settings["lm_studio_per_user_limit"], "2")
             self.assertEqual(settings["inference_queue_backend"], "memory")
             self.assertIn("inference_queue_dsn", settings)
+            self.assertEqual(settings["rate_limit_backend"], "memory")
+            self.assertIn("rate_limit_dsn", settings)
+            self.assertEqual(settings["inference_worker_mode"], "in_process")
             self.assertIn("text_structuring_model", settings)
             self.assertIn("deidentify_before_model", settings)
             self.assertIn("active_prompt_version", settings)
             self.assertIn("active_prompt_template", settings)
+            self.assertEqual(settings["gold_min_score_percent"], "80")
             self.assertIn("{{PATIENT_JSON}}", settings["active_prompt_template"])
 
             updated_settings = dict(settings)
             updated_settings["ai_gateway_profile"] = "cloudflared"
-            updated_settings["ai_gateway_auth_header_name"] = "Authorization"
-            updated_settings["ai_gateway_auth_header_value"] = "Bearer test-token"
+            updated_settings["ai_gateway_headers_json"] = json.dumps([
+                {"name": "User-Agent", "value": "CVD-Web/0.9"},
+                {"name": "CF-Access-Client-Id", "value": "client-id"},
+                {"name": "CF-Access-Client-Secret", "value": "client-secret"},
+            ])
             updated_settings["active_prompt_version"] = "test-prompt-v2"
             updated_settings["active_prompt_template"] = "Clinical prompt\n{{PATIENT_JSON}}"
+            updated_settings["gold_min_score_percent"] = "80"
             updated_settings["inference_queue_backend"] = "redis"
             updated_settings["inference_queue_dsn"] = "redis://localhost:6379/0"
+            updated_settings["rate_limit_backend"] = "redis"
+            updated_settings["rate_limit_dsn"] = "redis://localhost:6379/1"
+            updated_settings["inference_worker_mode"] = "external"
             status, _, body = call_wsgi(
                 app,
                 "/api/admin/settings",
@@ -671,11 +691,31 @@ class CoreTests(unittest.TestCase):
             )
             self.assertTrue(status.startswith("200"), body)
 
+            status, _, body = call_wsgi(app, "/api/admin/security-audit", cookie=cookie)
+            self.assertTrue(status.startswith("200"), body)
+            security_audit = json.loads(body.decode("utf-8"))
+            security_checks = {item["key"]: item for item in security_audit["checks"]}
+            self.assertFalse(security_checks["default_admin_password"]["ok"])
+            self.assertTrue(security_checks["cloudflared_access_headers"]["ok"])
+
+            status, _, body = call_wsgi(app, "/api/admin/audit?limit=10", cookie=cookie)
+            self.assertTrue(status.startswith("200"), body)
+            audit_items = json.loads(body.decode("utf-8"))["audit"]
+            settings_audit = next(item for item in audit_items if item["action"] == "settings_update")
+            details_text = json.dumps(settings_audit["details"], ensure_ascii=False)
+            self.assertNotIn("client-secret", details_text)
+            self.assertNotIn("redis://localhost:6379", details_text)
+            changed_by_key = {item["key"]: item for item in settings_audit["details"]["changed"]}
+            self.assertEqual(changed_by_key["ai_gateway_headers_json"]["new"]["count"], 3)
+            self.assertEqual(changed_by_key["rate_limit_dsn"]["new"]["configured"], True)
+
             status, _, body = call_wsgi(app, "/api/admin/dashboard", cookie=cookie)
             self.assertTrue(status.startswith("200"), body)
             production_queue = json.loads(body.decode("utf-8"))["production_queue"]
             self.assertEqual(production_queue["backend"], "redis")
             self.assertEqual(production_queue["active_backend"], "memory")
+            self.assertEqual(production_queue["rate_limit_backend"], "redis")
+            self.assertEqual(production_queue["worker_mode"], "external")
             self.assertFalse(production_queue["production_ready"])
 
             with patch("cvd_web.app.list_lm_models", return_value={"api_version": "v1", "models": [{"id": "healtheart-cvd-engine", "state": "loaded", "loaded_context_length": 8192}]}) as list_models:
@@ -691,7 +731,12 @@ class CoreTests(unittest.TestCase):
             gateway_test = json.loads(body.decode("utf-8"))
             self.assertTrue(gateway_test["ok"])
             self.assertEqual(gateway_test["gateway"]["profile"], "cloudflared")
-            self.assertEqual(list_models.call_args.kwargs["extra_headers"], {"Authorization": "Bearer test-token"})
+            self.assertEqual(gateway_test["gateway"]["auth_header_count"], 3)
+            self.assertEqual(list_models.call_args.kwargs["extra_headers"], {
+                "User-Agent": "CVD-Web/0.9",
+                "CF-Access-Client-Id": "client-id",
+                "CF-Access-Client-Secret": "client-secret",
+            })
 
             invalid_queue_settings = dict(updated_settings)
             invalid_queue_settings["inference_queue_backend"] = "postgresql"
@@ -703,6 +748,19 @@ class CoreTests(unittest.TestCase):
                 cookie=cookie,
                 csrf=csrf,
                 body={"settings": invalid_queue_settings},
+            )
+            self.assertTrue(status.startswith("400"), body)
+
+            invalid_rate_limit_settings = dict(updated_settings)
+            invalid_rate_limit_settings["rate_limit_backend"] = "postgresql"
+            invalid_rate_limit_settings["rate_limit_dsn"] = ""
+            status, _, body = call_wsgi(
+                app,
+                "/api/admin/settings",
+                method="POST",
+                cookie=cookie,
+                csrf=csrf,
+                body={"settings": invalid_rate_limit_settings},
             )
             self.assertTrue(status.startswith("400"), body)
 
@@ -721,6 +779,7 @@ class CoreTests(unittest.TestCase):
 
             with connect(app.config.db_path) as conn:
                 columns = {row["name"] for row in conn.execute("PRAGMA table_info(model_requests)").fetchall()}
+                schema_migrations = conn.execute("SELECT COUNT(*) FROM schema_migrations").fetchone()[0]
             self.assertIn("prompt_version", columns)
             self.assertIn("settings_snapshot_json", columns)
             self.assertIn("completion_tokens", columns)
@@ -728,6 +787,7 @@ class CoreTests(unittest.TestCase):
             self.assertIn("finish_reason", columns)
             self.assertIn("queue_wait_ms", columns)
             self.assertIn("input_data_hash", columns)
+            self.assertGreaterEqual(schema_migrations, 1)
 
             status, _, body = call_wsgi(app, "/api/inference/status", cookie=cookie)
             self.assertTrue(status.startswith("200"), body)
@@ -953,6 +1013,8 @@ class CoreTests(unittest.TestCase):
                     "expected_diagnosis": "артериальная гипертензия",
                     "expected_icd10": "I10",
                     "expected_red_flags": "",
+                    "expected_missing_data": "Суточный профиль АД",
+                    "severity": "high",
                     "expected_abstain": False,
                     "notes": "Базовый эталон",
                 },
@@ -964,14 +1026,29 @@ class CoreTests(unittest.TestCase):
             gold_set = json.loads(body.decode("utf-8"))
             self.assertEqual(gold_set["summary"]["gold_cases"], 1)
             self.assertEqual(gold_set["summary"]["evaluated"], 1)
+            self.assertEqual(gold_set["summary"]["min_score_percent"], 80)
+            self.assertTrue(gold_set["summary"]["release_gate_ok"])
             self.assertEqual(gold_set["gold_cases"][0]["evaluation"]["icd10_match"], True)
+            self.assertEqual(gold_set["gold_cases"][0]["evaluation"]["missing_data_match"], True)
             self.assertEqual(gold_set["gold_cases"][0]["evaluation"]["abstain_match"], True)
+            self.assertEqual(gold_set["gold_cases"][0]["severity"], "high")
 
             status, _, body = call_wsgi(app, "/api/admin/gold-runs", method="POST", cookie=cookie, csrf=csrf, body={})
             self.assertTrue(status.startswith("201"), body)
             gold_run = json.loads(body.decode("utf-8"))
             self.assertEqual(gold_run["summary"]["total_items"], 1)
             self.assertEqual(gold_run["summary"]["evaluated_items"], 1)
+            self.assertTrue(gold_run["summary"]["release_gate_ok"])
+
+            status, csv_headers, csv_body = call_wsgi(app, "/api/admin/gold-set/export.csv", cookie=cookie)
+            self.assertTrue(status.startswith("200"), csv_body)
+            self.assertEqual(csv_headers["Content-Type"], "text/csv; charset=utf-8")
+            self.assertIn("gold_id,case_id,title", csv_body.decode("utf-8"))
+
+            status, html_headers, html_body = call_wsgi(app, "/api/admin/gold-set/report.html", cookie=cookie)
+            self.assertTrue(status.startswith("200"), html_body)
+            self.assertEqual(html_headers["Content-Type"], "text/html; charset=utf-8")
+            self.assertIn("Gate: PASS", html_body.decode("utf-8"))
 
             status, _, body = call_wsgi(app, "/api/admin/gold-runs", cookie=cookie)
             self.assertTrue(status.startswith("200"), body)
@@ -1059,8 +1136,8 @@ class CoreTests(unittest.TestCase):
             status, _, body = call_wsgi(app, "/api/admin/reviews", cookie=cookie)
             self.assertTrue(status.startswith("200"), body)
             reviews = json.loads(body.decode("utf-8"))["reviews"]
-            self.assertEqual(reviews[0]["model_request_id"], request_id)
-            self.assertEqual(reviews[0]["issue_types"], ["missing_data"])
+            request_review = next(item for item in reviews if item["model_request_id"] == request_id)
+            self.assertEqual(request_review["issue_types"], ["missing_data"])
 
             status, _, body = call_wsgi(app, "/api/admin/audit?limit=abc", cookie=cookie)
             self.assertTrue(status.startswith("200"), body)
@@ -1108,6 +1185,57 @@ class CoreTests(unittest.TestCase):
             )
             self.assertTrue(status.startswith("429"), body)
             self.assertIn("Retry-After", headers)
+
+    def test_production_rejects_default_admin_password_and_requires_secure_cookie_for_readiness(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            insecure_config = make_test_config(Path(tmp) / "insecure.sqlite3")
+            insecure_config = Config(
+                **{
+                    **insecure_config.__dict__,
+                    "app_env": "production",
+                    "admin_email": "admin@example.local",
+                    "admin_password": "admin12345",
+                }
+            )
+            with self.assertRaisesRegex(RuntimeError, "default administrator password"):
+                CVDApplication(insecure_config, start_batch_worker=False)
+
+            ready_config = make_test_config(Path(tmp) / "ready.sqlite3")
+            ready_config = Config(
+                **{
+                    **ready_config.__dict__,
+                    "app_env": "production",
+                    "admin_password": "Strong-production-password-2026!",
+                    "cookie_secure": False,
+                }
+            )
+            app = CVDApplication(ready_config, start_batch_worker=False)
+            status, _, body = call_wsgi(app, "/readyz")
+            self.assertTrue(status.startswith("503"), body)
+            readiness = json.loads(body.decode("utf-8"))
+            self.assertFalse(readiness["ok"])
+            self.assertFalse(readiness["checks"]["security"]["ok"])
+            self.assertFalse(readiness["checks"]["runtime"]["ok"])
+            self.assertIn("queue-backend-memory", readiness["checks"]["runtime"]["blockers"])
+            self.assertIn("rate-limit-memory", readiness["checks"]["runtime"]["blockers"])
+            self.assertIn("worker-in-process", readiness["checks"]["runtime"]["blockers"])
+
+    def test_migration_workflow_creates_backup_before_pending_migrations(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "migrations.sqlite3"
+            config = make_test_config(db_path)
+            CVDApplication(config, start_batch_worker=False)
+            with connect(db_path) as conn:
+                conn.execute("DELETE FROM schema_migrations WHERE id = ?", ("0010_gold_release_gate",))
+
+            status = migration_status(db_path)
+            self.assertIn("0010_gold_release_gate", status["pending"])
+            backup_dir = Path(tmp) / "migration-backups"
+            result = run_migrations(config, backup=True, backup_dir=backup_dir)
+            self.assertTrue(result["ok"], result)
+            self.assertFalse(result["after"]["pending"], result)
+            self.assertTrue(result["backup_path"].endswith(".sqlite3"), result)
+            self.assertTrue(Path(result["backup_path"]).is_file())
 
     def test_memory_rate_limiter_window(self):
         now = [100.0]

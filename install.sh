@@ -1,11 +1,13 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-VERSION="v0.9.0"
+VERSION="v0.9.3"
 TARGET=""
 INSTALL_DIR=""
 BIND_HOST=""
 PORT="8080"
+ENV_MODE=""
+COOKIE_SECURE=""
 ADMIN_EMAIL="${CVD_ADMIN_EMAIL:-}"
 ADMIN_PASSWORD="${CVD_ADMIN_PASSWORD:-}"
 LM_URL="${LM_STUDIO_API_URL:-http://127.0.0.1:1234/v1/chat/completions}"
@@ -33,6 +35,8 @@ Options:
   --install-dir PATH       Override installation directory
   --bind HOST              Bind address (defaults: local/wsl2 0.0.0.0, vps 127.0.0.1)
   --port PORT              HTTP port, default 8080
+  --env MODE               CVD_ENV: development, controlled, or production
+  --cookie-secure 0|1      Set Secure flag for session cookies; use 1 behind HTTPS
   --admin-email EMAIL      Initial administrator email
   --admin-password PASS    Initial password, minimum 15 characters
   --lm-url URL             LM Studio /v1/chat/completions endpoint
@@ -60,6 +64,8 @@ while (($#)); do
     --install-dir) INSTALL_DIR="${2:-}"; shift 2 ;;
     --bind) BIND_HOST="${2:-}"; shift 2 ;;
     --port) PORT="${2:-}"; shift 2 ;;
+    --env) ENV_MODE="${2:-}"; shift 2 ;;
+    --cookie-secure) COOKIE_SECURE="${2:-}"; shift 2 ;;
     --admin-email) ADMIN_EMAIL="${2:-}"; shift 2 ;;
     --admin-password) ADMIN_PASSWORD="${2:-}"; shift 2 ;;
     --lm-url) LM_URL="${2:-}"; shift 2 ;;
@@ -82,6 +88,12 @@ if [[ -z "$TARGET" ]]; then
 fi
 [[ "$TARGET" =~ ^(local|vps|wsl2)$ ]] || fail "Target must be local, vps, or wsl2"
 [[ "$PORT" =~ ^[0-9]+$ ]] && ((PORT >= 1 && PORT <= 65535)) || fail "Port must be between 1 and 65535"
+if [[ -n "$ENV_MODE" ]]; then
+  [[ "$ENV_MODE" =~ ^(development|controlled|production)$ ]] || fail "--env must be development, controlled, or production"
+fi
+if [[ -n "$COOKIE_SECURE" ]]; then
+  [[ "$COOKIE_SECURE" =~ ^[01]$ ]] || fail "--cookie-secure must be 0 or 1"
+fi
 [[ "$LM_URL" =~ ^https?://[^[:space:]]+$ ]] || fail "LM Studio URL must be an http(s) URL without spaces"
 [[ "$LM_MODEL" != *$'\n'* && -n "$LM_MODEL" ]] || fail "LM Studio model is invalid"
 [[ "$DOMAIN" != *$'\n'* && "$DOMAIN" != *' '* ]] || fail "Domain is invalid"
@@ -102,6 +114,16 @@ if [[ -z "$INSTALL_DIR" ]]; then
 fi
 if [[ -z "$BIND_HOST" ]]; then
   [[ "$TARGET" == "vps" ]] && BIND_HOST="127.0.0.1" || BIND_HOST="0.0.0.0"
+fi
+if [[ -z "$ENV_MODE" ]]; then
+  [[ "$TARGET" == "vps" ]] && ENV_MODE="controlled" || ENV_MODE="development"
+fi
+if [[ -z "$COOKIE_SECURE" ]]; then
+  if [[ "$TARGET" == "vps" && "$ENV_MODE" == "production" ]]; then
+    COOKIE_SECURE="1"
+  else
+    COOKIE_SECURE="0"
+  fi
 fi
 
 install_apt_packages() {
@@ -197,8 +219,9 @@ copy_source
 cat >"$ENV_FILE" <<EOF
 CVD_HOST=${BIND_HOST}
 CVD_PORT=${PORT}
+CVD_ENV=${ENV_MODE}
 CVD_DB_PATH=${DATA_DIR}/cvd.sqlite3
-CVD_COOKIE_SECURE=0
+CVD_COOKIE_SECURE=${COOKIE_SECURE}
 CVD_SESSION_DAYS=7
 CVD_ADMIN_EMAIL=${ADMIN_EMAIL}
 CVD_ADMIN_PASSWORD=${ADMIN_PASSWORD}
@@ -341,6 +364,7 @@ LAN_IP="$(lan_ip)"
 
 log "Installation complete"
 printf 'Target:        %s\n' "$TARGET"
+printf 'CVD_ENV:       %s\n' "$ENV_MODE"
 printf 'Install path:  %s\n' "$INSTALL_DIR"
 printf 'Configuration: %s\n' "$ENV_FILE"
 printf 'Local URL:     http://127.0.0.1:%s\n' "$PORT"
@@ -365,6 +389,9 @@ if [[ "$ENABLE_SERVICE" -eq 0 ]]; then
 fi
 if [[ "$TARGET" == "wsl2" && -n "$LAN_IP" ]]; then
   cat <<EOF
+
+From Windows on the same machine, open:
+  http://localhost:${PORT}
 
 For access from other home-network devices, run PowerShell as Administrator:
   netsh interface portproxy add v4tov4 listenport=${PORT} listenaddress=0.0.0.0 connectport=${PORT} connectaddress=${LAN_IP}

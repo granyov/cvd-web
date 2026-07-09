@@ -18,6 +18,8 @@
   const backupsList = document.getElementById("backupsList");
   const backupStatus = document.getElementById("backupStatus");
   const dashboardMetrics = document.getElementById("dashboardMetrics");
+  const securityAuditSummary = document.getElementById("securityAuditSummary");
+  const securityAuditList = document.getElementById("securityAuditList");
   const modelQualityDashboard = document.getElementById("modelQualityDashboard");
   const modelQualityModels = document.getElementById("modelQualityModels");
   const modelQualityReviews = document.getElementById("modelQualityReviews");
@@ -35,6 +37,9 @@
   const modelCatalogStatus = document.getElementById("modelCatalogStatus");
   const activateModelButton = document.getElementById("activateModelButton");
   const unloadPreviousModel = document.getElementById("unloadPreviousModel");
+  const aiGatewayHeadersList = document.getElementById("aiGatewayHeadersList");
+  const aiGatewayHeadersJson = document.getElementById("aiGatewayHeadersJson");
+  const addGatewayHeaderButton = document.getElementById("addGatewayHeaderButton");
   const selectedBatchCases = new Set();
   let batchCases = [];
   let lastModelHealth = null;
@@ -225,7 +230,7 @@
       ["База данных", system.db_integrity === "ok" ? "integrity ok" : system.db_integrity || "нет данных", system.db_integrity === "ok" ? "ok" : "error"],
       ["Фоновый worker", system.worker_running ? "работает" : "остановлен", system.worker_running ? "ok" : "error"],
       ["Очередь LM Studio", `${number(queue.active_count)} активно · ${number(queue.queued_count)} ожидает · лимит ${number(queue.max_concurrent)}`, Number(queue.queued_count) > 0 ? "warning" : "ok"],
-      ["Production queue", dashboard.production_queue?.backend ? `${dashboard.production_queue.active_backend} active · target ${dashboard.production_queue.backend}` : "нет данных", dashboard.production_queue?.external_requested ? "warning" : "ok"],
+      ["Production runtime", dashboard.production_queue?.backend ? `queue ${dashboard.production_queue.active_backend}->${dashboard.production_queue.backend} · rate ${dashboard.production_queue.active_rate_limit_backend || "memory"}->${dashboard.production_queue.rate_limit_backend || "memory"} · worker ${dashboard.production_queue.active_worker_mode || "in_process"}->${dashboard.production_queue.worker_mode || "in_process"}` : "нет данных", dashboard.production_queue?.production_ready ? "ok" : dashboard.production_queue?.blockers?.length ? "warning" : "ok"],
       ["Размер БД", `${(Number(system.db_size_bytes || 0) / 1024 / 1024).toFixed(2)} МБ`, ""],
       ["Время работы", uptime(system.uptime_seconds), ""],
       ["Версия", system.app_version || "", ""]
@@ -238,6 +243,41 @@
       row.append(name, pill(value, kind));
       systemHealthGrid.appendChild(row);
     });
+  }
+
+  function renderSecurityAudit(audit) {
+    if (!securityAuditSummary || !securityAuditList) return;
+    const summary = audit.summary || {};
+    securityAuditSummary.innerHTML = "";
+    [
+      ["Status", audit.ok ? "OK" : "Attention"],
+      ["Checks", `${number(summary.total)} total`],
+      ["Critical", number(summary.critical)],
+      ["Warnings", number(summary.warnings)]
+    ].forEach(([label, value]) => {
+      const node = pill(`${label}: ${value}`, label === "Status" ? audit.ok ? "ok" : "warning" : Number(value) ? "warning" : "");
+      securityAuditSummary.appendChild(node);
+    });
+    securityAuditList.innerHTML = "";
+    (audit.checks || []).forEach((item) => {
+      const row = document.createElement("div");
+      row.className = `check-row ${item.ok ? "ok" : item.severity === "critical" ? "error" : "warning"}`;
+      const mark = document.createElement("span");
+      mark.className = "check-mark";
+      mark.textContent = item.ok ? "✓" : "!";
+      const text = document.createElement("span");
+      text.textContent = item.message || item.key;
+      const state = document.createElement("small");
+      state.textContent = item.ok ? "ok" : item.severity || "warning";
+      row.append(mark, text, state);
+      securityAuditList.appendChild(row);
+    });
+  }
+
+  async function loadSecurityAudit() {
+    const audit = await api("/api/admin/security-audit");
+    renderSecurityAudit(audit);
+    return audit;
   }
 
   async function loadDashboard() {
@@ -413,6 +453,79 @@
     aiGatewayHint.textContent = gatewayProfileHint(aiGatewayProfile.value);
   }
 
+  function normalizeGatewayHeaderEntries(values) {
+    const entries = [];
+    const raw = values.ai_gateway_headers_json || "";
+    if (raw) {
+      try {
+        const decoded = JSON.parse(raw);
+        if (Array.isArray(decoded)) {
+          decoded.forEach((item) => {
+            const name = String(item?.name || "").trim();
+            const value = String(item?.value || "").trim();
+            if (name || value) entries.push({name, value});
+          });
+        }
+      } catch {
+        // The server will validate on save; keep the UI recoverable.
+      }
+    }
+    if (!entries.length && (values.ai_gateway_auth_header_name || values.ai_gateway_auth_header_value)) {
+      entries.push({
+        name: String(values.ai_gateway_auth_header_name || "").trim(),
+        value: String(values.ai_gateway_auth_header_value || "").trim()
+      });
+    }
+    return entries;
+  }
+
+  function syncGatewayHeaders() {
+    if (!aiGatewayHeadersList || !aiGatewayHeadersJson) return;
+    const entries = Array.from(aiGatewayHeadersList.querySelectorAll(".auth-header-row")).map((row) => ({
+      name: row.querySelector(".auth-header-name")?.value.trim() || "",
+      value: row.querySelector(".auth-header-value")?.value.trim() || ""
+    })).filter((entry) => entry.name || entry.value);
+    aiGatewayHeadersJson.value = JSON.stringify(entries);
+    const first = entries[0] || {name: "", value: ""};
+    if (settingsForm.elements.ai_gateway_auth_header_name) settingsForm.elements.ai_gateway_auth_header_name.value = first.name;
+    if (settingsForm.elements.ai_gateway_auth_header_value) settingsForm.elements.ai_gateway_auth_header_value.value = first.value;
+  }
+
+  function addGatewayHeaderRow(entry = {}) {
+    if (!aiGatewayHeadersList) return;
+    const row = document.createElement("div");
+    row.className = "auth-header-row";
+    const name = document.createElement("input");
+    name.className = "auth-header-name";
+    name.type = "text";
+    name.placeholder = "CF-Access-Client-Id";
+    name.value = entry.name || "";
+    const value = document.createElement("input");
+    value.className = "auth-header-value";
+    value.type = "password";
+    value.autocomplete = "off";
+    value.placeholder = "значение header";
+    value.value = entry.value || "";
+    const remove = document.createElement("button");
+    remove.type = "button";
+    remove.textContent = "Удалить";
+    remove.addEventListener("click", () => {
+      row.remove();
+      syncGatewayHeaders();
+    });
+    [name, value].forEach((input) => input.addEventListener("input", syncGatewayHeaders));
+    row.append(name, value, remove);
+    aiGatewayHeadersList.appendChild(row);
+    syncGatewayHeaders();
+  }
+
+  function renderGatewayHeaders(values) {
+    if (!aiGatewayHeadersList) return;
+    aiGatewayHeadersList.innerHTML = "";
+    normalizeGatewayHeaderEntries(values).forEach((entry) => addGatewayHeaderRow(entry));
+    syncGatewayHeaders();
+  }
+
   async function testGateway() {
     testGatewayButton.disabled = true;
     modelCatalogStatus.textContent = "Проверка AI Gateway...";
@@ -467,6 +580,7 @@
         settingsForm.elements[key].value = value;
       }
     });
+    renderGatewayHeaders(values);
     window.APP_SETTINGS = { ...(window.APP_SETTINGS || {}), ...values };
     updateGatewayHint();
     return values;
@@ -548,6 +662,7 @@
 
   async function saveSettings(event) {
     event.preventDefault();
+    syncGatewayHeaders();
     const settings = {};
     Array.from(settingsForm.elements).forEach((element) => {
       if (!element.name) return;
@@ -758,10 +873,14 @@
       ["Средний score", `${summary.avg_score_percent || 0}%`],
       ["МКБ-10 hit", summary.icd10_hits || 0],
       ["Red flags match", summary.red_flag_matches || 0],
-      ["Abstain match", summary.abstain_matches || 0]
+      ["Missing data match", summary.missing_data_matches || 0],
+      ["Abstain match", summary.abstain_matches || 0],
+      ["Gate", summary.release_gate_ok ? "PASS" : "BLOCKED"],
+      ["Threshold", `${summary.min_score_percent || 80}%`]
     ].forEach(([label, value]) => {
       const node = pill(`${label}: ${value}`);
-      if (label === "Средний score" && Number(summary.avg_score_percent || 0) < 80 && Number(summary.evaluated || 0) > 0) node.classList.add("warning");
+      if (label === "Средний score" && Number(summary.avg_score_percent || 0) < Number(summary.min_score_percent || 80) && Number(summary.evaluated || 0) > 0) node.classList.add("warning");
+      if (label === "Gate") node.classList.add(summary.release_gate_ok ? "ok" : "warning");
       goldSetSummary.appendChild(node);
     });
     const goldCases = response.gold_cases || [];
@@ -787,13 +906,15 @@
       item.expected_diagnosis ? `диагноз: ${item.expected_diagnosis}` : "",
       (item.expected_icd10 || []).length ? `МКБ-10: ${(item.expected_icd10 || []).join(", ")}` : "",
       (item.expected_red_flags || []).length ? `red flags: ${(item.expected_red_flags || []).join("; ")}` : "red flags: нет",
-      `abstain: ${item.expected_abstain ? "да" : "нет"}`
+      (item.expected_missing_data || []).length ? `missing data: ${(item.expected_missing_data || []).join("; ")}` : "",
+      `abstain: ${item.expected_abstain ? "да" : "нет"}`,
+      `severity: ${item.severity || "medium"}`
     ].filter(Boolean).join("\n");
     const result = item.latest_request_id
       ? `#${item.latest_request_id} · ${item.latest_model || ""}\n${item.latest_prompt_version || ""}\n${item.latest_request_created_at || ""}`
       : "нет успешного результата";
     const score = evaluation.status === "evaluated"
-      ? `${evaluation.score_percent}%\nМКБ-10 ${boolMark(evaluation.icd10_match)} · red flags ${boolMark(evaluation.red_flags_match)} · abstain ${boolMark(evaluation.abstain_match)} · диагноз ${boolMark(evaluation.diagnosis_match)}`
+      ? `${evaluation.score_percent}%\nМКБ-10 ${boolMark(evaluation.icd10_match)} · red flags ${boolMark(evaluation.red_flags_match)} · missing data ${boolMark(evaluation.missing_data_match)} · abstain ${boolMark(evaluation.abstain_match)} · диагноз ${boolMark(evaluation.diagnosis_match)}`
       : "ожидает успешного результата";
     row.append(
       td(item.id),
@@ -815,7 +936,9 @@
         expected_diagnosis: form.expected_diagnosis.value,
         expected_icd10: form.expected_icd10.value,
         expected_red_flags: form.expected_red_flags.value,
+        expected_missing_data: form.expected_missing_data.value,
         expected_abstain: form.expected_abstain.value === "1",
+        severity: form.severity.value,
         notes: form.notes.value
       })
     });
@@ -1107,6 +1230,7 @@
     modelCatalogStatus.textContent = err.message;
     toast(err.message);
   }));
+  addGatewayHeaderButton?.addEventListener("click", () => addGatewayHeaderRow());
   activateModelButton.addEventListener("click", () => activateModel().catch((err) => {
     modelCatalogStatus.textContent = err.message;
     toast(err.message);
@@ -1118,6 +1242,7 @@
   goldSetForm.addEventListener("submit", (event) => saveGoldCase(event).catch((err) => toast(err.message)));
   document.getElementById("startGoldRunButton").addEventListener("click", () => startGoldRun().catch((err) => toast(err.message)));
   document.getElementById("refreshAuditButton").addEventListener("click", () => loadAudit().catch((err) => toast(err.message)));
+  document.getElementById("refreshSecurityAuditButton")?.addEventListener("click", () => loadSecurityAudit().catch((err) => toast(err.message)));
   document.getElementById("refreshReviewsButton").addEventListener("click", () => loadReviews().catch((err) => toast(err.message)));
   document.getElementById("refreshDashboardButton").addEventListener("click", () => Promise.all([loadDashboard(), loadModelHealth()]).catch((err) => toast(err.message)));
   document.getElementById("refreshModelQualityButton")?.addEventListener("click", () => loadModelQuality().catch((err) => toast(err.message)));
@@ -1132,6 +1257,6 @@
   document.getElementById("logoutButton").addEventListener("click", () => logout().catch((err) => toast(err.message)));
 
   const settingsAndModels = loadSettings().then(loadModels);
-  Promise.all([loadStats(), loadDashboard(), loadModelQuality(), loadModelHealth(), loadBatch(), loadBackups(), settingsAndModels, loadUsers(), loadRequests(), loadQuality(), loadGoldSet(), loadAudit(), loadReviews()]).catch((err) => toast(err.message));
+  Promise.all([loadStats(), loadDashboard(), loadSecurityAudit(), loadModelQuality(), loadModelHealth(), loadBatch(), loadBackups(), settingsAndModels, loadUsers(), loadRequests(), loadQuality(), loadGoldSet(), loadAudit(), loadReviews()]).catch((err) => toast(err.message));
   window.setInterval(() => Promise.all([loadDashboard(), loadBatch()]).catch(() => {}), 10000);
 })();

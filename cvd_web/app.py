@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import csv
 import json
 import mimetypes
 import sqlite3
@@ -8,10 +9,11 @@ import re
 import threading
 import time
 import traceback
-from contextlib import contextmanager
+from contextlib import closing, contextmanager
 from html import escape
 from datetime import datetime, timedelta, timezone
 from http import cookies
+from io import StringIO
 from pathlib import Path
 from typing import Any, Callable
 from urllib.parse import parse_qs, urlsplit
@@ -20,6 +22,7 @@ from .auth import hash_password, new_token, utc_now, verify_password
 from .config import Config
 from .cvd_schema import validate_and_normalize_patient_data
 from .db import (
+    DEFAULT_ADMIN_PASSWORDS,
     audit,
     connect,
     get_app_settings,
@@ -166,6 +169,8 @@ class CVDApplication:
             return self.serve_static(request.path.removeprefix("/static/"))
         if request.path == "/healthz" and request.method == "GET":
             return self.json_response({"ok": True})
+        if request.path == "/readyz" and request.method == "GET":
+            return self.readiness_response()
 
         user = self.current_user(request)
 
@@ -270,6 +275,9 @@ class CVDApplication:
         if request.path == "/api/admin/audit" and request.method == "GET":
             self.require_admin(user)
             return self.admin_list_audit(request)
+        if request.path == "/api/admin/security-audit" and request.method == "GET":
+            self.require_admin(user)
+            return self.admin_security_audit()
         if request.path == "/api/admin/settings" and request.method == "GET":
             self.require_admin(user)
             return self.admin_get_settings()
@@ -316,6 +324,12 @@ class CVDApplication:
         if request.path == "/api/admin/gold-set" and request.method == "GET":
             self.require_admin(user)
             return self.admin_gold_set()
+        if request.path == "/api/admin/gold-set/export.csv" and request.method == "GET":
+            self.require_admin(user)
+            return self.admin_gold_set_export_csv()
+        if request.path == "/api/admin/gold-set/report.html" and request.method == "GET":
+            self.require_admin(user)
+            return self.admin_gold_set_report_html()
         if request.path == "/api/admin/gold-set" and request.method == "POST":
             self.require_admin(user)
             return self.admin_upsert_gold_case(request, user)
@@ -439,19 +453,119 @@ class CVDApplication:
             backend = "memory"
         dsn_configured = bool(str(settings.get("inference_queue_dsn") or "").strip())
         external = backend in {"redis", "postgresql"}
+        rate_limit_backend = str(settings.get("rate_limit_backend") or "memory").strip().lower()
+        if rate_limit_backend not in {"memory", "redis", "postgresql"}:
+            rate_limit_backend = "memory"
+        rate_limit_dsn_configured = bool(str(settings.get("rate_limit_dsn") or "").strip())
+        rate_limit_external = rate_limit_backend in {"redis", "postgresql"}
+        worker_mode = str(settings.get("inference_worker_mode") or "in_process").strip().lower()
+        if worker_mode not in {"in_process", "external"}:
+            worker_mode = "in_process"
+
+        queue_adapter_active = False
+        rate_limit_adapter_active = False
+        external_worker_active = False
+        production_ready = (
+            external
+            and dsn_configured
+            and queue_adapter_active
+            and rate_limit_external
+            and rate_limit_dsn_configured
+            and rate_limit_adapter_active
+            and worker_mode == "external"
+            and external_worker_active
+        )
+        if not self.config.production_mode and not external and not rate_limit_external and worker_mode == "in_process":
+            production_ready = True
+        blockers = []
+        if self.config.production_mode:
+            if not external:
+                blockers.append("queue-backend-memory")
+            elif not dsn_configured:
+                blockers.append("queue-dsn-missing")
+            elif not queue_adapter_active:
+                blockers.append("queue-adapter-not-active")
+            if not rate_limit_external:
+                blockers.append("rate-limit-memory")
+            elif not rate_limit_dsn_configured:
+                blockers.append("rate-limit-dsn-missing")
+            elif not rate_limit_adapter_active:
+                blockers.append("rate-limit-adapter-not-active")
+            if worker_mode != "external":
+                blockers.append("worker-in-process")
+            elif not external_worker_active:
+                blockers.append("external-worker-not-active")
         return {
             "backend": backend,
             "active_backend": "memory",
             "external_requested": external,
             "dsn_configured": dsn_configured,
-            "production_ready": (not external),
-            "status": "memory-active" if not external else "adapter-not-installed",
+            "queue_adapter_active": queue_adapter_active,
+            "rate_limit_backend": rate_limit_backend,
+            "active_rate_limit_backend": "memory",
+            "rate_limit_external_requested": rate_limit_external,
+            "rate_limit_dsn_configured": rate_limit_dsn_configured,
+            "rate_limit_adapter_active": rate_limit_adapter_active,
+            "worker_mode": worker_mode,
+            "active_worker_mode": "in_process",
+            "external_worker_active": external_worker_active,
+            "production_ready": production_ready,
+            "blockers": blockers,
+            "status": "development-memory-active" if production_ready and not self.config.production_mode else "production-ready" if production_ready else "production-blocked",
             "message": (
-                "In-process queue active. Use a single backend process or configure an external adapter before multi-process deployment."
-                if not external else
-                "Redis/PostgreSQL backend is configured for rollout, but this build still uses the in-process queue adapter."
+                "In-process queue/rate limit are acceptable for development or single-process controlled evaluation only."
+                if production_ready and not self.config.production_mode else
+                "Production readiness requires active external queue, external rate limit and separate worker adapters."
             ),
         }
+
+    def readiness_response(self):
+        checks: dict[str, Any] = {
+            "database": {"ok": False},
+            "templates": {"ok": self.template_dir.is_dir()},
+            "static": {"ok": self.static_dir.is_dir()},
+            "security": {
+                "ok": True,
+                "production_mode": self.config.production_mode,
+                "cookie_secure": self.config.cookie_secure,
+            },
+            "runtime": {"ok": True},
+        }
+        status = 200
+        try:
+            with connect(self.config.db_path) as conn:
+                integrity = conn.execute("PRAGMA integrity_check").fetchone()[0]
+                user_count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+                checks["database"] = {
+                    "ok": integrity == "ok" and user_count > 0,
+                    "integrity": integrity,
+                    "user_count": user_count,
+                }
+        except Exception as exc:
+            checks["database"] = {"ok": False, "error": exc.__class__.__name__}
+
+        if self.config.production_mode and not self.config.cookie_secure:
+            checks["security"] = {
+                **checks["security"],
+                "ok": False,
+                "message": "CVD_COOKIE_SECURE=1 is required for production readiness.",
+            }
+        if self.config.production_mode:
+            settings = self.load_settings()
+            queue_status = self.production_queue_status(settings)
+            checks["runtime"] = {
+                "ok": queue_status["production_ready"],
+                "queue": queue_status,
+                "rate_limit_backend": queue_status["rate_limit_backend"],
+                "worker_mode": queue_status["worker_mode"],
+                "blockers": queue_status["blockers"],
+                "message": "Active external queue, rate-limit and worker adapters are required before production readiness.",
+            }
+
+        ok = all(bool(item.get("ok")) for item in checks.values())
+        if not ok:
+            status = 503
+        return self.json_response({"ok": ok, "checks": checks}, status=status)
 
     def inference_status(self, user: dict[str, Any]):
         settings = self.load_settings()
@@ -498,24 +612,68 @@ class CVDApplication:
             raise HTTPError(413, "Запрос слишком большой")
 
     def ai_gateway_headers(self, settings: dict[str, str]) -> dict[str, str]:
+        entries = self.ai_gateway_header_entries(settings)
+        headers: dict[str, str] = {}
+        original_names_by_lower: dict[str, str] = {}
+        for entry in entries:
+            name = entry["name"]
+            lower_name = name.lower()
+            previous_name = original_names_by_lower.get(lower_name)
+            if previous_name:
+                headers.pop(previous_name, None)
+            original_names_by_lower[lower_name] = name
+            headers[name] = entry["value"]
+        return headers
+
+    def ai_gateway_header_entries(self, settings: dict[str, str]) -> list[dict[str, str]]:
+        entries: list[dict[str, str]] = []
+        raw_json = str(settings.get("ai_gateway_headers_json") or "").strip()
+        if raw_json:
+            try:
+                decoded = json.loads(raw_json)
+            except json.JSONDecodeError as exc:
+                raise HTTPError(400, "ai_gateway_headers_json должен быть корректным JSON") from exc
+            if not isinstance(decoded, list):
+                raise HTTPError(400, "ai_gateway_headers_json должен быть списком")
+            if len(decoded) > 12:
+                raise HTTPError(400, "AI Gateway поддерживает не более 12 дополнительных заголовков")
+            for item in decoded:
+                if not isinstance(item, dict):
+                    raise HTTPError(400, "Каждый auth-заголовок AI Gateway должен быть объектом")
+                name = str(item.get("name") or "").strip()
+                value = str(item.get("value") or "").strip()
+                if not name and not value:
+                    continue
+                if not name or not value:
+                    raise HTTPError(400, "У каждого auth-заголовка AI Gateway должны быть name и value")
+                self.validate_ai_gateway_header_name(name)
+                entries.append({"name": name[:80], "value": value[:4000]})
+        if entries:
+            return entries
         name = str(settings.get("ai_gateway_auth_header_name") or "").strip()
         value = str(settings.get("ai_gateway_auth_header_value") or "").strip()
         if not name or not value:
-            return {}
+            return []
+        self.validate_ai_gateway_header_name(name)
+        return [{"name": name[:80], "value": value[:4000]}]
+
+    def validate_ai_gateway_header_name(self, name: str) -> None:
         if not re.fullmatch(r"[A-Za-z0-9!#$%&'*+.^_`|~-]{1,80}", name):
             raise HTTPError(400, "Некорректное имя auth-заголовка AI Gateway")
         blocked = {"host", "content-length", "content-type", "accept", "connection"}
         if name.lower() in blocked:
             raise HTTPError(400, "Этот auth-заголовок нельзя переопределять")
-        return {name: value[:4000]}
 
     def ai_gateway_public_profile(self, settings: dict[str, str]) -> dict[str, Any]:
         profile = str(settings.get("ai_gateway_profile") or "local").strip().lower()
+        header_entries = self.ai_gateway_header_entries(settings)
         return {
             "profile": profile,
             "api_url": settings.get("lm_studio_api_url") or self.config.lm_studio_api_url,
             "selected_model": settings.get("lm_studio_model") or self.config.lm_studio_model,
-            "auth_header_configured": bool(str(settings.get("ai_gateway_auth_header_name") or "").strip() and str(settings.get("ai_gateway_auth_header_value") or "").strip()),
+            "auth_header_configured": bool(header_entries),
+            "auth_header_count": len(header_entries),
+            "auth_header_names": [entry["name"] for entry in header_entries],
         }
 
     def enforce_rate_limit(self, key: str, *, limit: int, window_seconds: int, message: str) -> None:
@@ -1928,6 +2086,140 @@ class CVDApplication:
             item["details"] = json.loads(item.pop("details_json")) if item.get("details_json") else {}
         return self.json_response({"audit": items})
 
+    def sanitize_setting_for_audit(self, key: str, value: Any) -> Any:
+        text = str(value or "")
+        lowered = key.lower()
+        if key == "ai_gateway_headers_json":
+            try:
+                headers = json.loads(text or "[]")
+            except json.JSONDecodeError:
+                return {"configured": bool(text), "valid_json": False}
+            names = [str(item.get("name") or "") for item in headers if isinstance(item, dict) and item.get("name")]
+            return {"configured": bool(names), "count": len(names), "names": names}
+        if any(marker in lowered for marker in ("password", "secret", "token", "dsn", "header_value")):
+            return {"configured": bool(text), "length": len(text)}
+        if key == "active_prompt_template" or len(text) > 180:
+            return {"length": len(text), "sha256": hashlib.sha256(text.encode("utf-8")).hexdigest()}
+        return text
+
+    def sanitized_settings_diff(self, before: dict[str, str], after: dict[str, str]) -> list[dict[str, Any]]:
+        changed = []
+        for key in sorted(after):
+            if str(before.get(key, "")) == str(after.get(key, "")):
+                continue
+            changed.append({
+                "key": key,
+                "old": self.sanitize_setting_for_audit(key, before.get(key, "")),
+                "new": self.sanitize_setting_for_audit(key, after.get(key, "")),
+            })
+        return changed[:100]
+
+    def admin_security_audit(self):
+        settings = self.load_settings()
+        runtime = self.production_queue_status(settings)
+        with connect(self.config.db_path) as conn:
+            user_counts = row_to_dict(conn.execute(
+                """
+                SELECT
+                  COUNT(*) AS total,
+                  SUM(CASE WHEN role = 'admin' AND is_active = 1 THEN 1 ELSE 0 END) AS active_admins,
+                  SUM(CASE WHEN is_active = 1 THEN 1 ELSE 0 END) AS active_users
+                FROM users
+                """
+            ).fetchone())
+            admin_hash_rows = conn.execute(
+                "SELECT password_hash FROM users WHERE role = 'admin' AND is_active = 1"
+            ).fetchall()
+            audit_count = conn.execute("SELECT COUNT(*) AS c FROM audit_log").fetchone()["c"]
+        backup_dir = self.config.db_path.parent / "backups"
+        checks = []
+
+        def add_check(key: str, ok: bool, severity: str, message: str) -> None:
+            checks.append({"key": key, "ok": ok, "severity": severity if not ok else "ok", "message": message})
+
+        add_check(
+            "production_env",
+            self.config.production_mode,
+            "warning",
+            "CVD_ENV не production; допустимо для local/controlled, но не для публичного VPS.",
+        )
+        add_check(
+            "secure_cookie",
+            (not self.config.production_mode) or self.config.cookie_secure,
+            "critical",
+            "В production требуется CVD_COOKIE_SECURE=1.",
+        )
+        add_check(
+            "admin_email",
+            self.config.admin_email.lower().strip() != "admin@example.local",
+            "warning",
+            "Задайте CVD_ADMIN_EMAIL вместо значения по умолчанию.",
+        )
+        add_check(
+            "default_admin_password",
+            not any(
+                verify_password(default_password, row["password_hash"])
+                for row in admin_hash_rows
+                for default_password in DEFAULT_ADMIN_PASSWORDS
+            ),
+            "critical",
+            "Активный администратор не должен использовать пароль по умолчанию.",
+        )
+        add_check(
+            "active_admin",
+            int(user_counts.get("active_admins") or 0) >= 1,
+            "critical",
+            "Должен быть хотя бы один активный администратор.",
+        )
+        add_check(
+            "deidentify_before_model",
+            str(settings.get("deidentify_before_model") or "1") == "1",
+            "warning",
+            "Деидентификация перед отправкой в модель должна быть включена.",
+        )
+        try:
+            gateway_headers_ok = str(settings.get("ai_gateway_profile") or "") != "cloudflared" or bool(self.ai_gateway_headers(settings))
+        except HTTPError:
+            gateway_headers_ok = False
+        add_check(
+            "cloudflared_access_headers",
+            gateway_headers_ok,
+            "warning",
+            "Для cloudflared/Cloudflare Access настройте auth headers.",
+        )
+        add_check(
+            "production_runtime",
+            (not self.config.production_mode) or runtime["production_ready"],
+            "critical",
+            f"Production runtime не готов: {', '.join(runtime['blockers']) or runtime['status']}.",
+        )
+        add_check(
+            "backup_directory",
+            backup_dir.exists(),
+            "warning",
+            "Создайте хотя бы один backup и проверьте права на каталог backups.",
+        )
+        add_check(
+            "audit_log",
+            int(audit_count or 0) > 0,
+            "warning",
+            "Журнал аудита должен регулярно пополняться административными событиями.",
+        )
+        failed = [item for item in checks if not item["ok"]]
+        return self.json_response({
+            "ok": not any(item["severity"] == "critical" for item in failed),
+            "generated_at": utc_now(),
+            "checks": checks,
+            "summary": {
+                "total": len(checks),
+                "failed": len(failed),
+                "critical": sum(1 for item in failed if item["severity"] == "critical"),
+                "warnings": sum(1 for item in failed if item["severity"] == "warning"),
+            },
+            "runtime": runtime,
+            "users": user_counts,
+        })
+
 
     def backup_dir(self) -> Path:
         path = self.config.db_path.parent / "backups"
@@ -1952,7 +2244,7 @@ class CVDApplication:
     def admin_create_backup(self, admin: dict[str, Any]):
         filename = f"cvd-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.sqlite3"
         target = self.backup_dir() / filename
-        with sqlite3.connect(self.config.db_path) as source, sqlite3.connect(target) as dest:
+        with closing(sqlite3.connect(self.config.db_path)) as source, closing(sqlite3.connect(target)) as dest:
             source.backup(dest)
         with connect(self.config.db_path) as conn:
             audit(conn, user_id=admin["id"], action="backup_create", target_type="backup", details={"filename": filename})
@@ -1969,15 +2261,15 @@ class CVDApplication:
         data = request.json()
         filename = str(data.get("filename") or "").strip()
         source_path = self.backup_path(filename)
-        with sqlite3.connect(source_path) as source:
+        with closing(sqlite3.connect(source_path)) as source:
             integrity = source.execute("PRAGMA quick_check").fetchone()[0]
             if integrity != "ok":
                 raise HTTPError(400, f"Backup повреждён: {integrity}")
         safety_name = f"cvd-before-restore-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}.sqlite3"
         safety_path = self.backup_dir() / safety_name
-        with sqlite3.connect(self.config.db_path) as current, sqlite3.connect(safety_path) as safety:
+        with closing(sqlite3.connect(self.config.db_path)) as current, closing(sqlite3.connect(safety_path)) as safety:
             current.backup(safety)
-        with sqlite3.connect(source_path) as source, sqlite3.connect(self.config.db_path) as dest:
+        with closing(sqlite3.connect(source_path)) as source, closing(sqlite3.connect(self.config.db_path)) as dest:
             source.backup(dest)
         with connect(self.config.db_path) as conn:
             audit(conn, user_id=admin["id"], action="backup_restore", target_type="backup", details={"filename": filename, "safety_backup": safety_name})
@@ -2002,6 +2294,7 @@ class CVDApplication:
             "support_contact": str(incoming.get("support_contact", "")).strip()[:200],
             "default_theme": str(incoming.get("default_theme", "light")).strip(),
             "ai_gateway_profile": str(incoming.get("ai_gateway_profile", "local")).strip().lower(),
+            "ai_gateway_headers_json": str(incoming.get("ai_gateway_headers_json", "")).strip(),
             "ai_gateway_auth_header_name": str(incoming.get("ai_gateway_auth_header_name", "")).strip()[:80],
             "ai_gateway_auth_header_value": str(incoming.get("ai_gateway_auth_header_value", "")).strip()[:4000],
             "lm_studio_api_url": str(incoming.get("lm_studio_api_url", "")).strip(),
@@ -2017,9 +2310,13 @@ class CVDApplication:
             "lm_studio_queue_timeout_seconds": str(incoming.get("lm_studio_queue_timeout_seconds", "1800")).strip(),
             "inference_queue_backend": str(incoming.get("inference_queue_backend", "memory")).strip().lower(),
             "inference_queue_dsn": str(incoming.get("inference_queue_dsn", "")).strip()[:1000],
+            "rate_limit_backend": str(incoming.get("rate_limit_backend", "memory")).strip().lower(),
+            "rate_limit_dsn": str(incoming.get("rate_limit_dsn", "")).strip()[:1000],
+            "inference_worker_mode": str(incoming.get("inference_worker_mode", "in_process")).strip().lower(),
             "deidentify_before_model": "1" if str(incoming.get("deidentify_before_model", "1")).strip().lower() in {"1", "true", "yes", "on"} else "0",
             "active_prompt_version": str(incoming.get("active_prompt_version", MODEL_PROMPT_VERSION)).strip()[:120],
             "active_prompt_template": str(incoming.get("active_prompt_template", "")).strip()[:12000],
+            "gold_min_score_percent": str(incoming.get("gold_min_score_percent", "80")).strip(),
             "max_request_bytes": str(incoming.get("max_request_bytes", "")).strip(),
         }
 
@@ -2033,7 +2330,20 @@ class CVDApplication:
             raise HTTPError(400, "inference_queue_backend должен быть memory, redis или postgresql")
         if values["inference_queue_backend"] != "memory" and not values["inference_queue_dsn"]:
             raise HTTPError(400, "Для Redis/PostgreSQL очереди укажите inference_queue_dsn")
-        self.ai_gateway_headers(values)
+        if values["rate_limit_backend"] not in {"memory", "redis", "postgresql"}:
+            raise HTTPError(400, "rate_limit_backend должен быть memory, redis или postgresql")
+        if values["rate_limit_backend"] != "memory" and not values["rate_limit_dsn"]:
+            raise HTTPError(400, "Для Redis/PostgreSQL rate limiter укажите rate_limit_dsn")
+        if values["inference_worker_mode"] not in {"in_process", "external"}:
+            raise HTTPError(400, "inference_worker_mode должен быть in_process или external")
+        header_entries = self.ai_gateway_header_entries(values)
+        values["ai_gateway_headers_json"] = json.dumps(header_entries, ensure_ascii=False)
+        if header_entries:
+            values["ai_gateway_auth_header_name"] = header_entries[0]["name"]
+            values["ai_gateway_auth_header_value"] = header_entries[0]["value"]
+        else:
+            values["ai_gateway_auth_header_name"] = ""
+            values["ai_gateway_auth_header_value"] = ""
         if not values["lm_studio_api_url"].startswith(("http://", "https://")):
             raise HTTPError(400, "API URL должен начинаться с http:// или https://")
         if not values["lm_studio_model"]:
@@ -2050,6 +2360,7 @@ class CVDApplication:
             "lm_studio_queue_limit": (1, 500),
             "lm_studio_per_user_limit": (1, 10),
             "lm_studio_queue_timeout_seconds": (30, 7200),
+            "gold_min_score_percent": (0, 100),
             "max_request_bytes": (1024, 20 * 1024 * 1024),
         }
         for key, (min_value, max_value) in ranges.items():
@@ -2070,8 +2381,16 @@ class CVDApplication:
         values["lm_studio_temperature"] = str(temperature)
 
         with connect(self.config.db_path) as conn:
+            before_settings = get_app_settings(conn)
             update_app_settings(conn, values)
-            audit(conn, user_id=admin["id"], action="settings_update", target_type="app_settings")
+            changed = self.sanitized_settings_diff(before_settings, values)
+            audit(
+                conn,
+                user_id=admin["id"],
+                action="settings_update",
+                target_type="app_settings",
+                details={"changed": changed},
+            )
         self.configure_inference_queue(values)
         return self.json_response({"ok": True})
 
@@ -2719,7 +3038,8 @@ class CVDApplication:
             gold_rows = conn.execute(
                 """
                 SELECT g.id, g.case_id, g.title, g.expected_diagnosis, g.expected_icd10_json,
-                       g.expected_red_flags_json, g.expected_abstain, g.notes, g.created_at, g.updated_at,
+                       g.expected_red_flags_json, g.expected_missing_data_json, g.expected_abstain,
+                       g.severity, g.notes, g.created_at, g.updated_at,
                        c.patient_id, c.updated_at AS case_updated_at
                 FROM gold_cases g
                 JOIN cases c ON c.id = g.case_id
@@ -2894,13 +3214,19 @@ class CVDApplication:
         }
         return self.json_response({"summary": summary, "cases": cases})
 
-    def admin_gold_set(self):
+    def gold_gate_threshold(self, settings: dict[str, str] | None = None) -> int:
+        settings = settings or self.load_settings()
+        return self.setting_int(settings, "gold_min_score_percent", 80)
+
+    def gold_set_payload(self) -> dict[str, Any]:
+        settings = self.load_settings()
         with connect(self.config.db_path) as conn:
             rows = conn.execute(
                 """
                 SELECT
                   g.id, g.case_id, g.title, g.expected_diagnosis, g.expected_icd10_json,
-                  g.expected_red_flags_json, g.expected_abstain, g.notes, g.created_at, g.updated_at,
+                  g.expected_red_flags_json, g.expected_missing_data_json, g.expected_abstain,
+                  g.severity, g.notes, g.created_at, g.updated_at,
                   c.patient_id, c.updated_at AS case_updated_at,
                   r.id AS latest_request_id, r.status AS latest_status, r.model AS latest_model,
                   r.prompt_version AS latest_prompt_version, r.output_schema_version AS latest_output_schema_version,
@@ -2919,17 +3245,158 @@ class CVDApplication:
                 """
             ).fetchall()
         items = [self.serialize_gold_case(row) for row in rows]
+        summary = self.gold_set_summary(items, min_score_percent=self.gold_gate_threshold(settings))
+        return {"summary": summary, "gold_cases": items}
+
+    def gold_set_summary(self, items: list[dict[str, Any]], *, min_score_percent: int) -> dict[str, Any]:
         evaluated = [item for item in items if item["evaluation"]["status"] == "evaluated"]
         avg_score = round(sum(item["evaluation"]["score_percent"] for item in evaluated) / len(evaluated)) if evaluated else 0
+        severity_counts: dict[str, int] = {}
+        failed_high_severity = 0
+        for item in items:
+            severity = str(item.get("severity") or "medium")
+            severity_counts[severity] = severity_counts.get(severity, 0) + 1
+            if severity in {"high", "critical"} and item["evaluation"]["status"] == "evaluated" and item["evaluation"]["score_percent"] < min_score_percent:
+                failed_high_severity += 1
+        gate_reasons = []
+        if not items:
+            gate_reasons.append("gold-set-empty")
+        if len(evaluated) < len(items):
+            gate_reasons.append("not-all-cases-evaluated")
+        if avg_score < min_score_percent:
+            gate_reasons.append("avg-score-below-threshold")
+        if failed_high_severity:
+            gate_reasons.append("high-severity-failures")
         summary = {
             "gold_cases": len(items),
             "evaluated": len(evaluated),
             "avg_score_percent": avg_score,
+            "min_score_percent": min_score_percent,
+            "release_gate_ok": not gate_reasons,
+            "release_gate_reasons": gate_reasons,
+            "severity_counts": severity_counts,
+            "failed_high_severity": failed_high_severity,
             "icd10_hits": sum(1 for item in evaluated if item["evaluation"]["icd10_match"] is True),
             "red_flag_matches": sum(1 for item in evaluated if item["evaluation"]["red_flags_match"] is True),
+            "missing_data_matches": sum(1 for item in evaluated if item["evaluation"]["missing_data_match"] is True),
             "abstain_matches": sum(1 for item in evaluated if item["evaluation"]["abstain_match"] is True),
         }
-        return self.json_response({"summary": summary, "gold_cases": items})
+        return summary
+
+    def admin_gold_set(self):
+        return self.json_response(self.gold_set_payload())
+
+    def admin_gold_set_export_csv(self):
+        payload = self.gold_set_payload()
+        output = StringIO()
+        fieldnames = [
+            "gold_id",
+            "case_id",
+            "title",
+            "patient_id",
+            "severity",
+            "latest_request_id",
+            "latest_model",
+            "score_percent",
+            "status",
+            "icd10_match",
+            "red_flags_match",
+            "missing_data_match",
+            "abstain_match",
+            "diagnosis_match",
+            "expected_icd10",
+            "expected_red_flags",
+            "expected_missing_data",
+            "expected_abstain",
+            "expected_diagnosis",
+            "notes",
+        ]
+        writer = csv.DictWriter(output, fieldnames=fieldnames)
+        writer.writeheader()
+        for item in payload["gold_cases"]:
+            evaluation = item["evaluation"]
+            writer.writerow({
+                "gold_id": item["id"],
+                "case_id": item["case_id"],
+                "title": item["title"],
+                "patient_id": item.get("patient_id") or "",
+                "severity": item.get("severity") or "medium",
+                "latest_request_id": item.get("latest_request_id") or "",
+                "latest_model": item.get("latest_model") or "",
+                "score_percent": evaluation.get("score_percent", 0),
+                "status": evaluation.get("status", ""),
+                "icd10_match": evaluation.get("icd10_match"),
+                "red_flags_match": evaluation.get("red_flags_match"),
+                "missing_data_match": evaluation.get("missing_data_match"),
+                "abstain_match": evaluation.get("abstain_match"),
+                "diagnosis_match": evaluation.get("diagnosis_match"),
+                "expected_icd10": "; ".join(item.get("expected_icd10") or []),
+                "expected_red_flags": "; ".join(item.get("expected_red_flags") or []),
+                "expected_missing_data": "; ".join(item.get("expected_missing_data") or []),
+                "expected_abstain": item.get("expected_abstain"),
+                "expected_diagnosis": item.get("expected_diagnosis") or "",
+                "notes": item.get("notes") or "",
+            })
+        return self.response(200, output.getvalue().encode("utf-8"), [
+            ("Content-Type", "text/csv; charset=utf-8"),
+            ("Content-Disposition", 'attachment; filename="cvd-gold-set.csv"'),
+        ])
+
+    def admin_gold_set_report_html(self):
+        payload = self.gold_set_payload()
+        summary = payload["summary"]
+        gate = "PASS" if summary["release_gate_ok"] else "BLOCKED"
+        rows = []
+        for item in payload["gold_cases"]:
+            evaluation = item["evaluation"]
+            rows.append(
+                "<tr>"
+                f"<td>{escape(str(item['case_id']))}</td>"
+                f"<td>{escape(item['title'])}</td>"
+                f"<td>{escape(str(item.get('severity') or 'medium'))}</td>"
+                f"<td>{escape(str(evaluation.get('score_percent', 0)))}%</td>"
+                f"<td>{escape(str(evaluation.get('status') or ''))}</td>"
+                f"<td>{escape(str(item.get('latest_model') or ''))}</td>"
+                f"<td>{escape('; '.join(item.get('expected_icd10') or []))}</td>"
+                "</tr>"
+            )
+        html = f"""<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <title>CVD Gold Set validation report</title>
+  <style>
+    body {{ font-family: system-ui, -apple-system, Segoe UI, sans-serif; margin: 32px; color: #111827; }}
+    table {{ border-collapse: collapse; width: 100%; margin-top: 18px; }}
+    th, td {{ border: 1px solid #d1d5db; padding: 8px 10px; text-align: left; vertical-align: top; }}
+    th {{ background: #f3f4f6; }}
+    .summary {{ display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; }}
+    .pill {{ border: 1px solid #d1d5db; border-radius: 999px; padding: 4px 10px; background: #f9fafb; }}
+    .pass {{ color: #047857; border-color: #a7f3d0; background: #ecfdf5; }}
+    .blocked {{ color: #b45309; border-color: #fde68a; background: #fffbeb; }}
+  </style>
+</head>
+<body>
+  <h1>CVD Gold Set validation report</h1>
+  <p>Generated: {escape(utc_now())}</p>
+  <div class="summary">
+    <span class="pill {'pass' if summary['release_gate_ok'] else 'blocked'}">Gate: {gate}</span>
+    <span class="pill">Cases: {summary['gold_cases']}</span>
+    <span class="pill">Evaluated: {summary['evaluated']}</span>
+    <span class="pill">Average score: {summary['avg_score_percent']}%</span>
+    <span class="pill">Threshold: {summary['min_score_percent']}%</span>
+    <span class="pill">Reasons: {escape(', '.join(summary['release_gate_reasons']) or 'none')}</span>
+  </div>
+  <table>
+    <thead><tr><th>Case ID</th><th>Title</th><th>Severity</th><th>Score</th><th>Status</th><th>Model</th><th>Expected ICD-10</th></tr></thead>
+    <tbody>{''.join(rows)}</tbody>
+  </table>
+</body>
+</html>"""
+        return self.response(200, html.encode("utf-8"), [
+            ("Content-Type", "text/html; charset=utf-8"),
+            ("Content-Disposition", 'inline; filename="cvd-gold-set-report.html"'),
+        ])
 
     def admin_upsert_gold_case(self, request: Request, admin: dict[str, Any]):
         data = request.json()
@@ -2940,7 +3407,11 @@ class CVDApplication:
         expected_diagnosis = str(data.get("expected_diagnosis", "")).strip()[:2000]
         expected_icd10 = self.normalized_text_list(data.get("expected_icd10"), upper=True, max_item_length=20)
         expected_red_flags = self.normalized_text_list(data.get("expected_red_flags"), max_item_length=240)
+        expected_missing_data = self.normalized_text_list(data.get("expected_missing_data"), max_item_length=240)
         expected_abstain = str(data.get("expected_abstain", "")).strip().lower() in {"1", "true", "yes", "on"}
+        severity = str(data.get("severity", "medium")).strip().lower()
+        if severity not in {"low", "medium", "high", "critical"}:
+            raise HTTPError(400, "severity должен быть low, medium, high или critical")
         notes = str(data.get("notes", "")).strip()[:4000]
         now = utc_now()
         with connect(self.config.db_path) as conn:
@@ -2951,14 +3422,16 @@ class CVDApplication:
                 """
                 INSERT INTO gold_cases
                   (case_id, title, expected_diagnosis, expected_icd10_json, expected_red_flags_json,
-                   expected_abstain, notes, created_by_user_id, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                   expected_missing_data_json, expected_abstain, severity, notes, created_by_user_id, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(case_id) DO UPDATE SET
                   title = excluded.title,
                   expected_diagnosis = excluded.expected_diagnosis,
                   expected_icd10_json = excluded.expected_icd10_json,
                   expected_red_flags_json = excluded.expected_red_flags_json,
+                  expected_missing_data_json = excluded.expected_missing_data_json,
                   expected_abstain = excluded.expected_abstain,
+                  severity = excluded.severity,
                   notes = excluded.notes,
                   updated_at = excluded.updated_at
                 """,
@@ -2968,7 +3441,9 @@ class CVDApplication:
                     expected_diagnosis,
                     json.dumps(expected_icd10, ensure_ascii=False),
                     json.dumps(expected_red_flags, ensure_ascii=False),
+                    json.dumps(expected_missing_data, ensure_ascii=False),
                     1 if expected_abstain else 0,
+                    severity,
                     notes,
                     admin["id"],
                     now,
@@ -2984,7 +3459,9 @@ class CVDApplication:
                 details={
                     "expected_icd10": expected_icd10,
                     "expected_red_flags": expected_red_flags,
+                    "expected_missing_data": expected_missing_data,
                     "expected_abstain": expected_abstain,
+                    "severity": severity,
                 },
             )
         return self.json_response({"ok": True}, status=201)
@@ -3040,6 +3517,7 @@ class CVDApplication:
             "active_prompt_version": settings.get("active_prompt_version") or MODEL_PROMPT_VERSION,
             "patient_schema_version": PATIENT_SCHEMA_VERSION,
             "output_schema_version": MODEL_OUTPUT_SCHEMA_VERSION,
+            "gold_min_score_percent": self.gold_gate_threshold(settings),
             "created_from": "latest_successful_results",
         }
         with connect(self.config.db_path) as conn:
@@ -3047,7 +3525,8 @@ class CVDApplication:
                 """
                 SELECT
                   g.id, g.case_id, g.title, g.expected_diagnosis, g.expected_icd10_json,
-                  g.expected_red_flags_json, g.expected_abstain, g.notes, g.created_at, g.updated_at,
+                  g.expected_red_flags_json, g.expected_missing_data_json, g.expected_abstain,
+                  g.severity, g.notes, g.created_at, g.updated_at,
                   c.patient_id, c.updated_at AS case_updated_at,
                   r.id AS latest_request_id, r.status AS latest_status, r.model AS latest_model,
                   r.prompt_version AS latest_prompt_version, r.output_schema_version AS latest_output_schema_version,
@@ -3067,7 +3546,8 @@ class CVDApplication:
             ).fetchall()
             items = [self.serialize_gold_case(row) for row in rows]
             evaluated = [item for item in items if item["evaluation"]["status"] == "evaluated"]
-            avg_score = round(sum(item["evaluation"]["score_percent"] for item in evaluated) / len(evaluated)) if evaluated else 0
+            summary = self.gold_set_summary(items, min_score_percent=self.gold_gate_threshold(settings))
+            avg_score = summary["avg_score_percent"]
             now = utc_now()
             cur = conn.execute(
                 """
@@ -3115,9 +3595,26 @@ class CVDApplication:
                 action="gold_run_create",
                 target_type="gold_run",
                 target_id=run_id,
-                details={"total_items": len(items), "evaluated_items": len(evaluated), "avg_score_percent": avg_score},
+                details={
+                    "total_items": len(items),
+                    "evaluated_items": len(evaluated),
+                    "avg_score_percent": avg_score,
+                    "release_gate_ok": summary["release_gate_ok"],
+                    "release_gate_reasons": summary["release_gate_reasons"],
+                },
             )
-        return self.json_response({"ok": True, "run_id": run_id, "summary": {"total_items": len(items), "evaluated_items": len(evaluated), "avg_score_percent": avg_score}}, status=201)
+        return self.json_response({
+            "ok": True,
+            "run_id": run_id,
+            "summary": {
+                "total_items": len(items),
+                "evaluated_items": len(evaluated),
+                "avg_score_percent": avg_score,
+                "min_score_percent": summary["min_score_percent"],
+                "release_gate_ok": summary["release_gate_ok"],
+                "release_gate_reasons": summary["release_gate_reasons"],
+            },
+        }, status=201)
 
     def normalized_text_list(self, value: Any, *, upper: bool = False, max_item_length: int = 120) -> list[str]:
         if value is None:
@@ -3143,6 +3640,7 @@ class CVDApplication:
         item = row_to_dict(row)
         item["expected_icd10"] = json.loads(item.pop("expected_icd10_json") or "[]")
         item["expected_red_flags"] = json.loads(item.pop("expected_red_flags_json") or "[]")
+        item["expected_missing_data"] = json.loads(item.pop("expected_missing_data_json") or "[]")
         item["expected_abstain"] = bool(item["expected_abstain"])
         parsed = json.loads(item.pop("latest_parsed_output_json")) if item.get("latest_parsed_output_json") else None
         item["evaluation"] = self.evaluate_gold_case(item, parsed)
@@ -3155,10 +3653,12 @@ class CVDApplication:
                 "score_percent": 0,
                 "icd10_match": None,
                 "red_flags_match": None,
+                "missing_data_match": None,
                 "abstain_match": None,
                 "diagnosis_match": None,
                 "actual_icd10": [],
                 "actual_red_flags": [],
+                "actual_missing_data": [],
                 "actual_abstain": None,
             }
         cds = parsed_output.get("CDS_OUTPUT", {}) if isinstance(parsed_output, dict) else {}
@@ -3176,6 +3676,13 @@ class CVDApplication:
         actual_red_flags = cds.get("red_flags", []) if isinstance(cds, dict) else []
         if not isinstance(actual_red_flags, list):
             actual_red_flags = []
+        actual_missing_data = cds.get("missing_data", []) if isinstance(cds, dict) else []
+        if not isinstance(actual_missing_data, list):
+            actual_missing_data = []
+        if isinstance(possible, list):
+            for diagnosis in possible:
+                if isinstance(diagnosis, dict) and isinstance(diagnosis.get("missing_data"), list):
+                    actual_missing_data.extend(diagnosis.get("missing_data", []))
         actual_abstain = bool(cds.get("model_should_abstain")) if isinstance(cds, dict) else False
         summary_text = " ".join(
             str(value or "")
@@ -3187,6 +3694,7 @@ class CVDApplication:
 
         expected_icd10 = set(item.get("expected_icd10") or [])
         expected_red_flags = [str(flag).strip().lower() for flag in item.get("expected_red_flags") or [] if str(flag).strip()]
+        expected_missing_data = [str(value).strip().lower() for value in item.get("expected_missing_data") or [] if str(value).strip()]
         expected_diagnosis = str(item.get("expected_diagnosis") or "").strip().lower()
         icd10_match = bool(expected_icd10 & actual_icd10) if expected_icd10 else None
         if expected_red_flags:
@@ -3194,19 +3702,26 @@ class CVDApplication:
             red_flags_match = all(flag in red_flags_text for flag in expected_red_flags)
         else:
             red_flags_match = len(actual_red_flags) == 0
+        if expected_missing_data:
+            missing_data_text = " ".join(str(value).lower() for value in actual_missing_data)
+            missing_data_match = all(value in missing_data_text for value in expected_missing_data)
+        else:
+            missing_data_match = None
         abstain_match = actual_abstain == bool(item.get("expected_abstain"))
         diagnosis_match = expected_diagnosis in summary_text if expected_diagnosis else None
-        scored = [value for value in (icd10_match, red_flags_match, abstain_match, diagnosis_match) if value is not None]
+        scored = [value for value in (icd10_match, red_flags_match, missing_data_match, abstain_match, diagnosis_match) if value is not None]
         score_percent = round(sum(1 for value in scored if value) * 100 / len(scored)) if scored else 0
         return {
             "status": "evaluated",
             "score_percent": score_percent,
             "icd10_match": icd10_match,
             "red_flags_match": red_flags_match,
+            "missing_data_match": missing_data_match,
             "abstain_match": abstain_match,
             "diagnosis_match": diagnosis_match,
             "actual_icd10": sorted(actual_icd10),
             "actual_red_flags": actual_red_flags,
+            "actual_missing_data": actual_missing_data,
             "actual_abstain": actual_abstain,
         }
 
@@ -3300,6 +3815,7 @@ class CVDApplication:
             429: "Too Many Requests",
             500: "Internal Server Error",
             502: "Bad Gateway",
+            503: "Service Unavailable",
         }.get(status, "OK")
         security_headers = [
             ("X-Content-Type-Options", "nosniff"),

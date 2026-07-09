@@ -24,6 +24,7 @@ def _env_int(name: str, default: int) -> int:
 
 @dataclass(frozen=True)
 class Config:
+    app_env: str
     project_root: Path
     db_path: Path
     host: str
@@ -39,6 +40,10 @@ class Config:
     lm_studio_temperature: float
     max_request_bytes: int
 
+    @property
+    def production_mode(self) -> bool:
+        return self.app_env in {"prod", "production"}
+
 
 def load_config() -> Config:
     db_path = Path(os.getenv("CVD_DB_PATH", PROJECT_ROOT / "data" / "cvd.sqlite3"))
@@ -46,6 +51,7 @@ def load_config() -> Config:
         db_path = PROJECT_ROOT / db_path
 
     return Config(
+        app_env=os.getenv("CVD_ENV", "development").strip().lower() or "development",
         project_root=PROJECT_ROOT,
         db_path=db_path,
         host=os.getenv("CVD_HOST", "127.0.0.1"),

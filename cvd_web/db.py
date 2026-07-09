@@ -188,7 +188,9 @@ CREATE TABLE IF NOT EXISTS gold_cases (
   expected_diagnosis TEXT NOT NULL DEFAULT '',
   expected_icd10_json TEXT NOT NULL DEFAULT '[]',
   expected_red_flags_json TEXT NOT NULL DEFAULT '[]',
+  expected_missing_data_json TEXT NOT NULL DEFAULT '[]',
   expected_abstain INTEGER NOT NULL DEFAULT 0,
+  severity TEXT NOT NULL DEFAULT 'medium',
   notes TEXT NOT NULL DEFAULT '',
   created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
   created_at TEXT NOT NULL,
@@ -228,6 +230,11 @@ CREATE TABLE IF NOT EXISTS app_settings (
   updated_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS schema_migrations (
+  id TEXT PRIMARY KEY,
+  applied_at TEXT NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
 CREATE INDEX IF NOT EXISTS idx_cases_user_updated ON cases(user_id, updated_at DESC);
@@ -244,6 +251,24 @@ CREATE INDEX IF NOT EXISTS idx_gold_cases_updated ON gold_cases(updated_at DESC)
 CREATE INDEX IF NOT EXISTS idx_gold_runs_created ON gold_runs(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_gold_run_items_run ON gold_run_items(gold_run_id, status);
 """
+
+DEFAULT_ADMIN_PASSWORDS = {
+    "admin12345",
+    "change-this-long-password",
+}
+
+SCHEMA_MIGRATIONS = [
+    "0001_initial_schema",
+    "0002_model_request_versions_and_metrics",
+    "0003_import_mapping_metadata",
+    "0004_text_preparation_queue_metrics",
+    "0005_text_preparation_items",
+    "0006_gold_set_validation",
+    "0007_gold_set_quality_targets",
+    "0008_ai_gateway_multi_headers",
+    "0009_production_runtime_settings",
+    "0010_gold_release_gate",
+]
 
 
 class ClosingConnection(sqlite3.Connection):
@@ -269,6 +294,11 @@ def init_db(config: Config) -> None:
         seed_default_settings(conn, config)
         count = conn.execute("SELECT COUNT(*) AS c FROM users").fetchone()["c"]
         if count == 0:
+            if config.production_mode and config.admin_password in DEFAULT_ADMIN_PASSWORDS:
+                raise RuntimeError(
+                    "Refusing to bootstrap production with the default administrator password. "
+                    "Set CVD_ADMIN_PASSWORD to a strong unique value before first start."
+                )
             now = utc_now()
             conn.execute(
                 """
@@ -305,6 +335,7 @@ SETTINGS_KEYS = [
     "support_contact",
     "default_theme",
     "ai_gateway_profile",
+    "ai_gateway_headers_json",
     "ai_gateway_auth_header_name",
     "ai_gateway_auth_header_value",
     "lm_studio_api_url",
@@ -320,9 +351,13 @@ SETTINGS_KEYS = [
     "lm_studio_queue_timeout_seconds",
     "inference_queue_backend",
     "inference_queue_dsn",
+    "rate_limit_backend",
+    "rate_limit_dsn",
+    "inference_worker_mode",
     "deidentify_before_model",
     "active_prompt_version",
     "active_prompt_template",
+    "gold_min_score_percent",
     "max_request_bytes",
 ]
 
@@ -342,6 +377,7 @@ def default_settings(config: Config) -> dict[str, tuple[str, str]]:
         "support_contact": ("", "Контакт администратора или поддержки."),
         "default_theme": ("light", "Тема по умолчанию: light или dark."),
         "ai_gateway_profile": ("local", "Профиль подключения к AI Gateway: local, lan, wsl2 или cloudflared."),
+        "ai_gateway_headers_json": ("[]", "JSON-список дополнительных HTTP-заголовков для tunnel/auth."),
         "ai_gateway_auth_header_name": ("", "Имя дополнительного HTTP-заголовка для tunnel/auth, например Authorization."),
         "ai_gateway_auth_header_value": ("", "Значение дополнительного HTTP-заголовка для tunnel/auth."),
         "lm_studio_api_url": (config.lm_studio_api_url, "OpenAI-compatible endpoint LM Studio."),
@@ -357,9 +393,13 @@ def default_settings(config: Config) -> dict[str, tuple[str, str]]:
         "lm_studio_queue_timeout_seconds": ("1800", "Максимальное ожидание свободного слота LM Studio в секундах."),
         "inference_queue_backend": ("memory", "Backend очереди: memory, redis или postgresql. Redis/PostgreSQL требуют отдельного worker-адаптера."),
         "inference_queue_dsn": ("", "DSN внешней очереди Redis/PostgreSQL без публикации пользователям."),
+        "rate_limit_backend": ("memory", "Backend rate limit: memory, redis или postgresql. Production требует внешний backend."),
+        "rate_limit_dsn": ("", "DSN внешнего rate limiter без публикации пользователям."),
+        "inference_worker_mode": ("in_process", "Режим выполнения AI-задач: in_process или external."),
         "deidentify_before_model": ("1", "Удалять явные идентификаторы из данных перед отправкой в LM Studio: 1 или 0."),
         "active_prompt_version": (MODEL_PROMPT_VERSION, "Активная версия prompt для запросов к модели."),
         "active_prompt_template": (USER_PROMPT_TEMPLATE, "Шаблон user prompt. Должен содержать {{PATIENT_JSON}}."),
+        "gold_min_score_percent": ("80", "Минимальный средний score Gold Set для release gate."),
         "max_request_bytes": (str(config.max_request_bytes), "Максимальный размер JSON-запроса пользователя."),
     }
 
@@ -377,6 +417,14 @@ def seed_default_settings(conn: sqlite3.Connection, config: Config) -> None:
 
 
 def apply_migrations(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS schema_migrations (
+          id TEXT PRIMARY KEY,
+          applied_at TEXT NOT NULL
+        )
+        """
+    )
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(model_requests)").fetchall()}
     migrations = {
         "prompt_version": "ALTER TABLE model_requests ADD COLUMN prompt_version TEXT NOT NULL DEFAULT ''",
@@ -457,7 +505,9 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
           expected_diagnosis TEXT NOT NULL DEFAULT '',
           expected_icd10_json TEXT NOT NULL DEFAULT '[]',
           expected_red_flags_json TEXT NOT NULL DEFAULT '[]',
+          expected_missing_data_json TEXT NOT NULL DEFAULT '[]',
           expected_abstain INTEGER NOT NULL DEFAULT 0,
+          severity TEXT NOT NULL DEFAULT 'medium',
           notes TEXT NOT NULL DEFAULT '',
           created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
           created_at TEXT NOT NULL,
@@ -501,6 +551,19 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_gold_runs_created ON gold_runs(created_at DESC)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_gold_run_items_run ON gold_run_items(gold_run_id, status)")
+
+    gold_columns = {row["name"] for row in conn.execute("PRAGMA table_info(gold_cases)").fetchall()}
+    if gold_columns and "expected_missing_data_json" not in gold_columns:
+        conn.execute("ALTER TABLE gold_cases ADD COLUMN expected_missing_data_json TEXT NOT NULL DEFAULT '[]'")
+    if gold_columns and "severity" not in gold_columns:
+        conn.execute("ALTER TABLE gold_cases ADD COLUMN severity TEXT NOT NULL DEFAULT 'medium'")
+
+    applied_at = utc_now()
+    for migration_id in SCHEMA_MIGRATIONS:
+        conn.execute(
+            "INSERT OR IGNORE INTO schema_migrations (id, applied_at) VALUES (?, ?)",
+            (migration_id, applied_at),
+        )
 
 
 def get_app_settings(conn: sqlite3.Connection) -> dict[str, str]:

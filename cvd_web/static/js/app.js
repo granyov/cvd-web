@@ -11,17 +11,10 @@
   const queueStatus = document.getElementById("queueStatus");
   const sectionNav = document.getElementById("sectionNav");
   const icdSummary = document.getElementById("icdSummary");
-  const filledMetric = document.getElementById("filledMetric");
-  const readinessMetric = document.getElementById("readinessMetric");
-  const icdMetric = document.getElementById("icdMetric");
-  const requestMetric = document.getElementById("requestMetric");
   const patientSnapshot = document.getElementById("patientSnapshot");
   const readinessPanel = document.getElementById("readinessPanel");
-  const sectionProgressPanel = document.getElementById("sectionProgressPanel");
-  const clinicalWorkflowPanel = document.getElementById("clinicalWorkflowPanel");
   const signalsPanel = document.getElementById("signalsPanel");
   const nextActionText = document.getElementById("nextActionText");
-  const sideNextActionText = document.getElementById("sideNextActionText");
   const diagnoseButton = document.getElementById("diagnoseButton");
   const passwordModal = document.getElementById("passwordModal");
   const passwordForm = document.getElementById("passwordForm");
@@ -48,8 +41,15 @@
   const exportHtmlButton = document.getElementById("exportHtmlButton");
   const resultReadyBanner = document.getElementById("resultReadyBanner");
   const viewResultButton = document.getElementById("viewResultButton");
+  const draftBanner = document.getElementById("draftBanner");
+  const draftBannerText = document.getElementById("draftBannerText");
+  const restoreDraftButton = document.getElementById("restoreDraftButton");
+  const dismissDraftButton = document.getElementById("dismissDraftButton");
+  const jumpMissingButton = document.getElementById("jumpMissingButton");
+  const lastModelSummary = document.getElementById("lastModelSummary");
   const minimumPasswordLength = 15;
   const maxImportBytes = 5 * 1024 * 1024;
+  const draftStorageKey = `cvd:case-draft:${window.CURRENT_USER?.email || "user"}`;
   let currentCaseId = null;
   let currentModelRequestId = null;
   let lastModelDataFingerprint = null;
@@ -62,6 +62,9 @@
   let structureQueueState = null;
   let structureQueueTimer = null;
   let diagnosisQueueTimer = null;
+  let draftSaveTimer = null;
+  let suppressDraftSave = false;
+  let pendingDraft = null;
   const modalTriggers = new WeakMap();
 
   const qualityRules = window.CVDClinicalQuality;
@@ -321,12 +324,76 @@
     const data = collectData();
     jsonPreview.textContent = JSON.stringify(data, null, 2);
     updateIcdComparison(data);
-    updateMetrics(data);
     updateSectionBadges(data);
     updateClinicalQuality(data);
     return data;
   }
 
+  function readLocalDraft() {
+    try {
+      const raw = localStorage.getItem(draftStorageKey);
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function writeLocalDraft(data) {
+    if (suppressDraftSave) return;
+    if (!qualityRules.hasClinicalInput(data)) return;
+    const payload = {
+      case_id: currentCaseId,
+      patient_data: data,
+      updated_at: new Date().toISOString(),
+      fingerprint: qualityRules.dataFingerprint(data)
+    };
+    try {
+      localStorage.setItem(draftStorageKey, JSON.stringify(payload));
+    } catch {
+      // Local draft is a convenience only; quota/storage errors must not block work.
+    }
+  }
+
+  function scheduleDraftSave(data = null) {
+    if (suppressDraftSave) return;
+    const snapshot = data || collectData();
+    window.clearTimeout(draftSaveTimer);
+    draftSaveTimer = window.setTimeout(() => writeLocalDraft(snapshot), 350);
+  }
+
+  function clearLocalDraft() {
+    pendingDraft = null;
+    draftBanner?.classList.add("hidden");
+    try { localStorage.removeItem(draftStorageKey); } catch (_) {}
+  }
+
+  function showDraftBanner(draft) {
+    if (!draftBanner || !draft?.patient_data) return;
+    pendingDraft = draft;
+    const when = draft.updated_at ? new Date(draft.updated_at).toLocaleString("ru-RU", {day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit"}) : "";
+    draftBannerText.textContent = `Найден локальный черновик${when ? ` от ${when}` : ""}.`;
+    draftBanner.classList.remove("hidden");
+  }
+
+  function restoreLocalDraft() {
+    if (!pendingDraft?.patient_data) return;
+    suppressDraftSave = true;
+    currentCaseId = pendingDraft.case_id || null;
+    resetModelState(true);
+    applyData(pendingDraft.patient_data);
+    saveStatus.textContent = currentCaseId ? `кейс #${currentCaseId} восстановлен из черновика` : "черновик восстановлен";
+    suppressDraftSave = false;
+    clearLocalDraft();
+    updatePreview();
+    toast("Черновик восстановлен");
+  }
+
+  function initDraftRestore() {
+    const params = new URLSearchParams(window.location.search);
+    if (params.get("case") || params.get("request")) return;
+    const draft = readLocalDraft();
+    if (draft?.patient_data && qualityRules.hasClinicalInput(draft.patient_data)) showDraftBanner(draft);
+  }
 
   function sectionFillPercent(section, data) {
     return qualityRules.sectionFillPercent(section, data);
@@ -347,33 +414,12 @@
     });
   }
 
-  function updateMetrics(data) {
-    let total = 0;
-    let filled = 0;
-    window.CVD_SCHEMA.forEach((section) => {
-      section.fields.forEach((field) => {
-        total++;
-        const value = data[section.key]?.[field.key];
-        if (Array.isArray(value) ? value.length > 0 : value !== null && value !== "") {
-          filled++;
-        }
-      });
-    });
-    const percent = total ? Math.round((filled / total) * 100) : 0;
-    if (filledMetric) filledMetric.textContent = `${percent}%`;
-    const trueCodes = data.FINAL_DIAGNOSES?.ICD10_codes || [];
-    const modelCodes = data.MODEL_OUTPUT?.Model_ICD10_codes || [];
-    if (icdMetric) icdMetric.textContent = String(new Set([...trueCodes, ...modelCodes]).size);
-  }
-
   function missingRequiredData(data) {
     return qualityRules.missingRequiredData(data);
   }
 
   function updateClinicalQuality(data) {
     renderPatientSnapshot(data);
-    renderClinicalWorkflow(data);
-    renderSectionProgress(data);
     renderReadiness(data);
     renderSignals(data);
     updateModelFreshness(data);
@@ -405,68 +451,6 @@
     });
   }
 
-  function workflowStepStatus(data, requiredPaths = []) {
-    if (!requiredPaths.length) return "done";
-    const filled = requiredPaths.filter((path) => isFilled(getValue(data, path))).length;
-    if (filled === requiredPaths.length) return "done";
-    return filled > 0 ? "active" : "todo";
-  }
-
-  function renderClinicalWorkflow(data) {
-    if (!clinicalWorkflowPanel) return;
-    const hasResult = Boolean(currentModelRequestId);
-    const missing = missingRequiredData(data);
-    const steps = [
-      ["Идентификация", "Пациент и случай", ["GENERAL_INFO.Full_name", "GENERAL_INFO.Patient_ID", "GENERAL_INFO.Age", "GENERAL_INFO.Sex"]],
-      ["Жалобы", "Причина обращения", ["COMPLAINTS.Main_complaint"]],
-      ["Осмотр", "АД, ЧСС, SpO2", ["PHYSICAL_EXAM.Blood_pressure_right_systolic_mmHg", "PHYSICAL_EXAM.Heart_rate_bpm", "PHYSICAL_EXAM.SpO2_room_air_percent"]],
-      ["Диагностика", "ЭКГ / Эхо / лаборатория", ["ECG.Resting_ECG_summary", "ECHOCARDIOGRAPHY.LVEF_percent", "LABS_CARDIAC_MARKERS.Troponin_ng_L"]],
-      ["Диагноз врача", "Финальная клиническая версия", ["FINAL_DIAGNOSES.Main_cardiovascular_diagnosis_text"]],
-      ["AI-анализ", hasResult ? "результат получен" : "ожидает запуска", []],
-      ["Review", missing.length ? `${missing.length} ключ. полей не заполнено` : "готово к экспертной оценке", []]
-    ];
-    clinicalWorkflowPanel.innerHTML = "";
-    steps.forEach(([title, caption, paths], index) => {
-      const item = document.createElement("button");
-      item.type = "button";
-      const status = index === 5 ? hasResult ? "done" : "todo" : index === 6 ? missing.length ? "active" : "done" : workflowStepStatus(data, paths);
-      item.className = `clinical-workflow-step ${status}`;
-      const number = document.createElement("span");
-      number.textContent = String(index + 1);
-      const text = document.createElement("strong");
-      text.textContent = title;
-      const small = document.createElement("small");
-      small.textContent = caption;
-      item.append(number, text, small);
-      const firstPath = paths[0];
-      if (firstPath) {
-        item.addEventListener("click", () => focusSection(firstPath.split(".")[0]));
-      }
-      clinicalWorkflowPanel.appendChild(item);
-    });
-  }
-
-  function renderSectionProgress(data) {
-    if (!sectionProgressPanel) return;
-    sectionProgressPanel.innerHTML = "";
-    window.CVD_SCHEMA.forEach((section) => {
-      const {percent} = sectionFillPercent(section, data);
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = `section-progress-item ${percent === 100 ? "ok" : percent > 0 ? "warning" : ""}`.trim();
-      button.title = `Перейти к разделу: ${section.title}`;
-      const label = document.createElement("span");
-      label.textContent = section.title;
-      const value = document.createElement("strong");
-      value.textContent = `${percent}%`;
-      button.append(label, value);
-      button.addEventListener("click", () => {
-        focusSection(section.key);
-      });
-      sectionProgressPanel.appendChild(button);
-    });
-  }
-
   function updateWorkflow(data) {
     const missing = missingRequiredData(data);
     const hasCase = Boolean(currentCaseId);
@@ -492,7 +476,6 @@
       ctaText = "Обновить AI-анализ";
     }
     if (nextActionText) nextActionText.textContent = nextAction;
-    if (sideNextActionText) sideNextActionText.textContent = nextAction;
     if (diagnoseButton && !diagnoseButton.disabled) diagnoseButton.textContent = ctaText;
   }
 
@@ -501,6 +484,15 @@
     focusSection(section);
     const target = document.getElementById(fieldId(section, field));
     window.setTimeout(() => target?.focus(), 260);
+  }
+
+  function focusFirstMissing(data = updatePreview()) {
+    const missing = missingRequiredData(data);
+    if (!missing.length) {
+      toast("Ключевые поля заполнены");
+      return;
+    }
+    focusFieldPath(missing[0][0]);
   }
 
   function updateModelFreshness(data) {
@@ -519,7 +511,10 @@
     const missing = missingRequiredData(data);
     const ready = requiredDataPoints.length - missing.length;
     const percent = Math.round((ready / requiredDataPoints.length) * 100);
-    if (readinessMetric) readinessMetric.textContent = `${percent}%`;
+    if (jumpMissingButton) {
+      jumpMissingButton.disabled = missing.length === 0;
+      jumpMissingButton.textContent = missing.length ? `К первому незаполненному (${missing.length})` : "Ключевые поля заполнены";
+    }
     requiredDataPoints.forEach(([path, label]) => {
       const ok = isFilled(getValue(data, path));
       const row = document.createElement("button");
@@ -576,8 +571,8 @@
     currentCaseId = response.case_id;
     if (currentModelRequestId) updateModelFreshness(data);
     saveStatus.textContent = `кейс #${currentCaseId} сохранён`;
+    clearLocalDraft();
     toast("Кейс сохранён");
-    await loadHistory();
   }
 
   function fillModelOutput(parsed) {
@@ -587,6 +582,7 @@
       setFieldValue(`MODEL_OUTPUT.${key}`, value);
     }
     updatePreview();
+    scheduleDraftSave();
   }
 
   function durationText(ms) {
@@ -620,12 +616,57 @@
     return grid;
   }
 
+  function openTab(name) {
+    document.querySelectorAll(".tab").forEach((button) => {
+      button.classList.toggle("active", button.dataset.tab === name);
+    });
+    ["quality", "json", "model"].forEach((tabName) => {
+      document.getElementById(`tab-${tabName}`).classList.toggle("hidden", tabName !== name);
+    });
+  }
+
+  function renderLastModelSummary(cds, meta = {}) {
+    if (!lastModelSummary) return;
+    if (!cds || typeof cds !== "object") {
+      lastModelSummary.classList.add("hidden");
+      lastModelSummary.innerHTML = "";
+      return;
+    }
+    const diagnoses = Array.isArray(cds.possible_diagnoses) ? cds.possible_diagnoses : [];
+    const redFlags = Array.isArray(cds.red_flags) ? cds.red_flags.filter(Boolean) : [];
+    const missing = Array.isArray(cds.missing_data) ? cds.missing_data.filter(Boolean) : [];
+    const mainDiagnosis = diagnoses[0]?.name || cds.summary || "AI-результат без диагноза";
+    lastModelSummary.innerHTML = "";
+    const toolbar = document.createElement("div");
+    toolbar.className = "toolbar";
+    const title = document.createElement("strong");
+    title.textContent = "Последний AI-результат";
+    const open = document.createElement("button");
+    open.type = "button";
+    open.textContent = "Открыть ответ";
+    open.addEventListener("click", () => openTab("model"));
+    toolbar.append(title, open);
+    const summary = document.createElement("small");
+    summary.textContent = mainDiagnosis;
+    const stats = document.createElement("div");
+    stats.className = "status-line";
+    stats.append(
+      pill(`${diagnoses.length} диагнозов`),
+      pill(`${redFlags.length} red flags`, redFlags.length ? "error" : ""),
+      pill(`${missing.length} missing`, missing.length ? "warning" : ""),
+      pill(durationText(meta.duration_ms))
+    );
+    lastModelSummary.append(toolbar, summary, stats);
+    lastModelSummary.classList.remove("hidden");
+  }
+
   function renderModelOutput(parsed, meta = {}) {
     if (!modelStructured) return;
     modelStructured.innerHTML = "";
     const cds = parsed?.CDS_OUTPUT;
     if (!cds || typeof cds !== "object") {
       modelStructured.textContent = "Структурированный CDS-ответ отсутствует.";
+      renderLastModelSummary(null);
       return;
     }
     const diagnoses = Array.isArray(cds.possible_diagnoses) ? cds.possible_diagnoses : [];
@@ -649,6 +690,7 @@
       ["Не хватает", String(missing.length), missing.length ? "warning" : ""]
     ]));
     modelStructured.appendChild(summary);
+    renderLastModelSummary(cds, meta);
     if (meta.ai_result_stale) {
       modelStructured.appendChild(renderStaleDiff(meta.ai_result_changes || []));
     }
@@ -863,7 +905,6 @@
     reviewStatus.textContent = `оценено: ${payload.rating}`;
     reviewStatus.className = "pill ok";
     toast("Оценка сохранена");
-    await loadHistory();
   }
 
   function diagnose() {
@@ -934,7 +975,6 @@
       if (queueStatus) queueStatus.className = "pill hidden";
       updateWorkflow(patientData);
       toast("Результат AI-анализа готов");
-      await loadHistory();
     } catch (err) {
       const resultWasSaved = Boolean(response?.request_id);
       if (!resultWasSaved) modelPreview.textContent = err.message;
@@ -955,11 +995,6 @@
     }
   }
 
-  async function loadHistory() {
-    const response = await api("/api/library/summary");
-    if (requestMetric) requestMetric.textContent = String(response.summary?.requests_total || 0);
-  }
-
   function requestErrorText() {
     return "AI-анализ завершился ошибкой. Повторите запрос или обратитесь к администратору.";
   }
@@ -973,12 +1008,7 @@
   }
 
   function openRequestResult(item) {
-    document.querySelectorAll(".tab").forEach((button) => {
-      button.classList.toggle("active", button.dataset.tab === "model");
-    });
-    ["quality", "json", "model"].forEach((name) => {
-      document.getElementById(`tab-${name}`).classList.toggle("hidden", name !== "model");
-    });
+    openTab("model");
     currentModelRequestId = item.id;
     lastModelDataFingerprint = qualityRules.dataFingerprint(collectData());
     modelStatus.textContent = item.status === "success"
@@ -1384,11 +1414,10 @@
       }
       resetModelState(true);
       selected.forEach((row) => setFieldValue(row.mapping.path, row.mapping.value));
-      updatePreview();
+      scheduleDraftSave(updatePreview());
       saveStatus.textContent = currentCaseId ? `кейс #${currentCaseId} изменён импортом` : "импортировано · не сохранено";
       closeImportModal();
       toast(`Импортировано полей: ${selected.length}`);
-      await loadHistory();
     } finally {
       button.disabled = false;
     }
@@ -1431,13 +1460,15 @@
   function renderReviewContent(data) {
     reviewContent.innerHTML = "";
     const missing = missingRequiredData(data);
+    const ready = requiredDataPoints.length - missing.length;
+    const readinessPercent = Math.round((ready / requiredDataPoints.length) * 100);
     const signalRows = Array.from(signalsPanel.querySelectorAll(".signal-row"));
     const signals = signalRows.map((node) => node.textContent.trim());
     const cards = [
       ["Пациент", displayValue(getValue(data, "GENERAL_INFO.Full_name"))],
       ["Случай", displayValue(getValue(data, "GENERAL_INFO.Patient_ID"))],
       ["Возраст / пол", `${displayValue(getValue(data, "GENERAL_INFO.Age"), "?")} / ${displayValue(getValue(data, "GENERAL_INFO.Sex"), "?")}`],
-      ["Готовность", readinessMetric?.textContent || "0%"],
+      ["Готовность", `${readinessPercent}%`],
       ["Размер JSON", `${JSON.stringify(data).length} символов`]
     ];
     const cardGrid = document.createElement("div");
@@ -1494,6 +1525,8 @@
     }
     modelPreview.textContent = "Технический ответ AI появится здесь.";
     modelStructured.innerHTML = "";
+    lastModelSummary?.classList.add("hidden");
+    if (lastModelSummary) lastModelSummary.innerHTML = "";
     modelStatus.textContent = "AI не запускался";
     modelStatus.className = "pill";
     requestReviewForm?.classList.add("hidden");
@@ -1503,19 +1536,14 @@
     currentCaseId = null;
     form.reset();
     resetModelState();
+    clearLocalDraft();
     updatePreview();
     saveStatus.textContent = "не сохранено";
   }
 
   function setupTabs() {
     document.querySelectorAll(".tab").forEach((button) => {
-      button.addEventListener("click", () => {
-        document.querySelectorAll(".tab").forEach((item) => item.classList.remove("active"));
-        button.classList.add("active");
-        ["quality", "json", "model"].forEach((name) => {
-          document.getElementById(`tab-${name}`).classList.toggle("hidden", name !== button.dataset.tab);
-        });
-      });
+      button.addEventListener("click", () => openTab(button.dataset.tab));
     });
   }
 
@@ -1630,7 +1658,6 @@
   }
 
   async function initializeWorkspace() {
-    await loadHistory();
     const params = new URLSearchParams(window.location.search);
     const caseId = Number(params.get("case") || 0);
     const requestId = Number(params.get("request") || 0);
@@ -1651,10 +1678,14 @@
     if (event.target.name === "GENERAL_INFO.Height_cm" || event.target.name === "GENERAL_INFO.Weight_kg") {
       calculateBMI();
     }
-    updatePreview();
+    const data = updatePreview();
+    scheduleDraftSave(data);
     setHtmlExportAvailable(false);
     saveStatus.textContent = currentCaseId ? `кейс #${currentCaseId} изменён` : "не сохранено";
   });
+  restoreDraftButton?.addEventListener("click", restoreLocalDraft);
+  dismissDraftButton?.addEventListener("click", () => draftBanner?.classList.add("hidden"));
+  jumpMissingButton?.addEventListener("click", () => focusFirstMissing());
   document.getElementById("saveCaseButton").addEventListener("click", () => saveCase().catch((err) => toast(err.message)));
   document.getElementById("diagnoseButton").addEventListener("click", diagnose);
   document.getElementById("downloadJsonButton").addEventListener("click", downloadJson);
@@ -1670,5 +1701,6 @@
   document.getElementById("downloadFhirButton").addEventListener("click", () => downloadFHIR().catch((err) => toast(err.message)));
   document.getElementById("newCaseButton").addEventListener("click", resetCase);
   updatePreview();
+  initDraftRestore();
   initializeWorkspace().catch((err) => toast(err.message));
 })();
