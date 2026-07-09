@@ -242,6 +242,7 @@ python3 -m cvd_web
 
 - `/healthz` — простой liveness-check процесса;
 - `/readyz` — readiness-check SQLite integrity, наличия template/static каталогов и production security posture.
+- `/api/admin/security-audit` — admin-only security checklist: default credentials, secure cookies, AI Gateway headers, backup posture, audit log и production runtime blockers.
 
 Важно: текущая сборка всё ещё использует in-process очередь LM Studio и in-memory rate limit. В `CVD_ENV=production` `/readyz` намеренно остаётся `503`, пока не внедрены внешние Redis/PostgreSQL adapter очереди и внешний rate limiter; это защищает от случайного запуска production в небезопасной многопроцессной конфигурации.
 
@@ -255,6 +256,25 @@ cp .env.example .env
 docker compose up -d --build
 ```
 
+### umbrelOS
+
+Репозиторий можно добавить в umbrelOS как Community App Store:
+
+```text
+https://github.com/granyov/cvd-web
+```
+
+Umbrel package находится в `granyov-cvd-web/` и использует image `ghcr.io/granyov/cvd-web:v0.9.3`. GitHub Actions workflow `Docker Image` публикует этот image в GHCR на tag `v*` или при ручном запуске workflow.
+
+Данные приложения хранятся в `${APP_DATA_DIR}/data` и монтируются в контейнер как `/app/data`. Первый вход в Umbrel-сборке:
+
+```text
+admin@umbrel.local
+UmbrelCVD2026Pass!
+```
+
+После первого входа система попросит сменить пароль. LM Studio по умолчанию ожидается на `http://host.docker.internal:1234/v1/chat/completions`; другой endpoint, включая cloudflared tunnel, настраивается в админке CVD Web.
+
 ### Backup SQLite
 
 ```bash
@@ -263,11 +283,20 @@ sh scripts/backup_sqlite.sh
 
 Для cron/systemd timer задайте `CVD_DB_PATH` и `CVD_BACKUP_DIR`, если пути отличаются от стандартных.
 
+### Миграции SQLite
+
+```bash
+python3 -m cvd_web migrate --check
+python3 -m cvd_web migrate
+```
+
+Команда `migrate` применяет текущую схему через `schema_migrations`; если база уже существует и есть pending migrations, перед применением создаётся `cvd-pre-migration-*.sqlite3` backup.
+
 ## Следующие инженерные шаги
 
 - Заменить dev WSGI server на production runner или systemd socket setup.
 - Добавить полноценную страницу профиля вместо prompt-диалога смены пароля.
-- Дальше развивать `schema_migrations`: вынести крупные миграции в отдельные файлы и добавить backup-before-migration.
+- Дальше развивать `schema_migrations`: вынести крупные миграции в отдельные файлы и добавить rollback-процедуры.
 - Расширить мониторинг доступности LM Studio и внешний экспорт метрик.
 - Определить политику хранения медицинских данных и деидентификации.
 - Расширить validation/gold set: запускать эталоны на выбранных моделях и промптах автоматически.

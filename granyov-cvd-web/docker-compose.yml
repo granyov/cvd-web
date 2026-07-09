@@ -1,0 +1,28 @@
+version: "3.7"
+
+services:
+  app_proxy:
+    environment:
+      APP_HOST: granyov-cvd-web_server_1
+      APP_PORT: 8080
+
+  server:
+    image: ghcr.io/granyov/cvd-web:v0.9.3
+    user: "1000:1000"
+    init: true
+    restart: on-failure
+    stop_grace_period: 1m
+    volumes:
+      - ${APP_DATA_DIR}/data:/app/data
+    environment:
+      CVD_ENV: controlled
+      CVD_COOKIE_SECURE: "0"
+      CVD_HOST: 0.0.0.0
+      CVD_PORT: "8080"
+      CVD_DB_PATH: /app/data/cvd.sqlite3
+      CVD_ADMIN_EMAIL: admin@umbrel.local
+      CVD_ADMIN_PASSWORD: UmbrelCVD2026Pass!
+      LM_STUDIO_API_URL: http://host.docker.internal:1234/v1/chat/completions
+      LM_STUDIO_MODEL: healtheart-cvd-engine
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

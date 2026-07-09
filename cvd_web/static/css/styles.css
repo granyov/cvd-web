@@ -933,6 +933,22 @@ details.section[open] > summary {
   grid-column: 1 / -1;
 }
 
+.auth-headers-list {
+  display: grid;
+  gap: 8px;
+}
+
+.auth-header-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1fr) minmax(220px, 2fr) auto;
+  gap: 8px;
+  align-items: center;
+}
+
+.compact-toolbar {
+  margin-top: 8px;
+}
+
 .model-picker {
   padding: 11px 12px;
   border: 1px solid var(--border);
@@ -966,6 +982,24 @@ details.section[open] > summary {
   gap: 8px;
   flex-wrap: wrap;
   font-size: 0.9rem;
+}
+
+.draft-banner {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+  border: 1px solid color-mix(in srgb, var(--warning) 40%, var(--border));
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  background: color-mix(in srgb, var(--warning) 9%, var(--field-bg));
+  color: var(--text);
+}
+
+.draft-banner > span {
+  min-width: 0;
+  font-size: 0.88rem;
 }
 
 .result-ready {
@@ -1520,9 +1554,46 @@ th {
   margin-bottom: 14px;
 }
 
+.quality-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
 .quality-section h3 {
-  margin: 0 0 8px;
+  margin: 0;
   font-size: 0.95rem;
+}
+
+.quality-heading button {
+  flex: 0 0 auto;
+  padding: 6px 9px;
+  font-size: 0.78rem;
+}
+
+.last-model-summary {
+  display: grid;
+  gap: 8px;
+  margin: 0 0 14px;
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border));
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  background: color-mix(in srgb, var(--accent) 6%, var(--field-bg));
+}
+
+.last-model-summary strong,
+.last-model-summary small {
+  min-width: 0;
+}
+
+.last-model-summary small {
+  color: var(--muted);
+}
+
+.last-model-summary .toolbar {
+  justify-content: space-between;
 }
 
 .quality-list {
@@ -2033,9 +2104,19 @@ body[data-theme="dark"] .check-row.warning .check-mark {
     flex-direction: column;
   }
 
+  .draft-banner,
+  .quality-heading {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
   .result-ready button {
     width: 100%;
     min-width: 0;
+  }
+
+  .quality-heading button {
+    width: 100%;
   }
 
   .import-diff {
@@ -2046,6 +2127,10 @@ body[data-theme="dark"] .check-row.warning .check-mark {
   .form-grid,
   .settings-grid,
   .clinical-cards.compact {
+    grid-template-columns: 1fr;
+  }
+
+  .auth-header-row {
     grid-template-columns: 1fr;
   }
 

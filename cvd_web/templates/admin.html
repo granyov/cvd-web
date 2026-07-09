@@ -34,6 +34,7 @@
   <main class="container admin-shell">
     <nav class="admin-nav" aria-label="Разделы админки">
       <a href="#admin-dashboard-section">Операции</a>
+      <a href="#admin-security-section">Security</a>
       <a href="#admin-model-quality-section">Качество модели</a>
       <a href="#admin-gold-cockpit-section">Gold cockpit</a>
       <a href="#admin-batch-section">Пакетный режим</a>
@@ -67,6 +68,20 @@
             <div id="systemHealthGrid" class="system-health-grid"></div>
           </div>
         </div>
+      </div>
+    </section>
+
+    <section id="admin-security-section" class="panel admin-section admin-anchor">
+      <div class="panel-header">
+        <div>
+          <p class="eyebrow">Security</p>
+          <h2>Security audit</h2>
+        </div>
+        <button type="button" id="refreshSecurityAuditButton">Обновить</button>
+      </div>
+      <div class="panel-body">
+        <div id="securityAuditSummary" class="toolbar" style="margin-bottom: 12px;"></div>
+        <div id="securityAuditList" class="quality-list"></div>
       </div>
     </section>
 
@@ -211,13 +226,16 @@
             <input name="lm_studio_api_url" type="url" placeholder="http://127.0.0.1:1234/v1/chat/completions" required>
             <div id="aiGatewayHint" class="muted">Выберите профиль, чтобы увидеть рекомендуемый формат endpoint.</div>
           </div>
-          <div class="field">
-            <label>Auth header name<span class="key">ai_gateway_auth_header_name</span></label>
-            <input name="ai_gateway_auth_header_name" type="text" placeholder="Authorization или CF-Access-Client-Id">
-          </div>
-          <div class="field">
-            <label>Auth header value<span class="key">ai_gateway_auth_header_value</span></label>
-            <input name="ai_gateway_auth_header_value" type="password" autocomplete="off" placeholder="Bearer ... или service token">
+          <input name="ai_gateway_headers_json" id="aiGatewayHeadersJson" type="hidden" value="[]">
+          <input name="ai_gateway_auth_header_name" type="hidden">
+          <input name="ai_gateway_auth_header_value" type="hidden">
+          <div class="field full">
+            <label>Auth headers<span class="key">ai_gateway_headers_json</span></label>
+            <div id="aiGatewayHeadersList" class="auth-headers-list"></div>
+            <div class="toolbar compact-toolbar">
+              <button type="button" id="addGatewayHeaderButton">Добавить header</button>
+              <span class="muted">Для Cloudflare Access обычно нужны CF-Access-Client-Id и CF-Access-Client-Secret; для tunnel-фильтров можно добавить User-Agent.</span>
+            </div>
           </div>
           <div class="field">
             <label>Модель<span class="key">lm_studio_model</span></label>
@@ -265,7 +283,7 @@
             <label>Ожидание в очереди, сек<span class="key">lm_studio_queue_timeout_seconds</span></label>
             <input name="lm_studio_queue_timeout_seconds" type="number" min="30" max="7200" required>
           </div>
-          <div class="settings-group-title full"><strong>Безопасность и prompt</strong><span>Деидентификация, structured output и версия клинического prompt.</span></div>
+          <div class="settings-group-title full"><strong>Production runtime</strong><span>Внешняя очередь, rate limit и режим worker для readiness на VPS.</span></div>
           <div class="field">
             <label>Backend очереди<span class="key">inference_queue_backend</span></label>
             <select name="inference_queue_backend">
@@ -278,6 +296,26 @@
             <label>Queue DSN<span class="key">inference_queue_dsn</span></label>
             <input name="inference_queue_dsn" type="password" autocomplete="off" placeholder="redis://... или postgresql://...">
             <div class="muted">В этой сборке активен in-process adapter; Redis/PostgreSQL DSN фиксируется для production rollout и мониторинга готовности.</div>
+          </div>
+          <div class="field">
+            <label>Rate limit backend<span class="key">rate_limit_backend</span></label>
+            <select name="rate_limit_backend">
+              <option value="memory">Memory / single process</option>
+              <option value="redis">Redis external rate limit</option>
+              <option value="postgresql">PostgreSQL external rate limit</option>
+            </select>
+          </div>
+          <div class="field">
+            <label>Worker mode<span class="key">inference_worker_mode</span></label>
+            <select name="inference_worker_mode">
+              <option value="in_process">In-process</option>
+              <option value="external">External worker</option>
+            </select>
+          </div>
+          <div class="field full">
+            <label>Rate limit DSN<span class="key">rate_limit_dsn</span></label>
+            <input name="rate_limit_dsn" type="password" autocomplete="off" placeholder="redis://... или postgresql://...">
+            <div class="muted">Production readiness останется заблокирован, пока active adapter остаётся memory/in-process.</div>
           </div>
           <div class="settings-group-title full"><strong>Безопасность и prompt</strong><span>Деидентификация, structured output и версия клинического prompt.</span></div>
           <div class="field">
@@ -301,6 +339,10 @@
           <div class="field">
             <label>Макс. размер запроса, bytes<span class="key">max_request_bytes</span></label>
             <input name="max_request_bytes" type="number" min="1024" max="20971520" required>
+          </div>
+          <div class="field">
+            <label>Gold gate, %<span class="key">gold_min_score_percent</span></label>
+            <input name="gold_min_score_percent" type="number" min="0" max="100" required>
           </div>
           <details class="field full prompt-advanced">
             <summary>Экспертный prompt template <span class="key">active_prompt_template, обязателен {{PATIENT_JSON}}</span></summary>
@@ -481,6 +523,8 @@
         <div class="toolbar" style="margin: 12px 0;">
           <div id="goldSetSummary" class="toolbar"></div>
           <button type="button" id="startGoldRunButton" class="primary">Создать validation run</button>
+          <a class="button" href="/api/admin/gold-set/export.csv">CSV</a>
+          <a class="button" href="/api/admin/gold-set/report.html" target="_blank" rel="noopener">HTML report</a>
         </div>
         <div class="table-wrap">
           <table>

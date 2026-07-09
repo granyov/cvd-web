@@ -1,0 +1,67 @@
+name: Docker Image
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Image version tag, for example v0.9.3"
+        required: true
+        default: "v0.9.3"
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            version="${GITHUB_REF_NAME}"
+          else
+            version="${{ inputs.version }}"
+          fi
+          [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([A-Za-z0-9._-]+)?$ ]]
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Verify application version
+        run: |
+          python - <<'PY' "${{ steps.version.outputs.version }}"
+          import sys
+          from cvd_web.versions import APP_VERSION
+          expected = sys.argv[1]
+          if APP_VERSION != expected:
+              raise SystemExit(f"APP_VERSION={APP_VERSION} does not match image tag {expected}")
+          PY
+
+      - name: Build and push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ghcr.io/${{ github.repository }}:${{ steps.version.outputs.version }}
+            ghcr.io/${{ github.repository }}:latest
+          labels: |
+            org.opencontainers.image.title=CVD Web
+            org.opencontainers.image.description=Cardiovascular case workspace with local LLM review
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.version=${{ steps.version.outputs.version }}

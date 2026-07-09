@@ -1,0 +1,97 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, for example v0.9.3"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+
+      - name: Resolve version
+        id: version
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            version="${GITHUB_REF_NAME}"
+          else
+            version="${{ inputs.version }}"
+          fi
+          [[ "$version" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([A-Za-z0-9._-]+)?$ ]]
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Verify application version
+        run: |
+          python - <<'PY' "${{ steps.version.outputs.version }}"
+          import sys
+          from cvd_web.versions import APP_VERSION
+          expected = sys.argv[1]
+          if APP_VERSION != expected:
+              raise SystemExit(f"APP_VERSION={APP_VERSION} does not match release {expected}")
+          PY
+
+      - name: Static and JavaScript checks
+        run: |
+          python -m compileall -q cvd_web
+          node --check cvd_web/static/js/app.js
+          node --check cvd_web/static/js/admin.js
+          node --test tests/test_patient_transfer.js tests/test_clinical_quality.js
+          bash -n install.sh scripts/build_release.sh scripts/install_from_release.sh scripts/publish_github_release.sh
+
+      - name: Build release archive
+        run: scripts/build_release.sh --version "${{ steps.version.outputs.version }}" --out-dir dist
+
+      - name: Verify checksum and install archive
+        shell: bash
+        run: |
+          archive="dist/cvd-web-${{ steps.version.outputs.version }}.tar.gz"
+          sha256sum -c "${archive}.sha256"
+          extract_dir="$(mktemp -d)"
+          install_dir="$(mktemp -d)/cvd-web"
+          tar -xzf "$archive" -C "$extract_dir"
+          "$extract_dir/install.sh" \
+            --target local \
+            --install-dir "$install_dir" \
+            --port 18080 \
+            --admin-email ci-release@cvd.local \
+            --admin-password CI-Release-Install-2026 \
+            --no-service \
+            --unattended
+          test -x "$install_dir/bin/cvd-web"
+          test "$(stat -c '%a' "$install_dir/config/cvd-web.env")" = "600"
+
+      - name: Publish GitHub Release
+        shell: bash
+        run: |
+          version="${{ steps.version.outputs.version }}"
+          archive="dist/cvd-web-${version}.tar.gz"
+          checksum="${archive}.sha256"
+          if gh release view "$version" >/dev/null 2>&1; then
+            gh release upload "$version" "$archive" "$checksum" --clobber
+          else
+            gh release create "$version" "$archive" "$checksum" \
+              --verify-tag \
+              --title "CVD Web ${version}" \
+              --notes "Automated release build for ${version}."
+          fi

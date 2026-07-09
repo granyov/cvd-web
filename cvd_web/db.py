@@ -265,6 +265,9 @@ SCHEMA_MIGRATIONS = [
     "0005_text_preparation_items",
     "0006_gold_set_validation",
     "0007_gold_set_quality_targets",
+    "0008_ai_gateway_multi_headers",
+    "0009_production_runtime_settings",
+    "0010_gold_release_gate",
 ]
 
 
@@ -332,6 +335,7 @@ SETTINGS_KEYS = [
     "support_contact",
     "default_theme",
     "ai_gateway_profile",
+    "ai_gateway_headers_json",
     "ai_gateway_auth_header_name",
     "ai_gateway_auth_header_value",
     "lm_studio_api_url",
@@ -347,9 +351,13 @@ SETTINGS_KEYS = [
     "lm_studio_queue_timeout_seconds",
     "inference_queue_backend",
     "inference_queue_dsn",
+    "rate_limit_backend",
+    "rate_limit_dsn",
+    "inference_worker_mode",
     "deidentify_before_model",
     "active_prompt_version",
     "active_prompt_template",
+    "gold_min_score_percent",
     "max_request_bytes",
 ]
 
@@ -369,6 +377,7 @@ def default_settings(config: Config) -> dict[str, tuple[str, str]]:
         "support_contact": ("", "Контакт администратора или поддержки."),
         "default_theme": ("light", "Тема по умолчанию: light или dark."),
         "ai_gateway_profile": ("local", "Профиль подключения к AI Gateway: local, lan, wsl2 или cloudflared."),
+        "ai_gateway_headers_json": ("[]", "JSON-список дополнительных HTTP-заголовков для tunnel/auth."),
         "ai_gateway_auth_header_name": ("", "Имя дополнительного HTTP-заголовка для tunnel/auth, например Authorization."),
         "ai_gateway_auth_header_value": ("", "Значение дополнительного HTTP-заголовка для tunnel/auth."),
         "lm_studio_api_url": (config.lm_studio_api_url, "OpenAI-compatible endpoint LM Studio."),
@@ -384,9 +393,13 @@ def default_settings(config: Config) -> dict[str, tuple[str, str]]:
         "lm_studio_queue_timeout_seconds": ("1800", "Максимальное ожидание свободного слота LM Studio в секундах."),
         "inference_queue_backend": ("memory", "Backend очереди: memory, redis или postgresql. Redis/PostgreSQL требуют отдельного worker-адаптера."),
         "inference_queue_dsn": ("", "DSN внешней очереди Redis/PostgreSQL без публикации пользователям."),
+        "rate_limit_backend": ("memory", "Backend rate limit: memory, redis или postgresql. Production требует внешний backend."),
+        "rate_limit_dsn": ("", "DSN внешнего rate limiter без публикации пользователям."),
+        "inference_worker_mode": ("in_process", "Режим выполнения AI-задач: in_process или external."),
         "deidentify_before_model": ("1", "Удалять явные идентификаторы из данных перед отправкой в LM Studio: 1 или 0."),
         "active_prompt_version": (MODEL_PROMPT_VERSION, "Активная версия prompt для запросов к модели."),
         "active_prompt_template": (USER_PROMPT_TEMPLATE, "Шаблон user prompt. Должен содержать {{PATIENT_JSON}}."),
+        "gold_min_score_percent": ("80", "Минимальный средний score Gold Set для release gate."),
         "max_request_bytes": (str(config.max_request_bytes), "Максимальный размер JSON-запроса пользователя."),
     }
 

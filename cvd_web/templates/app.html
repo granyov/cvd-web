@@ -77,6 +77,13 @@
             <span id="modelStatus" class="pill">AI не запускался</span>
             <span id="queueStatus" class="pill hidden">очередь AI</span>
           </div>
+          <div id="draftBanner" class="draft-banner hidden" role="status" aria-live="polite">
+            <span id="draftBannerText">Найден локальный черновик.</span>
+            <div class="toolbar">
+              <button type="button" id="restoreDraftButton">Восстановить</button>
+              <button type="button" id="dismissDraftButton">Скрыть</button>
+            </div>
+          </div>
           <nav id="sectionNav" class="section-nav" aria-label="Навигация по разделам формы"></nav>
           <div id="resultReadyBanner" class="result-ready hidden" role="status" aria-live="polite">
             <div>
@@ -98,8 +105,12 @@
         <div class="panel-body">
           <section id="tab-quality">
             <div id="patientSnapshot" class="clinical-cards"></div>
+            <div id="lastModelSummary" class="last-model-summary hidden"></div>
             <div class="quality-section">
-              <h3>Ключевые поля</h3>
+              <div class="quality-heading">
+                <h3>Ключевые поля</h3>
+                <button type="button" id="jumpMissingButton">К первому незаполненному</button>
+              </div>
               <div id="readinessPanel" class="quality-list"></div>
             </div>
             <div class="quality-section">

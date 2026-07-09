@@ -1,0 +1,32 @@
+manifestVersion: 1
+id: granyov-cvd-web
+name: CVD Web
+tagline: Cardiovascular case workspace with local LLM review
+icon: icon.svg
+category: ai
+version: "0.9.3"
+port: 8080
+description: >-
+  CVD Web is a controlled cardiovascular case workspace for structuring patient
+  data, reviewing clinical completeness, running OpenAI-compatible local LLM
+  analysis, tracking Gold Set validation, and exporting review reports.
+
+  The app is intended for development, synthetic data, and controlled evaluation.
+  It is not validated for diagnosis, treatment, or processing identifiable
+  patient data in production clinical workflows.
+developer: Granyov
+website: https://github.com/granyov/cvd-web
+submitter: Granyov
+submission: https://github.com/granyov/cvd-web
+repo: https://github.com/granyov/cvd-web
+support: https://github.com/granyov/cvd-web/issues
+gallery: []
+releaseNotes: >-
+  Adds an umbrelOS package, persistent SQLite storage, local AI Gateway settings,
+  Gold Set validation exports, security audit checks, and migration tooling.
+dependencies: []
+path: ""
+defaultUsername: "admin@umbrel.local"
+defaultPassword: "UmbrelCVD2026Pass!"
+deterministicPassword: false
+torOnly: false
