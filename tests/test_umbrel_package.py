@@ -23,6 +23,7 @@ class UmbrelPackageTests(unittest.TestCase):
         self.assertIn('id: "granyov"', store)
         self.assertRegex(manifest, rf"(?m)^id:\s+{APP_ID}$")
         self.assertRegex(manifest, rf'(?m)^version:\s+"{re.escape(version)}"$')
+        self.assertIn("icon: https://raw.githubusercontent.com/granyov/cvd-web/main/granyov-cvd-web/icon.svg", manifest)
         self.assertIn('defaultUsername: "admin@umbrel.local"', manifest)
         self.assertIn('defaultPassword: "UmbrelCVD2026Pass!"', manifest)
 
@@ -31,6 +32,8 @@ class UmbrelPackageTests(unittest.TestCase):
         self.assertIn(f"image: ghcr.io/granyov/cvd-web:{APP_VERSION}", compose)
         self.assertIn("${APP_DATA_DIR}/data:/app/data", compose)
         self.assertIn("CVD_DB_PATH: /app/data/cvd.sqlite3", compose)
+        self.assertIn("LM_STUDIO_API_URL: https://api-cvd.granyov.com/v1/chat/completions", compose)
+        self.assertIn("LM_STUDIO_MODEL: unsloth/medgemma-27b-text-it", compose)
         self.assertIn("host.docker.internal:host-gateway", compose)
 
         self.assertIn("CVD_HOST=0.0.0.0", dockerfile)

@@ -1,6 +1,6 @@
 # CVD Web
 
-**Текущая версия: `v0.9.3`**
+**Текущая версия: `v0.9.4`**
 
 Веб-приложение для структурированных CVD-кейсов, простой авторизации, админки пользователей и журналирования запросов к LM Studio.
 
@@ -55,10 +55,10 @@
 ### Сборка архива
 
 ```bash
-scripts/build_release.sh --version v0.9.3
+scripts/build_release.sh --version v0.9.4
 ```
 
-Скрипт запускает Python-тесты, собирает `dist/cvd-web-v0.9.3.tar.gz` и создаёт рядом `.sha256`. Этот архив можно передать в WSL2 или на VPS, распаковать и запустить bundled `install.sh`.
+Скрипт запускает Python-тесты, собирает `dist/cvd-web-v0.9.4.tar.gz` и создаёт рядом `.sha256`. Этот архив можно передать в WSL2 или на VPS, распаковать и запустить bundled `install.sh`.
 
 ### Компьютер в домашней сети
 
@@ -104,7 +104,7 @@ journalctl --user -u cvd-web.service -f
 
 ```bash
 scripts/install_from_release.sh \
-  --url https://storage.example.com/cvd-web/v0.9.3/cvd-web-v0.9.3.tar.gz \
+  --url https://storage.example.com/cvd-web/v0.9.4/cvd-web-v0.9.4.tar.gz \
   --sha256 <archive-sha256> \
   -- --target local
 ```
@@ -126,8 +126,8 @@ scripts/install_from_release.sh -- --target local --unattended
 export GH_TOKEN=<github-token-with-repo-or-public_repo-scope>
 export GH_REPO=<owner>/<repo>
 scripts/publish_github_release.sh \
-  --tag v0.9.3 \
-  --archive /workspace/cvd-web-release/cvd-web-v0.9.3.tar.gz
+  --tag v0.9.4 \
+  --archive /workspace/cvd-web-release/cvd-web-v0.9.4.tar.gz
 ```
 
 Скрипт проверит авторизацию `gh`, создаст release, если его ещё нет, или перезальёт архив и `.sha256` через `gh release upload --clobber`, если release уже существует.
@@ -264,7 +264,7 @@ docker compose up -d --build
 https://github.com/granyov/cvd-web
 ```
 
-Umbrel package находится в `granyov-cvd-web/` и использует image `ghcr.io/granyov/cvd-web:v0.9.3`. GitHub Actions workflow `Docker Image` публикует этот image в GHCR на tag `v*` или при ручном запуске workflow.
+Umbrel package находится в `granyov-cvd-web/` и использует image `ghcr.io/granyov/cvd-web:v0.9.4`. GitHub Actions workflow `Docker Image` публикует этот image в GHCR на tag `v*` или при ручном запуске workflow. Иконка приложения задаётся абсолютным URL `https://raw.githubusercontent.com/granyov/cvd-web/main/granyov-cvd-web/icon.svg`, чтобы Community App Store корректно показывал её в UI Umbrel.
 
 Данные приложения хранятся в `${APP_DATA_DIR}/data` и монтируются в контейнер как `/app/data`. Первый вход в Umbrel-сборке:
 
@@ -273,7 +273,13 @@ admin@umbrel.local
 UmbrelCVD2026Pass!
 ```
 
-После первого входа система попросит сменить пароль. LM Studio по умолчанию ожидается на `http://host.docker.internal:1234/v1/chat/completions`; другой endpoint, включая cloudflared tunnel, настраивается в админке CVD Web.
+После первого входа система попросит сменить пароль. Umbrel-сборка по умолчанию использует cloudflared endpoint `https://api-cvd.granyov.com/v1/chat/completions` и модель `unsloth/medgemma-27b-text-it`; другой endpoint настраивается в админке CVD Web.
+
+Проверка доступности AI Gateway из Docker на Umbrel:
+
+```bash
+sudo docker run --rm ghcr.io/granyov/cvd-web:v0.9.4 python -c 'import json, urllib.request; payload=json.dumps({"model":"unsloth/medgemma-27b-text-it","messages":[{"role":"user","content":"Respond with OK only."}],"max_tokens":4,"temperature":0}).encode(); req=urllib.request.Request("https://api-cvd.granyov.com/v1/chat/completions", data=payload, headers={"Content-Type":"application/json"}); print(urllib.request.urlopen(req, timeout=30).read().decode())'
+```
 
 ### Backup SQLite
 

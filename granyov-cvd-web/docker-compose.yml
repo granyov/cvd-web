@@ -7,7 +7,7 @@ services:
       APP_PORT: 8080
 
   server:
-    image: ghcr.io/granyov/cvd-web:v0.9.3
+    image: ghcr.io/granyov/cvd-web:v0.9.4
     user: "1000:1000"
     init: true
     restart: on-failure
@@ -22,7 +22,7 @@ services:
       CVD_DB_PATH: /app/data/cvd.sqlite3
       CVD_ADMIN_EMAIL: admin@umbrel.local
       CVD_ADMIN_PASSWORD: UmbrelCVD2026Pass!
-      LM_STUDIO_API_URL: http://host.docker.internal:1234/v1/chat/completions
-      LM_STUDIO_MODEL: healtheart-cvd-engine
+      LM_STUDIO_API_URL: https://api-cvd.granyov.com/v1/chat/completions
+      LM_STUDIO_MODEL: unsloth/medgemma-27b-text-it
     extra_hosts:
       - "host.docker.internal:host-gateway"
