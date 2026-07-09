@@ -73,4 +73,6 @@ jobs:
           gh api \
             --method PATCH \
             /user/packages/container/cvd-web/visibility \
-            -f visibility=public
+            -f visibility=public || {
+              echo "::warning::Could not switch GHCR package visibility with GITHUB_TOKEN. If the package is private, make ghcr.io/granyov/cvd-web public in GitHub Packages settings or rerun with a PAT that has package admin permissions."
+            }
