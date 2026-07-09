@@ -18,6 +18,7 @@ class UmbrelPackageTests(unittest.TestCase):
         manifest = (ROOT / APP_ID / "umbrel-app.yml").read_text(encoding="utf-8")
         compose = (ROOT / APP_ID / "docker-compose.yml").read_text(encoding="utf-8")
         dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+        data_dir = ROOT / APP_ID / "data"
 
         self.assertIn('id: "granyov"', store)
         self.assertRegex(manifest, rf"(?m)^id:\s+{APP_ID}$")
@@ -35,6 +36,7 @@ class UmbrelPackageTests(unittest.TestCase):
         self.assertIn("CVD_HOST=0.0.0.0", dockerfile)
         self.assertIn("EXPOSE 8080", dockerfile)
         self.assertIn("/healthz", dockerfile)
+        self.assertTrue(data_dir.is_dir())
 
 
 if __name__ == "__main__":
