@@ -66,7 +66,7 @@ jobs:
         shell: bash
         run: |
           archive="dist/cvd-web-${{ steps.version.outputs.version }}.tar.gz"
-          sha256sum -c "${archive}.sha256"
+          (cd dist && sha256sum -c "cvd-web-${{ steps.version.outputs.version }}.tar.gz.sha256")
           extract_dir="$(mktemp -d)"
           install_dir="$(mktemp -d)/cvd-web"
           tar -xzf "$archive" -C "$extract_dir"
