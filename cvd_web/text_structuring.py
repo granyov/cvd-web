@@ -154,7 +154,8 @@ SOURCE_TEXT:
         ],
         "temperature": 0.0,
         "max_tokens": max(256, min(max_tokens, TEXT_MAX_OUTPUT_TOKENS)),
-        "stream": False,
+        "stream": True,
+        "stream_options": {"include_usage": True},
         "response_format": {"type": "json_schema", "json_schema": TEXT_STRUCTURING_SCHEMA},
     }
 

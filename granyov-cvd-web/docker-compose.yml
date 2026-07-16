@@ -7,7 +7,7 @@ services:
       APP_PORT: 8080
 
   server:
-    image: ghcr.io/granyov/cvd-web:v0.9.5
+    image: ghcr.io/granyov/cvd-web:v0.9.6
     user: "1000:1000"
     init: true
     restart: on-failure
@@ -25,5 +25,6 @@ services:
       LM_STUDIO_API_URL: https://api-cvd.granyov.com/v1/chat/completions
       LM_STUDIO_MODEL: medgemma-27b-text-it@q8_0
       LM_STUDIO_TIMEOUT_SECONDS: "1200"
+      LM_STUDIO_MAX_TOKENS: "4096"
     extra_hosts:
       - "host.docker.internal:host-gateway"

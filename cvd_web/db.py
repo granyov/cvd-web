@@ -284,6 +284,7 @@ SCHEMA_MIGRATIONS = [
     "0009_production_runtime_settings",
     "0010_gold_release_gate",
     "0011_inference_jobs",
+    "0012_q8_streaming_defaults",
 ]
 
 
@@ -441,6 +442,9 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
         )
         """
     )
+    applied_migration_ids = {
+        row["id"] for row in conn.execute("SELECT id FROM schema_migrations").fetchall()
+    }
     columns = {row["name"] for row in conn.execute("PRAGMA table_info(model_requests)").fetchall()}
     migrations = {
         "prompt_version": "ALTER TABLE model_requests ADD COLUMN prompt_version TEXT NOT NULL DEFAULT ''",
@@ -592,6 +596,16 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE gold_cases ADD COLUMN expected_missing_data_json TEXT NOT NULL DEFAULT '[]'")
     if gold_columns and "severity" not in gold_columns:
         conn.execute("ALTER TABLE gold_cases ADD COLUMN severity TEXT NOT NULL DEFAULT 'medium'")
+
+    if "0012_q8_streaming_defaults" not in applied_migration_ids:
+        conn.execute(
+            """
+            UPDATE app_settings
+            SET value = '4096', updated_at = ?
+            WHERE key = 'lm_studio_max_tokens' AND value = '1536'
+            """,
+            (utc_now(),),
+        )
 
     applied_at = utc_now()
     for migration_id in SCHEMA_MIGRATIONS:

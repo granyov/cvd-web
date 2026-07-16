@@ -66,7 +66,7 @@ def load_config() -> Config:
         ),
         lm_studio_model=os.getenv("LM_STUDIO_MODEL", "healtheart-cvd-engine"),
         lm_studio_timeout_seconds=_env_int("LM_STUDIO_TIMEOUT_SECONDS", 1200),
-        lm_studio_max_tokens=_env_int("LM_STUDIO_MAX_TOKENS", 1536),
+        lm_studio_max_tokens=_env_int("LM_STUDIO_MAX_TOKENS", 4096),
         lm_studio_temperature=float(os.getenv("LM_STUDIO_TEMPERATURE", "0.2").replace(",", ".")),
         max_request_bytes=_env_int("CVD_MAX_REQUEST_BYTES", 2 * 1024 * 1024),
     )

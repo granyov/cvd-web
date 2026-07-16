@@ -167,7 +167,8 @@ def build_chat_request(
         ],
         "temperature": temperature,
         "max_tokens": max_tokens,
-        "stream": False,
+        "stream": True,
+        "stream_options": {"include_usage": True},
     }
     if structured_output:
         request_body["response_format"] = {
@@ -346,8 +347,17 @@ def call_json_lm_studio(
     extra_headers: dict[str, str] | None = None,
 ) -> tuple[dict[str, Any], str, int]:
     """Send an OpenAI-compatible chat request and return its JSON payload and content."""
-    encoded = json.dumps(request_body, ensure_ascii=False).encode("utf-8")
-    headers = {"Content-Type": "application/json", "User-Agent": LM_STUDIO_USER_AGENT}
+    outgoing_body = dict(request_body)
+    streaming = bool(outgoing_body.get("stream"))
+    if streaming and "stream_options" not in outgoing_body:
+        outgoing_body["stream_options"] = {"include_usage": True}
+    encoded = json.dumps(outgoing_body, ensure_ascii=False).encode("utf-8")
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": LM_STUDIO_USER_AGENT,
+    }
+    if streaming:
+        headers["Accept"] = "text/event-stream"
     if extra_headers:
         headers.update(extra_headers)
     request = urllib.request.Request(
@@ -360,6 +370,8 @@ def call_json_lm_studio(
     started = time.monotonic()
     try:
         with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            if streaming:
+                return read_lm_studio_stream(response, started_at=started, request_body=outgoing_body)
             raw = response.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
@@ -391,6 +403,153 @@ def call_json_lm_studio(
     return response_json, str(content), duration_ms
 
 
+def read_lm_studio_stream(
+    response: Any,
+    *,
+    started_at: float,
+    request_body: dict[str, Any],
+) -> tuple[dict[str, Any], str, int]:
+    """Collect an OpenAI-compatible SSE chat stream into a normal chat response."""
+    content_parts: list[str] = []
+    chunk_count = 0
+    finish_reason = ""
+    usage: dict[str, Any] = {}
+    last_payload: dict[str, Any] = {}
+    role = "assistant"
+    non_sse_lines: list[str] = []
+
+    for raw_line in response:
+        line = raw_line.decode("utf-8", errors="replace").strip()
+        if not line or line.startswith(":"):
+            continue
+        if not line.startswith("data:"):
+            non_sse_lines.append(line)
+            continue
+        data = line[5:].strip()
+        if data == "[DONE]":
+            break
+        duration_ms = int((time.monotonic() - started_at) * 1000)
+        try:
+            payload = json.loads(data)
+        except json.JSONDecodeError as exc:
+            response_payload = build_stream_response_payload(
+                request_body=request_body,
+                content="".join(content_parts),
+                finish_reason=finish_reason,
+                usage=usage,
+                chunk_count=chunk_count,
+                last_payload=last_payload,
+                role=role,
+            )
+            raise LMStudioError(
+                f"LM Studio stream вернул невалидный JSON chunk: {data[:500]}",
+                duration_ms,
+                request_body=request_body,
+                response_payload=response_payload,
+            ) from exc
+        if not isinstance(payload, dict):
+            continue
+        last_payload = payload
+        chunk_count += 1
+        if payload.get("error"):
+            raw_error = payload["error"]
+            error_message = str(raw_error.get("message") if isinstance(raw_error, dict) else raw_error)[:1000]
+            response_payload = build_stream_response_payload(
+                request_body=request_body,
+                content="".join(content_parts),
+                finish_reason=finish_reason,
+                usage=usage,
+                chunk_count=chunk_count,
+                last_payload=last_payload,
+                role=role,
+            )
+            raise LMStudioError(
+                f"LM Studio stream вернул ошибку: {error_message}",
+                duration_ms,
+                request_body=request_body,
+                response_payload=response_payload,
+            )
+        if isinstance(payload.get("usage"), dict):
+            usage = payload["usage"]
+        choices = payload.get("choices") if isinstance(payload.get("choices"), list) else []
+        if not choices or not isinstance(choices[0], dict):
+            continue
+        choice = choices[0]
+        delta = choice.get("delta") if isinstance(choice.get("delta"), dict) else {}
+        message = choice.get("message") if isinstance(choice.get("message"), dict) else {}
+        if delta.get("role"):
+            role = str(delta["role"])
+        elif message.get("role"):
+            role = str(message["role"])
+        piece = delta.get("content")
+        if piece is None:
+            piece = message.get("content")
+        if piece:
+            content_parts.append(str(piece))
+        if choice.get("finish_reason") is not None:
+            finish_reason = str(choice.get("finish_reason") or "")
+
+    duration_ms = int((time.monotonic() - started_at) * 1000)
+    if chunk_count == 0 and non_sse_lines:
+        raw = "\n".join(non_sse_lines)
+        try:
+            response_json = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise LMStudioError(
+                f"LM Studio stream вернул невалидный ответ: {raw[:500]}",
+                duration_ms,
+                request_body=request_body,
+            ) from exc
+        content = (
+            response_json.get("choices", [{}])[0]
+            .get("message", {})
+            .get("content")
+        )
+        if not content:
+            content = json.dumps(response_json, ensure_ascii=False)
+        return response_json, str(content), duration_ms
+
+    content = "".join(content_parts)
+    response_json = build_stream_response_payload(
+        request_body=request_body,
+        content=content,
+        finish_reason=finish_reason,
+        usage=usage,
+        chunk_count=chunk_count,
+        last_payload=last_payload,
+        role=role,
+    )
+    return response_json, content or json.dumps(response_json, ensure_ascii=False), duration_ms
+
+
+def build_stream_response_payload(
+    *,
+    request_body: dict[str, Any],
+    content: str,
+    finish_reason: str,
+    usage: dict[str, Any],
+    chunk_count: int,
+    last_payload: dict[str, Any],
+    role: str,
+) -> dict[str, Any]:
+    return {
+        "id": last_payload.get("id") or "",
+        "object": "chat.completion",
+        "created": last_payload.get("created"),
+        "model": last_payload.get("model") or request_body.get("model") or "",
+        "choices": [
+            {
+                "index": 0,
+                "message": {"role": role or "assistant", "content": content},
+                "finish_reason": finish_reason,
+            }
+        ],
+        "usage": usage,
+        "stream": True,
+        "stream_chunk_count": chunk_count,
+    }
+
+
 def lm_studio_http_error_message(status_code: int, body: str) -> str:
     message = str(body or "").strip()
     try:
@@ -403,6 +562,13 @@ def lm_studio_http_error_message(status_code: int, body: str) -> str:
     lowered = message.lower()
     if "insufficient system resources" in lowered or "requires approximately" in lowered:
         return "LM Studio не смогла загрузить модель: недостаточно памяти. Выберите меньшую модель в админке."
+    if status_code == 524:
+        return (
+            "Cloudflare вернул HTTP 524: tunnel/proxy не дождался ответа LM Studio. "
+            "Это сетевой timeout, а не ошибка JSON-схемы. Приложение использует streaming, "
+            "но если 524 повторяется до первого токена, подключите CVD Web к LM Studio через LAN/VPN "
+            "или уменьшите prompt/max_tokens."
+        )
     return f"LM Studio HTTP {status_code}: {message[:1000] or 'ошибка без описания'}"
 
 

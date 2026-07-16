@@ -357,6 +357,8 @@ class CoreTests(unittest.TestCase):
             temperature=0.1,
         )
         self.assertEqual(request["response_format"]["type"], "json_schema")
+        self.assertEqual(request["stream"], True)
+        self.assertEqual(request["stream_options"], {"include_usage": True})
         response_schema = request["response_format"]["json_schema"]["schema"]
         self.assertEqual(response_schema["required"], ["CDS_OUTPUT"])
         self.assertEqual(
@@ -455,6 +457,72 @@ class CoreTests(unittest.TestCase):
             request = urlopen.call_args.args[0]
             headers = {key.lower(): value for key, value in request.header_items()}
             self.assertEqual(headers["user-agent"], "CVD-Web/override")
+
+    def test_lm_studio_streaming_response_is_collected(self):
+        class FakeStreamResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                lines = [
+                    {"id": "stream-1", "model": "medgemma", "choices": [{"delta": {"role": "assistant"}}]},
+                    {"choices": [{"delta": {"content": "{\"CDS_OUTPUT\":"}}]},
+                    {
+                        "choices": [{"delta": {"content": "{\"summary\":\"ok\"}}"}, "finish_reason": "stop"}],
+                        "usage": {"prompt_tokens": 10, "completion_tokens": 2, "total_tokens": 12},
+                    },
+                ]
+                for item in lines:
+                    yield f"data: {json.dumps(item)}\n\n".encode("utf-8")
+                yield b"data: [DONE]\n\n"
+
+        request_body = {
+            "model": "medgemma",
+            "messages": [{"role": "user", "content": "ok"}],
+            "stream": True,
+        }
+        with patch("cvd_web.lmstudio.urllib.request.urlopen", return_value=FakeStreamResponse()) as urlopen:
+            response_json, content, _ = call_json_lm_studio(
+                api_url="https://api-cvd.granyov.com/v1/chat/completions",
+                request_body=request_body,
+                timeout_seconds=5,
+            )
+        request = urlopen.call_args.args[0]
+        headers = {key.lower(): value for key, value in request.header_items()}
+        sent_body = json.loads(request.data.decode("utf-8"))
+        self.assertEqual(headers["accept"], "text/event-stream")
+        self.assertEqual(sent_body["stream_options"], {"include_usage": True})
+        self.assertEqual(content, "{\"CDS_OUTPUT\":{\"summary\":\"ok\"}}")
+        self.assertEqual(response_json["choices"][0]["finish_reason"], "stop")
+        self.assertEqual(response_json["choices"][0]["message"]["content"], content)
+        self.assertEqual(response_json["usage"]["completion_tokens"], 2)
+        self.assertEqual(response_json["stream_chunk_count"], 3)
+
+    def test_lm_studio_streaming_falls_back_to_plain_json(self):
+        class FakePlainJsonResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                yield json.dumps({
+                    "choices": [{"message": {"content": "{\"CDS_OUTPUT\":{\"summary\":\"plain\"}}"}}],
+                    "usage": {"completion_tokens": 1},
+                }).encode("utf-8")
+
+        with patch("cvd_web.lmstudio.urllib.request.urlopen", return_value=FakePlainJsonResponse()):
+            response_json, content, _ = call_json_lm_studio(
+                api_url="https://api-cvd.granyov.com/v1/chat/completions",
+                request_body={"model": "plain", "messages": [], "stream": True},
+                timeout_seconds=5,
+            )
+        self.assertEqual(content, "{\"CDS_OUTPUT\":{\"summary\":\"plain\"}}")
+        self.assertEqual(response_json["usage"]["completion_tokens"], 1)
 
     def test_direct_patient_identifiers_are_deidentified(self):
         cleaned, signals = deidentify_patient_data({
@@ -1290,6 +1358,31 @@ class CoreTests(unittest.TestCase):
             self.assertFalse(result["after"]["pending"], result)
             self.assertTrue(result["backup_path"].endswith(".sqlite3"), result)
             self.assertTrue(Path(result["backup_path"]).is_file())
+
+    def test_q8_default_migration_updates_legacy_max_tokens(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "q8-default.sqlite3"
+            config = make_test_config(db_path)
+            CVDApplication(config, start_batch_worker=False)
+            with connect(db_path) as conn:
+                conn.execute(
+                    "UPDATE app_settings SET value = '1536' WHERE key = 'lm_studio_max_tokens'"
+                )
+                conn.execute(
+                    "DELETE FROM schema_migrations WHERE id = ?",
+                    ("0012_q8_streaming_defaults",),
+                )
+
+            status = migration_status(db_path)
+            self.assertIn("0012_q8_streaming_defaults", status["pending"])
+            CVDApplication(config, start_batch_worker=False)
+
+            with connect(db_path) as conn:
+                value = conn.execute(
+                    "SELECT value FROM app_settings WHERE key = 'lm_studio_max_tokens'"
+                ).fetchone()[0]
+            self.assertEqual(value, "4096")
+            self.assertFalse(migration_status(db_path)["pending"])
 
     def test_memory_rate_limiter_window(self):
         now = [100.0]
