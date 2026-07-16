@@ -257,7 +257,7 @@
           <div class="settings-group-title full"><strong>Производительность и очередь</strong><span>Лимиты генерации, ожидания и параллельной обработки.</span></div>
           <div class="field">
             <label>Таймаут, сек<span class="key">lm_studio_timeout_seconds</span></label>
-            <input name="lm_studio_timeout_seconds" type="number" min="5" max="1800" required>
+            <input name="lm_studio_timeout_seconds" type="number" min="5" max="7200" required>
           </div>
           <div class="field">
             <label>max_tokens<span class="key">lm_studio_max_tokens</span></label>
@@ -281,7 +281,7 @@
           </div>
           <div class="field">
             <label>Ожидание в очереди, сек<span class="key">lm_studio_queue_timeout_seconds</span></label>
-            <input name="lm_studio_queue_timeout_seconds" type="number" min="30" max="7200" required>
+            <input name="lm_studio_queue_timeout_seconds" type="number" min="30" max="21600" required>
           </div>
           <div class="settings-group-title full"><strong>Production runtime</strong><span>Внешняя очередь, rate limit и режим worker для readiness на VPS.</span></div>
           <div class="field">

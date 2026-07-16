@@ -14,9 +14,8 @@ TEXT_CHUNK_MIN_CHARS = 700
 TEXT_CHUNK_MAX_COUNT = 8
 TEXT_MAX_INPUT_CHARS = 10000
 TEXT_MAX_MODEL_CALLS = 12
-TEXT_MAX_MODEL_DURATION_MS = 7 * 60 * 1000
-TEXT_MAX_OUTPUT_TOKENS = 1024
-TEXT_MODEL_TIMEOUT_SECONDS = 180
+TEXT_MAX_MODEL_DURATION_MS = 60 * 60 * 1000
+TEXT_MAX_OUTPUT_TOKENS = 4096
 AI_EXCLUDED_FIELDS = {"Patient_ID", "Full_name", "Sex"}
 FIELD_SPECS = {
     f"{section.key}.{field.key}": (section.key, field)
@@ -356,7 +355,7 @@ def _call_text_structuring_chunk(
         response_json, content, duration_ms = call_json_lm_studio(
             api_url=api_url,
             request_body=request_body,
-            timeout_seconds=min(timeout_seconds, TEXT_MODEL_TIMEOUT_SECONDS),
+            timeout_seconds=max(1, int(timeout_seconds)),
             extra_headers=extra_headers,
         )
     response_payload = {"raw": response_json, "content": content}

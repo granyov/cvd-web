@@ -4,7 +4,7 @@ name: CVD Web
 tagline: Cardiovascular case workspace with local LLM review
 icon: https://raw.githubusercontent.com/granyov/cvd-web/main/granyov-cvd-web/icon.svg
 category: ai
-version: "0.9.4"
+version: "0.9.5"
 port: 8080
 description: >-
   CVD Web is a controlled cardiovascular case workspace for structuring patient
@@ -22,8 +22,9 @@ repo: https://github.com/granyov/cvd-web
 support: https://github.com/granyov/cvd-web/issues
 gallery: []
 releaseNotes: >-
-  Shows a public Umbrel app icon and configures the default AI Gateway endpoint
-  for the Granyov cloudflared OpenAI-compatible API.
+  Extends long-running model timeouts, fixes cloudflared header clearing and
+  User-Agent handling, adds persistent interactive AI jobs, and makes text
+  structuring fail gracefully with a manual-review preview.
 dependencies: []
 path: ""
 defaultUsername: "admin@umbrel.local"

@@ -77,6 +77,19 @@ CREATE TABLE IF NOT EXISTS model_requests (
   created_at TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS inference_jobs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  case_id INTEGER REFERENCES cases(id) ON DELETE SET NULL,
+  status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'success', 'error', 'cancelled')),
+  request_json TEXT NOT NULL,
+  model_request_id INTEGER REFERENCES model_requests(id) ON DELETE SET NULL,
+  error TEXT,
+  created_at TEXT NOT NULL,
+  started_at TEXT,
+  finished_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS audit_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
@@ -239,6 +252,8 @@ CREATE INDEX IF NOT EXISTS idx_sessions_user ON sessions(user_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_expires ON sessions(expires_at);
 CREATE INDEX IF NOT EXISTS idx_cases_user_updated ON cases(user_id, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_requests_user_created ON model_requests(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_inference_jobs_user_created ON inference_jobs(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_inference_jobs_status_created ON inference_jobs(status, created_at);
 CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_reviews_request ON model_request_reviews(model_request_id);
 CREATE INDEX IF NOT EXISTS idx_reviews_created ON model_request_reviews(created_at DESC);
@@ -268,6 +283,7 @@ SCHEMA_MIGRATIONS = [
     "0008_ai_gateway_multi_headers",
     "0009_production_runtime_settings",
     "0010_gold_release_gate",
+    "0011_inference_jobs",
 ]
 
 
@@ -456,6 +472,25 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
         WHERE status = 'success' AND finish_reason = 'length'
         """
     )
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS inference_jobs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          case_id INTEGER REFERENCES cases(id) ON DELETE SET NULL,
+          status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'success', 'error', 'cancelled')),
+          request_json TEXT NOT NULL,
+          model_request_id INTEGER REFERENCES model_requests(id) ON DELETE SET NULL,
+          error TEXT,
+          created_at TEXT NOT NULL,
+          started_at TEXT,
+          finished_at TEXT
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_inference_jobs_user_created ON inference_jobs(user_id, created_at DESC)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_inference_jobs_status_created ON inference_jobs(status, created_at)")
 
     import_columns = {row["name"] for row in conn.execute("PRAGMA table_info(data_imports)").fetchall()}
     if import_columns and "mapping_version" not in import_columns:

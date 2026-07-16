@@ -33,7 +33,7 @@ class UmbrelPackageTests(unittest.TestCase):
         self.assertIn("${APP_DATA_DIR}/data:/app/data", compose)
         self.assertIn("CVD_DB_PATH: /app/data/cvd.sqlite3", compose)
         self.assertIn("LM_STUDIO_API_URL: https://api-cvd.granyov.com/v1/chat/completions", compose)
-        self.assertIn("LM_STUDIO_MODEL: unsloth/medgemma-27b-text-it", compose)
+        self.assertIn("LM_STUDIO_MODEL: medgemma-27b-text-it@q8_0", compose)
         self.assertIn("host.docker.internal:host-gateway", compose)
 
         self.assertIn("CVD_HOST=0.0.0.0", dockerfile)

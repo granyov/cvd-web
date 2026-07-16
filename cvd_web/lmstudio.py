@@ -7,7 +7,10 @@ import urllib.request
 from typing import Any
 
 from .cvd_schema import ICD10_PATTERN
-from .versions import MODEL_OUTPUT_SCHEMA_VERSION, MODEL_PROMPT_VERSION, PATIENT_SCHEMA_VERSION
+from .versions import APP_VERSION, MODEL_OUTPUT_SCHEMA_VERSION, MODEL_PROMPT_VERSION, PATIENT_SCHEMA_VERSION
+
+
+LM_STUDIO_USER_AGENT = f"CVD-Web/{APP_VERSION.lstrip('v')}"
 
 
 SYSTEM_PROMPT = (
@@ -344,7 +347,7 @@ def call_json_lm_studio(
 ) -> tuple[dict[str, Any], str, int]:
     """Send an OpenAI-compatible chat request and return its JSON payload and content."""
     encoded = json.dumps(request_body, ensure_ascii=False).encode("utf-8")
-    headers = {"Content-Type": "application/json"}
+    headers = {"Content-Type": "application/json", "User-Agent": LM_STUDIO_USER_AGENT}
     if extra_headers:
         headers.update(extra_headers)
     request = urllib.request.Request(

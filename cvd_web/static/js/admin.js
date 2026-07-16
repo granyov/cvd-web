@@ -534,7 +534,8 @@
         method: "POST",
         body: JSON.stringify({
           api_url: settingsForm.elements.lm_studio_api_url?.value || "",
-          model: modelSelect.value || settingsForm.elements.lm_studio_model?.value || ""
+          model: modelSelect.value || settingsForm.elements.lm_studio_model?.value || "",
+          ai_gateway_headers_json: aiGatewayHeadersJson?.value || "[]"
         })
       });
       const gateway = response.gateway || {};

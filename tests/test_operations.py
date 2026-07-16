@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from cvd_web.app import CVDApplication
+from cvd_web.auth import hash_password, utc_now
 from cvd_web.db import connect
 from cvd_web.lmstudio import LMStudioError
 from cvd_web.text_structuring import (
@@ -188,7 +189,7 @@ class OperationsTests(unittest.TestCase):
         self.assertIn("обрезан", str(context.exception))
         self.assertEqual(context.exception.response_payload["raw"]["choices"][0]["finish_reason"], "length")
 
-    def test_text_structuring_error_persists_finish_reason(self):
+    def test_text_structuring_format_error_returns_manual_review_preview(self):
         with tempfile.TemporaryDirectory() as tmp:
             app = CVDApplication(make_test_config(Path(tmp) / "cvd.sqlite3"), start_batch_worker=False)
             cookie, csrf = self.login(app)
@@ -213,12 +214,19 @@ class OperationsTests(unittest.TestCase):
                     csrf=csrf,
                     body={"text": "Пациент жалуется на сердцебиение и слабость."},
                 )
-            self.assertTrue(status.startswith("502"), body)
+            self.assertTrue(status.startswith("200"), body)
+            preview = json.loads(body.decode("utf-8"))
+            self.assertEqual(preview["mappings"], [])
+            self.assertIn("ручной проверки", " ".join(preview["warnings"]))
+            self.assertIn("Пациент жалуется", preview["corrected_text"])
             with connect(app.config.db_path) as conn:
                 stored = conn.execute("SELECT * FROM data_preparation_requests").fetchone()
-            self.assertEqual(stored["status"], "error")
+                text_item = conn.execute("SELECT * FROM text_preparation_items").fetchone()
+            self.assertEqual(stored["status"], "success")
             self.assertEqual(stored["finish_reason"], "length")
             self.assertEqual(stored["completion_tokens"], 1536)
+            self.assertEqual(text_item["mapped_fields"], 0)
+            self.assertGreaterEqual(text_item["warning_count"], 1)
 
     def test_truncated_response_is_stored_as_error_with_metrics(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -449,6 +457,100 @@ class OperationsTests(unittest.TestCase):
             self.assertEqual(text_item["mapped_fields"], 1)
             self.assertEqual(text_item["status"], "prepared")
             self.assertNotIn("пациэнт", preparation.keys())
+
+    def test_persistent_inference_jobs_process_ten_cardiologists(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = CVDApplication(make_test_config(Path(tmp) / "cvd.sqlite3"), start_batch_worker=False)
+            now = utc_now()
+            with connect(app.config.db_path) as conn:
+                for index in range(10):
+                    conn.execute(
+                        """
+                        INSERT INTO users
+                          (email, full_name, password_hash, role, is_active, must_change_password, created_at, updated_at)
+                        VALUES (?, ?, ?, 'user', 1, 0, ?, ?)
+                        """,
+                        (
+                            f"cardio{index}@test.local",
+                            f"Cardiologist {index}",
+                            hash_password("Cardio-password-2026!"),
+                            now,
+                            now,
+                        ),
+                    )
+
+            sessions: list[tuple[str, str]] = []
+            for index in range(10):
+                status, headers, body = call_wsgi(
+                    app,
+                    "/api/login",
+                    method="POST",
+                    body={"email": f"cardio{index}@test.local", "password": "Cardio-password-2026!"},
+                )
+                self.assertTrue(status.startswith("200"), body)
+                cookie = headers["Set-Cookie"].split(";", 1)[0]
+                _, _, body = call_wsgi(app, "/api/me", cookie=cookie)
+                sessions.append((cookie, json.loads(body.decode("utf-8"))["csrfToken"]))
+
+            job_ids: list[int] = []
+            for index, (cookie, csrf) in enumerate(sessions):
+                status, _, body = call_wsgi(
+                    app,
+                    "/api/model/diagnose/jobs",
+                    method="POST",
+                    cookie=cookie,
+                    csrf=csrf,
+                    body={
+                        "patient_data": {
+                            "GENERAL_INFO": {"Patient_ID": f"P-{index}", "Age": 60 + index},
+                            "COMPLAINTS": {"Main_complaint": "Одышка при нагрузке"},
+                        }
+                    },
+                )
+                self.assertTrue(status.startswith("201"), body)
+                job_ids.append(json.loads(body.decode("utf-8"))["job_id"])
+
+            parsed = {
+                "CDS_OUTPUT": {
+                    "summary": "Стабильный тестовый ответ.",
+                    "possible_diagnoses": [],
+                    "red_flags": [],
+                    "missing_data": [],
+                    "recommended_next_data": [],
+                    "limitations": [],
+                    "model_should_abstain": True,
+                },
+                "MODEL_OUTPUT": {"Final_model_diagnosis": "Тест"},
+            }
+
+            def model_response(**kwargs):
+                return (
+                    {"model": kwargs["model"]},
+                    {
+                        "raw": {
+                            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                            "choices": [{"finish_reason": "stop"}],
+                        },
+                        "content": "{}",
+                    },
+                    parsed,
+                    100,
+                )
+
+            with patch("cvd_web.app.call_lm_studio", side_effect=model_response) as model_call:
+                processed = 0
+                while app.process_next_inference_job():
+                    processed += 1
+            self.assertEqual(processed, 10)
+            self.assertEqual(model_call.call_count, 10)
+
+            for job_id, (cookie, _) in zip(job_ids, sessions):
+                status, _, body = call_wsgi(app, f"/api/model/diagnose/jobs/{job_id}", cookie=cookie)
+                self.assertTrue(status.startswith("200"), body)
+                payload = json.loads(body.decode("utf-8"))
+                self.assertEqual(payload["job"]["status"], "success")
+                self.assertTrue(payload["result"]["ok"])
+                self.assertIsNotNone(payload["result"]["request_id"])
 
 
 if __name__ == "__main__":

@@ -600,6 +600,10 @@
     return `~${Math.round(value / 60000)} мин`;
   }
 
+  function wait(ms) {
+    return new Promise((resolve) => window.setTimeout(resolve, ms));
+  }
+
   function renderModelMetaGrid(items) {
     const grid = document.createElement("div");
     grid.className = "model-meta-grid";
@@ -955,13 +959,30 @@
     }, 2000);
     try {
       const requestFingerprint = qualityRules.dataFingerprint(patientData);
-      response = await api("/api/model/diagnose", {
+      const job = await api("/api/model/diagnose/jobs", {
         method: "POST",
         body: JSON.stringify({
           case_id: currentCaseId,
           patient_data: patientData
         })
       });
+      modelStatus.textContent = `задание #${job.job_id} в очереди`;
+      while (true) {
+        await wait(2000);
+        const jobStatus = await api(`/api/model/diagnose/jobs/${job.job_id}`);
+        const item = jobStatus.job || {};
+        if (item.status === "queued") {
+          modelStatus.textContent = `задание #${item.id} ожидает`;
+          continue;
+        }
+        if (item.status === "running") {
+          modelStatus.textContent = `задание #${item.id} выполняется`;
+          continue;
+        }
+        response = jobStatus.result || {ok: false, error: item.error || "AI-задание завершилось без результата"};
+        if (!response.ok) throw new Error(response.error || "AI-анализ завершился ошибкой");
+        break;
+      }
       modelPreview.textContent = JSON.stringify(response.parsed || response.response, null, 2);
       fillModelOutput(response.parsed);
       renderModelOutput(response.parsed, response);

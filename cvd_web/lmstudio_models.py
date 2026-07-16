@@ -6,6 +6,8 @@ import urllib.request
 from typing import Any
 from urllib.parse import urlsplit
 
+from .lmstudio import LM_STUDIO_USER_AGENT
+
 
 class LMStudioManagementError(RuntimeError):
     pass
@@ -27,7 +29,7 @@ def _request_json(
     extra_headers: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     body = json.dumps(payload).encode("utf-8") if payload is not None else None
-    headers = {"Accept": "application/json", "Content-Type": "application/json"}
+    headers = {"Accept": "application/json", "Content-Type": "application/json", "User-Agent": LM_STUDIO_USER_AGENT}
     if extra_headers:
         headers.update(extra_headers)
     request = urllib.request.Request(

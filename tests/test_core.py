@@ -13,8 +13,10 @@ from cvd_web.auth import hash_password, utc_now, verify_password
 from cvd_web.config import Config, PROJECT_ROOT
 from cvd_web.db import connect
 from cvd_web.lmstudio import (
+    LM_STUDIO_USER_AGENT,
     LMStudioError,
     build_chat_request,
+    call_json_lm_studio,
     call_lm_studio,
     extract_json_from_text,
     lm_studio_http_error_message,
@@ -123,6 +125,23 @@ class CoreTests(unittest.TestCase):
         changes = patient_data_changes({"GENERAL_INFO": {"Age": 70}}, {"GENERAL_INFO": {"Age": 71, "Sex": "female"}})
         self.assertEqual([item["path"] for item in changes], ["GENERAL_INFO.Sex", "GENERAL_INFO.Age"])
         self.assertEqual(changes[1]["kind"], "changed")
+
+    def test_empty_ai_gateway_headers_json_clears_legacy_headers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = CVDApplication(make_test_config(Path(tmp) / "cvd.sqlite3"), start_batch_worker=False)
+            settings = {
+                "ai_gateway_headers_json": "[]",
+                "ai_gateway_auth_header_name": "Authorization",
+                "ai_gateway_auth_header_value": "Bearer stale-token",
+            }
+            self.assertEqual(app.ai_gateway_headers(settings), {})
+
+            legacy_settings = {
+                "ai_gateway_headers_json": "",
+                "ai_gateway_auth_header_name": "Authorization",
+                "ai_gateway_auth_header_value": "Bearer legacy-token",
+            }
+            self.assertEqual(app.ai_gateway_headers(legacy_settings), {"Authorization": "Bearer legacy-token"})
 
 
     def test_case_ai_freshness_workflow_filters_stale_results(self):
@@ -401,6 +420,41 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(context.exception.duration_ms, 2500)
         self.assertEqual(context.exception.response_payload["raw"]["choices"][0]["finish_reason"], "length")
         self.assertEqual(context.exception.request_body["max_tokens"], 768)
+
+    def test_lm_studio_http_requests_send_user_agent(self):
+        class FakeResponse:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return json.dumps({"choices": [{"message": {"content": "OK"}}]}).encode("utf-8")
+
+        request_body = {
+            "model": "medgemma-4b-it",
+            "messages": [{"role": "user", "content": "ok"}],
+        }
+        with patch("cvd_web.lmstudio.urllib.request.urlopen", return_value=FakeResponse()) as urlopen:
+            call_json_lm_studio(
+                api_url="https://api-cvd.granyov.com/v1/chat/completions",
+                request_body=request_body,
+                timeout_seconds=5,
+            )
+            request = urlopen.call_args.args[0]
+            headers = {key.lower(): value for key, value in request.header_items()}
+            self.assertEqual(headers["user-agent"], LM_STUDIO_USER_AGENT)
+
+            call_json_lm_studio(
+                api_url="https://api-cvd.granyov.com/v1/chat/completions",
+                request_body=request_body,
+                timeout_seconds=5,
+                extra_headers={"User-Agent": "CVD-Web/override"},
+            )
+            request = urlopen.call_args.args[0]
+            headers = {key.lower(): value for key, value in request.header_items()}
+            self.assertEqual(headers["user-agent"], "CVD-Web/override")
 
     def test_direct_patient_identifiers_are_deidentified(self):
         cleaned, signals = deidentify_patient_data({

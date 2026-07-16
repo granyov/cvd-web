@@ -35,7 +35,7 @@ from .db import (
 from .fhir import build_fhir_bundle
 from .integration_import import KNOWN_PATHS, parse_clinical_import
 from .inference_queue import InferenceQueue, InferenceQueueError
-from .lmstudio import call_lm_studio
+from .lmstudio import LMStudioError, call_lm_studio
 from .lmstudio_models import LMStudioManagementError, activate_lm_model, list_lm_models
 from .privacy import deidentify_patient_data
 from .quality import case_quality_summary, has_clinical_input, patient_data_changes, patient_data_hash
@@ -136,9 +136,18 @@ class CVDApplication:
         self.inference_queue = InferenceQueue()
         self.started_at = datetime.now(timezone.utc).replace(microsecond=0)
         self.batch_worker_event = threading.Event()
+        self.inference_worker_event = threading.Event()
+        self.recover_interrupted_inference_jobs()
         self.recover_interrupted_batch_jobs()
         self.batch_worker_thread: threading.Thread | None = None
+        self.inference_worker_thread: threading.Thread | None = None
         if start_batch_worker:
+            self.inference_worker_thread = threading.Thread(
+                target=self.inference_worker_loop,
+                name="cvd-inference-worker",
+                daemon=True,
+            )
+            self.inference_worker_thread.start()
             self.batch_worker_thread = threading.Thread(
                 target=self.batch_worker_loop,
                 name="cvd-batch-worker",
@@ -238,6 +247,11 @@ class CVDApplication:
                 return self.copy_case(user, int(match.group(1)))
         if request.path == "/api/model/diagnose" and request.method == "POST":
             return self.diagnose(request, user)
+        if request.path == "/api/model/diagnose/jobs" and request.method == "POST":
+            return self.create_diagnosis_job(request, user)
+        if match := re.fullmatch(r"/api/model/diagnose/jobs/(\d+)", request.path):
+            if request.method == "GET":
+                return self.get_diagnosis_job(user, int(match.group(1)))
         if request.path == "/api/model/structure-text" and request.method == "POST":
             return self.structure_text(request, user)
         if request.path == "/api/inference/status" and request.method == "GET":
@@ -648,7 +662,6 @@ class CVDApplication:
                     raise HTTPError(400, "У каждого auth-заголовка AI Gateway должны быть name и value")
                 self.validate_ai_gateway_header_name(name)
                 entries.append({"name": name[:80], "value": value[:4000]})
-        if entries:
             return entries
         name = str(settings.get("ai_gateway_auth_header_name") or "").strip()
         value = str(settings.get("ai_gateway_auth_header_value") or "").strip()
@@ -1279,6 +1292,142 @@ class CVDApplication:
             raise HTTPError(status, "Сервис AI временно недоступен. Подробности сохранены для администратора")
         return self.json_response(result)
 
+    def parse_diagnosis_payload(self, request: Request, user: dict[str, Any], settings: dict[str, str]) -> tuple[dict[str, Any], int | None]:
+        self.ensure_request_size(request, settings)
+        data = request.json()
+        patient_data = self.normalized_patient_data(data.get("patient_data"))
+        if not has_clinical_input(patient_data):
+            raise HTTPError(400, "Добавьте данные пациента перед запуском AI-анализа")
+        case_id = data.get("case_id")
+        if case_id is not None:
+            try:
+                case_id = int(case_id)
+            except (TypeError, ValueError) as exc:
+                raise HTTPError(400, "Некорректный case_id") from exc
+            with connect(self.config.db_path) as conn:
+                case_exists = conn.execute(
+                    "SELECT 1 FROM cases WHERE id = ? AND (user_id = ? OR ? = 'admin')",
+                    (case_id, user["id"], user["role"]),
+                ).fetchone()
+            if not case_exists:
+                raise HTTPError(404, "Кейс не найден")
+        return patient_data, case_id
+
+    def create_diagnosis_job(self, request: Request, user: dict[str, Any]):
+        settings = self.load_settings()
+        self.enforce_rate_limit(
+            f"model:{user['id']}",
+            limit=30,
+            window_seconds=3600,
+            message="Слишком много запросов к модели",
+        )
+        patient_data, case_id = self.parse_diagnosis_payload(request, user, settings)
+        per_user_limit = self.setting_int(settings, "lm_studio_per_user_limit", 2)
+        now = utc_now()
+        with connect(self.config.db_path) as conn:
+            outstanding = conn.execute(
+                """
+                SELECT COUNT(*) AS c
+                FROM inference_jobs
+                WHERE user_id = ? AND status IN ('queued', 'running')
+                """,
+                (user["id"],),
+            ).fetchone()["c"]
+            if int(outstanding or 0) >= per_user_limit:
+                raise HTTPError(
+                    429,
+                    f"У пользователя уже есть {outstanding} AI-задания в очереди или выполнении. Дождитесь результата.",
+                )
+            cur = conn.execute(
+                """
+                INSERT INTO inference_jobs
+                  (user_id, case_id, status, request_json, created_at)
+                VALUES (?, ?, 'queued', ?, ?)
+                """,
+                (
+                    user["id"],
+                    case_id,
+                    json.dumps({"patient_data": patient_data}, ensure_ascii=False),
+                    now,
+                ),
+            )
+            job_id = int(cur.lastrowid)
+            audit(
+                conn,
+                user_id=user["id"],
+                action="inference_job_create",
+                target_type="inference_job",
+                target_id=job_id,
+                details={"case_id": case_id},
+            )
+        self.inference_worker_event.set()
+        return self.json_response({"ok": True, "job_id": job_id, "status": "queued"}, status=201)
+
+    def model_request_payload(self, row: sqlite3.Row | dict[str, Any]) -> dict[str, Any]:
+        getter = row.get if isinstance(row, dict) else lambda key, default=None: row[key] if key in row.keys() else default
+        parsed_output = None
+        response_payload = None
+        try:
+            parsed_output = json.loads(getter("parsed_output_json") or "null")
+        except (TypeError, json.JSONDecodeError):
+            parsed_output = None
+        try:
+            response_payload = json.loads(getter("response_json") or "null")
+        except (TypeError, json.JSONDecodeError):
+            response_payload = None
+        return {
+            "ok": getter("status") == "success",
+            "request_id": getter("id"),
+            "response": response_payload,
+            "parsed": parsed_output,
+            "error": getter("error"),
+            "duration_ms": getter("duration_ms") or 0,
+            "queue_wait_ms": getter("queue_wait_ms") or 0,
+            "prompt_tokens": getter("prompt_tokens") or 0,
+            "completion_tokens": getter("completion_tokens") or 0,
+            "total_tokens": getter("total_tokens") or 0,
+            "tokens_per_second": getter("tokens_per_second") or 0,
+            "finish_reason": getter("finish_reason") or "",
+            "prompt_version": getter("prompt_version") or "",
+            "schema_version": getter("schema_version") or "",
+            "output_schema_version": getter("output_schema_version") or "",
+        }
+
+    def get_diagnosis_job(self, user: dict[str, Any], job_id: int):
+        with connect(self.config.db_path) as conn:
+            job = conn.execute(
+                """
+                SELECT *
+                FROM inference_jobs
+                WHERE id = ? AND (user_id = ? OR ? = 'admin')
+                """,
+                (job_id, user["id"], user["role"]),
+            ).fetchone()
+            if not job:
+                raise HTTPError(404, "AI-задание не найдено")
+            request_row = None
+            if job["model_request_id"]:
+                request_row = conn.execute(
+                    "SELECT * FROM model_requests WHERE id = ?",
+                    (job["model_request_id"],),
+                ).fetchone()
+        payload = {
+            "ok": True,
+            "job": {
+                "id": job["id"],
+                "status": job["status"],
+                "case_id": job["case_id"],
+                "model_request_id": job["model_request_id"],
+                "error": job["error"],
+                "created_at": job["created_at"],
+                "started_at": job["started_at"],
+                "finished_at": job["finished_at"],
+            },
+        }
+        if request_row:
+            payload["result"] = self.model_request_payload(request_row)
+        return self.json_response(payload)
+
     def export_html_report(self, request: Request, user: dict[str, Any]):
         settings = self.load_settings()
         self.ensure_request_size(request, settings)
@@ -1592,6 +1741,15 @@ class CVDApplication:
             error = str(exc)[:4000]
             response_payload = getattr(exc, "response_payload", None) or response_payload
             duration_ms = int(getattr(exc, "duration_ms", 0) or 0)
+            if isinstance(exc, LMStudioError) and not queue_error and isinstance(response_payload, dict):
+                result = {
+                    "corrected_text": source_text[:20000],
+                    "mappings": [],
+                    "warnings": [
+                        "AI не вернул пригодную структуру полей CVD. Исходный текст сохранён для ручной проверки.",
+                        error,
+                    ],
+                }
 
         metrics = self.model_metrics(response_payload, duration_ms)
         chunk_count = max(1, int(response_payload.get("chunk_count") or 1)) if response_payload else 1
@@ -2178,14 +2336,19 @@ class CVDApplication:
             "Деидентификация перед отправкой в модель должна быть включена.",
         )
         try:
-            gateway_headers_ok = str(settings.get("ai_gateway_profile") or "") != "cloudflared" or bool(self.ai_gateway_headers(settings))
-        except HTTPError:
+            self.ai_gateway_header_entries(settings)
+            gateway_headers_ok = True
+            gateway_headers_message = (
+                "Cloudflare Access headers опциональны. Для публичного cloudflared tunnel оставьте список headers пустым."
+            )
+        except HTTPError as exc:
             gateway_headers_ok = False
+            gateway_headers_message = str(exc)
         add_check(
             "cloudflared_access_headers",
             gateway_headers_ok,
             "warning",
-            "Для cloudflared/Cloudflare Access настройте auth headers.",
+            gateway_headers_message,
         )
         add_check(
             "production_runtime",
@@ -2354,12 +2517,12 @@ class CVDApplication:
             raise HTTPError(400, "Prompt template должен содержать {{PATIENT_JSON}}")
 
         ranges = {
-            "lm_studio_timeout_seconds": (5, 1800),
+            "lm_studio_timeout_seconds": (5, 7200),
             "lm_studio_max_tokens": (1024, 32768),
             "lm_studio_max_concurrent": (1, 8),
             "lm_studio_queue_limit": (1, 500),
             "lm_studio_per_user_limit": (1, 10),
-            "lm_studio_queue_timeout_seconds": (30, 7200),
+            "lm_studio_queue_timeout_seconds": (30, 21600),
             "gold_min_score_percent": (0, 100),
             "max_request_bytes": (1024, 20 * 1024 * 1024),
         }
@@ -2393,6 +2556,82 @@ class CVDApplication:
             )
         self.configure_inference_queue(values)
         return self.json_response({"ok": True})
+
+    def recover_interrupted_inference_jobs(self) -> None:
+        with connect(self.config.db_path) as conn:
+            conn.execute(
+                "UPDATE inference_jobs SET status = 'queued', started_at = NULL WHERE status = 'running'"
+            )
+
+    def inference_worker_loop(self) -> None:
+        while True:
+            try:
+                processed = self.process_next_inference_job()
+            except Exception:
+                traceback.print_exc()
+                processed = False
+            if not processed:
+                self.inference_worker_event.wait(2.0)
+                self.inference_worker_event.clear()
+
+    def process_next_inference_job(self) -> bool:
+        now = utc_now()
+        with connect(self.config.db_path) as conn:
+            job = conn.execute(
+                """
+                SELECT id, user_id, case_id, request_json
+                FROM inference_jobs
+                WHERE status = 'queued'
+                ORDER BY created_at, id
+                LIMIT 1
+                """
+            ).fetchone()
+            if not job:
+                return False
+            claimed = conn.execute(
+                "UPDATE inference_jobs SET status = 'running', started_at = ? WHERE id = ? AND status = 'queued'",
+                (now, job["id"]),
+            )
+            if claimed.rowcount == 0:
+                return True
+            job_data = row_to_dict(job)
+
+        request_id = None
+        item_status = "error"
+        error = None
+        try:
+            payload = json.loads(job_data["request_json"])
+            patient_data = self.normalized_patient_data(payload.get("patient_data"))
+            result = self.execute_model_request(
+                user_id=job_data["user_id"],
+                case_id=job_data["case_id"],
+                patient_data=patient_data,
+                request_source="queued_interactive",
+            )
+            request_id = result["request_id"]
+            item_status = "success" if result["ok"] else "error"
+            error = result.get("error")
+        except Exception as exc:
+            error = str(exc)[:4000]
+
+        with connect(self.config.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE inference_jobs
+                SET status = ?, model_request_id = ?, error = ?, finished_at = ?
+                WHERE id = ?
+                """,
+                (item_status, request_id, error, utc_now(), job_data["id"]),
+            )
+            audit(
+                conn,
+                user_id=job_data["user_id"],
+                action="inference_job_finish",
+                target_type="inference_job",
+                target_id=job_data["id"],
+                details={"status": item_status, "model_request_id": request_id, "error": bool(error)},
+            )
+        return True
 
     def recover_interrupted_batch_jobs(self) -> None:
         with connect(self.config.db_path) as conn:
@@ -2984,16 +3223,38 @@ class CVDApplication:
         data = request.json() if request.body else {}
         api_url = str(data.get("api_url") or settings.get("lm_studio_api_url") or self.config.lm_studio_api_url).strip()
         selected_model = str(data.get("model") or settings.get("lm_studio_model") or self.config.lm_studio_model).strip()
+        test_settings = {**settings, "lm_studio_api_url": api_url, "lm_studio_model": selected_model}
+        if "ai_gateway_headers_json" in data:
+            test_settings["ai_gateway_headers_json"] = str(data.get("ai_gateway_headers_json") or "").strip()
+            test_settings["ai_gateway_auth_header_name"] = ""
+            test_settings["ai_gateway_auth_header_value"] = ""
+        try:
+            extra_headers = self.ai_gateway_headers(test_settings)
+        except HTTPError as exc:
+            return self.json_response({
+                "ok": False,
+                "stage": "headers",
+                "latency_ms": 0,
+                "gateway": {
+                    "profile": str(test_settings.get("ai_gateway_profile") or "local").strip().lower(),
+                    "api_url": api_url,
+                    "selected_model": selected_model,
+                    "auth_header_configured": False,
+                    "auth_header_count": 0,
+                    "auth_header_names": [],
+                },
+                "error": str(exc),
+            }, 400)
         started = time.monotonic()
         try:
-            catalog = list_lm_models(api_url, timeout_seconds=15, extra_headers=self.ai_gateway_headers(settings))
+            catalog = list_lm_models(api_url, timeout_seconds=15, extra_headers=extra_headers)
         except LMStudioManagementError as exc:
             latency_ms = int((time.monotonic() - started) * 1000)
             return self.json_response({
                 "ok": False,
                 "stage": "catalog",
                 "latency_ms": latency_ms,
-                "gateway": self.ai_gateway_public_profile({**settings, "lm_studio_api_url": api_url, "lm_studio_model": selected_model}),
+                "gateway": self.ai_gateway_public_profile(test_settings),
                 "error": str(exc),
             })
         latency_ms = int((time.monotonic() - started) * 1000)
@@ -3005,7 +3266,7 @@ class CVDApplication:
             "stage": "catalog",
             "api_version": catalog.get("api_version"),
             "latency_ms": latency_ms,
-            "gateway": self.ai_gateway_public_profile({**settings, "lm_studio_api_url": api_url, "lm_studio_model": selected_model}),
+            "gateway": self.ai_gateway_public_profile(test_settings),
             "selected_model": selected_model,
             "selected_state": selected.get("state") if selected else "not-found",
             "loaded_models": loaded,
