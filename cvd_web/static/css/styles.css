@@ -232,6 +232,10 @@ body[data-theme="dark"] .notice.error-note {
   align-items: start;
 }
 
+.layout > .panel {
+  min-width: 0;
+}
+
 .panel {
   background: color-mix(in srgb, var(--panel) 96%, transparent);
   border: 1px solid var(--border);
@@ -667,6 +671,16 @@ body[data-theme="dark"] .notice.error-note {
   color: var(--text);
 }
 
+.empty-state-actions {
+  justify-content: center;
+  margin-top: 14px;
+}
+
+.activity-empty {
+  grid-column: 1 / -1;
+  min-height: 0;
+}
+
 .records-table-scroll {
   height: calc(100% - 48px);
   padding: 8px;
@@ -1090,6 +1104,87 @@ button.job-chip {
   font-size: 0.88rem;
 }
 
+.recent-cases {
+  margin-bottom: 12px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px 12px;
+  background: var(--panel-2);
+}
+
+.recent-cases > strong {
+  display: block;
+  margin-bottom: 8px;
+  font-size: 0.88rem;
+}
+
+.recent-cases-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.recent-case-chip {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 2px;
+  max-width: 240px;
+  text-align: left;
+}
+
+.recent-case-chip strong {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 0.85rem;
+}
+
+.recent-case-chip small {
+  color: var(--muted);
+}
+
+.field-reference {
+  display: block;
+  margin-top: 4px;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.field-reference.out {
+  color: var(--warning);
+  font-weight: 600;
+}
+
+.field input.out-of-range {
+  border-color: var(--warning);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--warning) 45%, transparent);
+}
+
+.ai-error-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 12px;
+  border: 1px solid color-mix(in srgb, var(--danger) 40%, var(--border));
+  border-left: 4px solid var(--danger);
+  border-radius: var(--radius);
+  padding: 12px 14px;
+  background: color-mix(in srgb, var(--danger) 7%, var(--field-bg));
+}
+
+.ai-error-body {
+  display: grid;
+  gap: 4px;
+  min-width: 0;
+}
+
+.ai-error-body small {
+  color: var(--muted);
+}
+
 .result-ready {
   display: flex;
   align-items: center;
@@ -1157,6 +1252,22 @@ body[data-theme="dark"] .pill.error {
 
 body[data-theme="dark"] .pill.warning {
   background: rgba(251, 191, 36, 0.16);
+}
+
+button.attention {
+  position: relative;
+}
+
+button.attention::after {
+  content: "";
+  position: absolute;
+  top: -3px;
+  right: -3px;
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--warning);
+  border: 2px solid var(--panel);
 }
 
 .history-list {
@@ -2151,6 +2262,15 @@ body[data-theme="dark"] .check-row.warning .check-mark {
   .admin-grid,
   .dashboard-columns {
     grid-template-columns: 1fr;
+  }
+
+  .topbar {
+    flex-wrap: wrap;
+  }
+
+  .nav {
+    flex-wrap: wrap;
+    justify-content: flex-start;
   }
 
   .dashboard-metrics {

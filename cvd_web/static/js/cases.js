@@ -202,7 +202,46 @@
     nodes.casesList.innerHTML = "";
     if (!state.cases.length) {
       nodes.casesList.className = "record-list record-empty";
-      nodes.casesList.textContent = "Кейсы не найдены.";
+      const filtered = Boolean(nodes.caseSearch.value.trim() || nodes.caseAnalysis.value);
+      const title = document.createElement("strong");
+      title.textContent = filtered ? "По заданным фильтрам ничего не найдено" : "Кейсов пока нет";
+      const hint = document.createElement("span");
+      hint.textContent = filtered
+        ? "Попробуйте изменить запрос или сбросить фильтры."
+        : "Создайте первый кейс в рабочем месте или импортируйте данные пациента.";
+      const actions = document.createElement("div");
+      actions.className = "toolbar empty-state-actions";
+      if (filtered) {
+        const resetButton = document.createElement("button");
+        resetButton.type = "button";
+        resetButton.textContent = "Сбросить фильтры";
+        resetButton.addEventListener("click", () => document.getElementById("clearCaseFiltersButton")?.click());
+        actions.appendChild(resetButton);
+      } else {
+        const createLink = document.createElement("a");
+        createLink.className = "button primary-link";
+        createLink.href = "/app";
+        createLink.textContent = "Создать кейс";
+        const importLink = document.createElement("a");
+        importLink.className = "button";
+        importLink.href = "/app?import=1";
+        importLink.textContent = "Импортировать";
+        const demoButton = document.createElement("button");
+        demoButton.type = "button";
+        demoButton.textContent = "Создать демо-кейс";
+        demoButton.addEventListener("click", async () => {
+          demoButton.disabled = true;
+          try {
+            const response = await api("/api/cases/demo", {method: "POST", body: "{}"});
+            window.location.href = `/app?case=${response.case_id}`;
+          } catch (error) {
+            demoButton.disabled = false;
+            handleError(error);
+          }
+        });
+        actions.append(createLink, importLink, demoButton);
+      }
+      nodes.casesList.append(title, hint, actions);
       return;
     }
     nodes.casesList.className = "record-list";

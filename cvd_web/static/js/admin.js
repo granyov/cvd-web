@@ -201,6 +201,18 @@
 
   function renderActivity(days) {
     activityChart.innerHTML = "";
+    const totalRequests = (days || []).reduce((sum, item) => sum + Number(item.requests || 0), 0);
+    if (!totalRequests) {
+      const empty = document.createElement("div");
+      empty.className = "record-empty activity-empty";
+      const title = document.createElement("strong");
+      title.textContent = "Запросов к модели ещё не было";
+      const hint = document.createElement("span");
+      hint.textContent = "Запустите AI-анализ кейса в рабочем месте — активность появится здесь.";
+      empty.append(title, hint);
+      activityChart.appendChild(empty);
+      return;
+    }
     const maxRequests = Math.max(1, ...(days || []).map((item) => Number(item.requests || 0)));
     (days || []).forEach((item) => {
       const day = document.createElement("div");
@@ -1033,7 +1045,7 @@
       const download = actionLink("Скачать", `/api/admin/backups/${encodeURIComponent(backup.filename)}`, true);
       const restore = document.createElement("button");
       restore.type = "button";
-      restore.textContent = "Restore";
+      restore.textContent = "Восстановить";
       restore.addEventListener("click", () => restoreBackup(backup.filename).catch((err) => toast(err.message)));
       actions.append(download, restore);
       row.append(title, meta, actions);
@@ -1046,8 +1058,8 @@
     button.disabled = true;
     try {
       const response = await api("/api/admin/backups", {method: "POST", body: "{}"});
-      backupStatus.textContent = `Backup создан: ${response.backup?.filename || "ok"}`;
-      toast("Backup создан");
+      backupStatus.textContent = `Резервная копия создана: ${response.backup?.filename || "ok"}`;
+      toast("Резервная копия создана");
       await Promise.all([loadBackups(), loadAudit()]);
     } finally {
       button.disabled = false;
@@ -1055,10 +1067,10 @@
   }
 
   async function restoreBackup(filename) {
-    if (!window.confirm(`Восстановить базу из ${filename}? Текущая база будет сохранена safety backup.`)) return;
+    if (!window.confirm(`Восстановить базу из ${filename}? Текущая база будет сохранена как защитная копия.`)) return;
     const response = await api("/api/admin/restore", {method: "POST", body: JSON.stringify({filename})});
-    backupStatus.textContent = `Restore выполнен из ${response.restored_from}; safety backup: ${response.safety_backup}`;
-    toast("База восстановлена из backup");
+    backupStatus.textContent = `Восстановлено из ${response.restored_from}; защитная копия: ${response.safety_backup}`;
+    toast("База восстановлена из резервной копии");
     await Promise.all([loadBackups(), loadDashboard(), loadStats(), loadAudit()]);
   }
 

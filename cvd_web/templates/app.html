@@ -55,8 +55,9 @@
             <div class="action-group secondary-actions">
               <button type="button" id="downloadJsonButton">JSON</button>
               <button type="button" id="reviewButton">Проверить</button>
+              <button type="button" id="demoCaseButton" title="Создать синтетический демо-кейс с заполненной анкетой">Демо-кейс</button>
             </div>
-            <button type="button" id="saveCaseButton">Сохранить</button>
+            <button type="button" id="saveCaseButton" title="Сохранить кейс (Ctrl/Cmd+S)">Сохранить</button>
             <button type="button" id="diagnoseButton" class="primary">Запустить AI-анализ</button>
             <input id="importJsonInput" class="hidden" type="file" accept="application/json,application/xml,text/xml,.json,.xml">
           </div>
@@ -85,7 +86,19 @@
               <button type="button" id="dismissDraftButton">Скрыть</button>
             </div>
           </div>
+          <div id="recentCases" class="recent-cases hidden" aria-label="Недавние кейсы">
+            <strong>Продолжить работу</strong>
+            <div id="recentCasesList" class="recent-cases-list"></div>
+          </div>
           <nav id="sectionNav" class="section-nav" aria-label="Навигация по разделам формы"></nav>
+          <div id="aiErrorCard" class="ai-error-card hidden" role="alert">
+            <div class="ai-error-body">
+              <strong>AI-анализ не выполнен</strong>
+              <span id="aiErrorText"></span>
+              <small id="aiErrorAdvice"></small>
+            </div>
+            <button type="button" id="retryDiagnoseButton">Повторить</button>
+          </div>
           <div id="resultReadyBanner" class="result-ready hidden" role="status" aria-live="polite">
             <div>
               <strong>Результат анализа готов</strong>
@@ -110,7 +123,7 @@
             <div class="quality-section">
               <div class="quality-heading">
                 <h3>Ключевые поля</h3>
-                <button type="button" id="jumpMissingButton">К первому незаполненному</button>
+                <button type="button" id="jumpMissingButton" title="Перейти к первому незаполненному полю (Alt+N)">К первому незаполненному</button>
               </div>
               <div id="readinessPanel" class="quality-list"></div>
             </div>
@@ -205,6 +218,9 @@
         <button type="button" id="closePasswordModal" aria-label="Закрыть">×</button>
       </div>
       <form id="passwordForm" class="modal-body">
+        <div id="passwordForcedNotice" class="notice warning-note hidden">
+          Вы вошли с паролем по умолчанию. Для продолжения работы задайте новый пароль — это требование безопасности медицинских данных.
+        </div>
         <div class="field">
           <label>Текущий пароль</label>
           <input name="current_password" type="password" autocomplete="current-password" required>

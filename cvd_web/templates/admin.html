@@ -34,11 +34,11 @@
   <main class="container admin-shell">
     <nav class="admin-nav" aria-label="Разделы админки">
       <a href="#admin-dashboard-section">Операции</a>
-      <a href="#admin-security-section">Security</a>
+      <a href="#admin-security-section">Безопасность</a>
       <a href="#admin-model-quality-section">Качество модели</a>
-      <a href="#admin-gold-cockpit-section">Gold cockpit</a>
+      <a href="#admin-gold-cockpit-section">Валидация</a>
       <a href="#admin-batch-section">Пакетный режим</a>
-      <a href="#admin-backup-section">Backup</a>
+      <a href="#admin-backup-section">Резервные копии</a>
       <a href="#admin-settings-section">Настройки</a>
       <a href="#admin-users-section">Пользователи</a>
       <a href="#admin-logs-section">Журналы</a>
@@ -74,8 +74,8 @@
     <section id="admin-security-section" class="panel admin-section admin-anchor">
       <div class="panel-header">
         <div>
-          <p class="eyebrow">Security</p>
-          <h2>Security audit</h2>
+          <p class="eyebrow">Безопасность</p>
+          <h2>Аудит безопасности</h2>
         </div>
         <button type="button" id="refreshSecurityAuditButton">Обновить</button>
       </div>
@@ -89,7 +89,7 @@
       <div class="panel-header">
         <div>
           <p class="eyebrow">Качество модели</p>
-          <h2>Model quality dashboard</h2>
+          <h2>Дашборд качества моделей</h2>
         </div>
         <button type="button" id="refreshModelQualityButton">Обновить</button>
       </div>
@@ -114,7 +114,7 @@
       <div class="panel-header">
         <div>
           <p class="eyebrow">Валидация ответов</p>
-          <h2>Gold Set / review cockpit</h2>
+          <h2>Gold Set и экспертная проверка</h2>
         </div>
         <button type="button" id="refreshGoldCockpitButton">Обновить</button>
       </div>
@@ -159,15 +159,15 @@
       <div class="panel-header">
         <div>
           <p class="eyebrow">Production</p>
-          <h2>Backup / restore</h2>
+          <h2>Резервные копии и восстановление</h2>
         </div>
         <div class="toolbar">
-          <button type="button" id="createBackupButton" class="primary">Создать backup</button>
+          <button type="button" id="createBackupButton" class="primary">Создать копию</button>
           <button type="button" id="refreshBackupsButton">Обновить</button>
         </div>
       </div>
       <div class="panel-body">
-        <div id="backupStatus" class="notice">Backup хранится рядом с SQLite-базой. Перед restore автоматически создаётся safety backup текущей базы.</div>
+        <div id="backupStatus" class="notice">Резервная копия хранится рядом с SQLite-базой. Перед восстановлением автоматически создаётся защитная копия текущей базы.</div>
         <div id="backupsList" class="batch-jobs"></div>
       </div>
     </section>

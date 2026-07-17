@@ -49,6 +49,7 @@
   const dismissDraftButton = document.getElementById("dismissDraftButton");
   const jumpMissingButton = document.getElementById("jumpMissingButton");
   const lastModelSummary = document.getElementById("lastModelSummary");
+  const saveCaseButton = document.getElementById("saveCaseButton");
   const minimumPasswordLength = 15;
   const maxImportBytes = 5 * 1024 * 1024;
   const draftStorageKey = `cvd:case-draft:${window.CURRENT_USER?.email || "user"}`;
@@ -68,6 +69,12 @@
   let draftSaveTimer = null;
   let suppressDraftSave = false;
   let pendingDraft = null;
+  let hasUnsavedChanges = false;
+  let passwordChangeForced = false;
+  const baseDocumentTitle = document.title;
+  const knownJobStatuses = new Map();
+  let jobStatusesPrimed = false;
+  let awaitedDiagnosisJobId = null;
   const modalTriggers = new WeakMap();
 
   const qualityRules = window.CVDClinicalQuality;
@@ -123,6 +130,13 @@
     node.className = `pill ${kind}`.trim();
     node.textContent = text;
     return node;
+  }
+
+  function setSaveState(text, unsaved) {
+    hasUnsavedChanges = Boolean(unsaved);
+    saveStatus.textContent = text;
+    saveStatus.classList.toggle("warning", hasUnsavedChanges);
+    saveCaseButton?.classList.toggle("attention", hasUnsavedChanges);
   }
 
   function openModalElement(modal, focusTarget = null) {
@@ -226,7 +240,30 @@
 
     wrapper.appendChild(label);
     wrapper.appendChild(input);
+    const reference = qualityRules.referenceRanges?.[input.name];
+    if (reference) {
+      const hint = document.createElement("small");
+      hint.className = "field-reference";
+      hint.dataset.referenceFor = input.name;
+      hint.textContent = `Референс: ${reference.text}`;
+      wrapper.appendChild(hint);
+      input.dataset.hasReference = "1";
+    }
     return wrapper;
+  }
+
+  function updateFieldReference(input) {
+    if (!input?.dataset?.hasReference) return;
+    const status = qualityRules.referenceStatus(input.name, input.value);
+    if (!status) return;
+    const hint = form.querySelector(`[data-reference-for="${input.name}"]`);
+    if (!hint) return;
+    const out = status.state === "below" || status.state === "above";
+    input.classList.toggle("out-of-range", out);
+    hint.classList.toggle("out", out);
+    hint.textContent = out
+      ? `${status.state === "below" ? "Ниже референса" : "Выше референса"}: ${status.range.text}`
+      : `Референс: ${status.range.text}`;
   }
 
   function sectionNumber(index) {
@@ -376,7 +413,7 @@
       });
     });
     updatePreview();
-    saveStatus.textContent = currentCaseId ? `кейс #${currentCaseId}` : "не сохранено";
+    setSaveState(currentCaseId ? `кейс #${currentCaseId}` : "не сохранено", false);
   }
 
   function calculateBMI() {
@@ -409,6 +446,7 @@
     updateIcdComparison(data);
     updateSectionBadges(data);
     updateClinicalQuality(data);
+    form.querySelectorAll('[data-has-reference="1"]').forEach(updateFieldReference);
     return data;
   }
 
@@ -465,7 +503,7 @@
     resetModelState(true);
     applyData(pendingDraft.patient_data);
     collapseAllSections();
-    saveStatus.textContent = currentCaseId ? `кейс #${currentCaseId} восстановлен из черновика` : "черновик восстановлен";
+    setSaveState(currentCaseId ? `кейс #${currentCaseId} восстановлен из черновика` : "черновик восстановлен", true);
     suppressDraftSave = false;
     clearLocalDraft();
     updatePreview();
@@ -654,7 +692,7 @@
     });
     currentCaseId = response.case_id;
     if (currentModelRequestId) updateModelFreshness(data);
-    saveStatus.textContent = `кейс #${currentCaseId} сохранён`;
+    setSaveState(`кейс #${currentCaseId} сохранён`, false);
     clearLocalDraft();
     toast("Кейс сохранён");
   }
@@ -752,9 +790,55 @@
     });
   }
 
+  function requestNotifyPermission() {
+    if (!("Notification" in window)) return;
+    if (Notification.permission === "default") {
+      Notification.requestPermission().catch(() => {});
+    }
+  }
+
+  function notifyDesktop(title, body) {
+    if (!("Notification" in window)) return;
+    if (Notification.permission !== "granted" || !document.hidden) return;
+    try {
+      const notification = new Notification(title, {body, icon: "/static/favicon.svg"});
+      notification.addEventListener("click", () => window.focus());
+    } catch (_) {}
+  }
+
+  function markTitleReady() {
+    if (document.hidden) document.title = `✓ ${baseDocumentTitle}`;
+  }
+
+  function notifyJobTransitions(jobs) {
+    if (!jobStatusesPrimed) {
+      // First poll after page load: remember statuses without notifying about old jobs.
+      jobs.forEach((job) => knownJobStatuses.set(`${job.type}:${job.id}`, job.status));
+      jobStatusesPrimed = true;
+      return;
+    }
+    jobs.forEach((job) => {
+      const key = `${job.type}:${job.id}`;
+      const previous = knownJobStatuses.get(key);
+      knownJobStatuses.set(key, job.status);
+      const wasActive = previous === undefined || ["queued", "running"].includes(previous);
+      const finished = ["success", "error"].includes(job.status);
+      if (!wasActive || !finished || previous === job.status) return;
+      if (job.type === "diagnosis" && job.id === awaitedDiagnosisJobId) return;
+      const ready = job.status === "success";
+      toast(ready ? `${aiJobTitle(job)}: результат готов` : `${aiJobTitle(job)}: ошибка выполнения`);
+      markTitleReady();
+      notifyDesktop(
+        ready ? "Результат AI готов" : "AI-задание завершилось ошибкой",
+        `${aiJobTitle(job)} · откройте рабочее место, чтобы посмотреть результат.`
+      );
+    });
+  }
+
   async function refreshAiJobs() {
     const payload = await api("/api/ai/jobs");
     renderActiveJobs(payload);
+    notifyJobTransitions(payload?.jobs || []);
     return payload;
   }
 
@@ -1100,6 +1184,7 @@
     currentModelRequestId = null;
     lastModelDataFingerprint = null;
     setHtmlExportAvailable(false);
+    hideAiErrorCard();
     modelStatus.textContent = "запрос выполняется";
     modelStatus.className = "pill warning";
     modelPreview.textContent = "Выполняется AI-анализ...";
@@ -1137,6 +1222,8 @@
           patient_data: patientData
         })
       });
+      awaitedDiagnosisJobId = job.job_id;
+      requestNotifyPermission();
       await refreshAiJobs();
       modelStatus.textContent = `задание #${job.job_id} в очереди`;
       while (true) {
@@ -1172,7 +1259,10 @@
       toast("Результат AI-анализа готов");
     } catch (err) {
       const resultWasSaved = Boolean(response?.request_id);
-      if (!resultWasSaved) modelPreview.textContent = err.message;
+      if (!resultWasSaved) {
+        modelPreview.textContent = err.message;
+        showAiErrorCard(err.message);
+      }
       modelStatus.textContent = resultWasSaved ? "результат сохранён · ошибка отображения" : "ошибка AI-анализа";
       modelStatus.className = "pill error";
       if (resultWasSaved) {
@@ -1184,6 +1274,12 @@
     } finally {
       if (diagnosisQueueTimer) window.clearInterval(diagnosisQueueTimer);
       diagnosisQueueTimer = null;
+      awaitedDiagnosisJobId = null;
+      markTitleReady();
+      notifyDesktop(
+        response?.ok ? "Результат AI-анализа готов" : "AI-анализ завершился",
+        response?.ok ? "Откройте вкладку CVD Web, чтобы посмотреть результат." : "Проверьте статус задания в рабочем месте."
+      );
       button.disabled = false;
       button.textContent = idleButtonText;
       updateWorkflow(updatePreview());
@@ -1194,13 +1290,70 @@
     return "AI-анализ завершился ошибкой. Повторите запрос или обратитесь к администратору.";
   }
 
+  function aiErrorAdviceText(message) {
+    const text = String(message || "").toLowerCase();
+    if (text.includes("недоступ") || text.includes("connection") || text.includes("unreachable")) {
+      return "Похоже, сервис AI не запущен или недоступен по сети. Убедитесь, что LM Studio работает и модель загружена, затем повторите. Если ошибка повторяется — сообщите администратору.";
+    }
+    if (text.includes("не ответила") || text.includes("timeout")) {
+      return "Модель не успела ответить за отведённое время. Повторите попытку; при повторении администратор может увеличить таймаут или разгрузить очередь.";
+    }
+    if (text.includes("очеред")) {
+      return "Очередь AI сейчас переполнена. Подождите немного и повторите запрос.";
+    }
+    return "Повторите попытку. Если ошибка повторяется — сообщите администратору: диагностика доступна в Админке, раздел «Настройки».";
+  }
+
+  function showAiErrorCard(message) {
+    const card = document.getElementById("aiErrorCard");
+    if (!card) return;
+    document.getElementById("aiErrorText").textContent = message || "Неизвестная ошибка";
+    document.getElementById("aiErrorAdvice").textContent = aiErrorAdviceText(message);
+    card.classList.remove("hidden");
+    card.scrollIntoView({behavior: "smooth", block: "nearest"});
+  }
+
+  function hideAiErrorCard() {
+    document.getElementById("aiErrorCard")?.classList.add("hidden");
+  }
+
   async function openCase(caseId) {
     const response = await api(`/api/cases/${caseId}`);
     currentCaseId = response.case.id;
     resetModelState();
     applyData(response.case.data);
     collapseAllSections();
+    hideRecentCases();
     toast("Кейс загружен");
+  }
+
+  function hideRecentCases() {
+    document.getElementById("recentCases")?.classList.add("hidden");
+  }
+
+  async function showRecentCases() {
+    const container = document.getElementById("recentCases");
+    const list = document.getElementById("recentCasesList");
+    if (!container || !list) return;
+    const response = await api("/api/cases?limit=5");
+    const cases = response.cases || [];
+    if (!cases.length) return;
+    list.innerHTML = "";
+    cases.forEach((item) => {
+      const chip = document.createElement("button");
+      chip.type = "button";
+      chip.className = "recent-case-chip";
+      const title = document.createElement("strong");
+      title.textContent = item.title || `Кейс #${item.id}`;
+      const meta = document.createElement("small");
+      const quality = item.quality || {};
+      const updated = new Date(item.updated_at).toLocaleString("ru-RU", {day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit"});
+      meta.textContent = `#${item.id} · готовность ${quality.readiness_percent || 0}% · ${updated}`;
+      chip.append(title, meta);
+      chip.addEventListener("click", () => openCase(item.id).catch((err) => toast(err.message)));
+      list.appendChild(chip);
+    });
+    container.classList.remove("hidden");
   }
 
   function openRequestResult(item) {
@@ -1550,6 +1703,7 @@
       });
       structureTextStatus.textContent = `задание #${job.job_id} в очереди`;
       structureTextStatus.className = "pill warning";
+      requestNotifyPermission();
       stopStructureTextProgress();
       setStructureTextBusy(false);
       closeStructureTextModal();
@@ -1596,7 +1750,7 @@
       resetModelState(true);
       selected.forEach((row) => setFieldValue(row.mapping.path, row.mapping.value));
       scheduleDraftSave(updatePreview());
-      saveStatus.textContent = currentCaseId ? `кейс #${currentCaseId} изменён импортом` : "импортировано · не сохранено";
+      setSaveState(currentCaseId ? `кейс #${currentCaseId} изменён импортом` : "импортировано · не сохранено", true);
       closeImportModal();
       toast(`Импортировано полей: ${selected.length}`);
     } finally {
@@ -1700,6 +1854,7 @@
     currentModelRequestId = null;
     lastModelDataFingerprint = null;
     setHtmlExportAvailable(false);
+    hideAiErrorCard();
     if (clearFields) {
       const modelSection = window.CVD_SCHEMA.find((section) => section.key === "MODEL_OUTPUT");
       modelSection?.fields.forEach((field) => setFieldValue(`MODEL_OUTPUT.${field.key}`, null));
@@ -1720,7 +1875,7 @@
     resetModelState();
     clearLocalDraft();
     updatePreview();
-    saveStatus.textContent = "не сохранено";
+    setSaveState("не сохранено", false);
   }
 
   function setupTabs() {
@@ -1752,7 +1907,8 @@
     if (savedMode === "admin" && user.role !== "admin") savedMode = "doctor";
     applyInterfaceMode(savedMode);
     document.getElementById("interfaceModeSelect")?.addEventListener("change", (event) => applyInterfaceMode(event.target.value));
-    document.getElementById("changePasswordButton").addEventListener("click", openPasswordModal);
+    document.getElementById("changePasswordButton").addEventListener("click", () => openPasswordModal(false));
+    if (user.must_change_password) openPasswordModal(true);
     document.getElementById("closePasswordModal").addEventListener("click", closePasswordModal);
     document.getElementById("cancelPasswordModal").addEventListener("click", closePasswordModal);
     document.getElementById("reviewButton").addEventListener("click", () => openReviewModal(null, false));
@@ -1809,17 +1965,24 @@
     requestReviewForm?.addEventListener("submit", (event) => saveRequestReview(event).catch((err) => toast(err.message)));
     document.getElementById("logoutButton").addEventListener("click", async () => {
       const response = await api("/api/logout", { method: "POST", body: "{}" });
+      // Draft is already in localStorage; do not double-warn on intentional logout.
+      hasUnsavedChanges = false;
       window.location.href = response.redirect || "/login";
     });
   }
 
-  function openPasswordModal() {
+  function openPasswordModal(forced = false) {
+    passwordChangeForced = Boolean(forced);
     passwordForm.reset();
     updatePasswordStrength();
+    document.getElementById("passwordForcedNotice")?.classList.toggle("hidden", !passwordChangeForced);
+    document.getElementById("closePasswordModal")?.classList.toggle("hidden", passwordChangeForced);
+    document.getElementById("cancelPasswordModal")?.classList.toggle("hidden", passwordChangeForced);
     openModalElement(passwordModal, passwordForm.current_password);
   }
 
   function closePasswordModal() {
+    if (passwordChangeForced) return;
     closeModalElement(passwordModal);
   }
 
@@ -1842,12 +2005,20 @@
           new_password: passwordForm.new_password.value
         })
       });
+      passwordChangeForced = false;
+      if (window.CURRENT_USER) window.CURRENT_USER.must_change_password = false;
       closePasswordModal();
       toast("Пароль изменён");
   }
 
   async function initializeWorkspace() {
     const params = new URLSearchParams(window.location.search);
+    if (params.get("import")) {
+      const importButton = document.getElementById("importJsonButton");
+      importButton?.classList.add("attention");
+      importButton?.scrollIntoView({block: "center"});
+      toast("Нажмите «Импорт», чтобы выбрать файл JSON, FHIR или CDA");
+    }
     const caseId = Number(params.get("case") || 0);
     const requestId = Number(params.get("request") || 0);
     if (Number.isInteger(caseId) && caseId > 0) {
@@ -1856,6 +2027,9 @@
     if (Number.isInteger(requestId) && requestId > 0) {
       const response = await api(`/api/requests/${requestId}`);
       openRequestResult(response.request);
+    }
+    if (!caseId && !requestId) {
+      showRecentCases().catch(() => {});
     }
   }
 
@@ -1870,17 +2044,47 @@
     const data = updatePreview();
     scheduleDraftSave(data);
     setHtmlExportAvailable(false);
-    saveStatus.textContent = currentCaseId ? `кейс #${currentCaseId} изменён` : "не сохранено";
+    hideRecentCases();
+    setSaveState(currentCaseId ? `кейс #${currentCaseId} изменён` : "не сохранено", true);
+  });
+  window.addEventListener("beforeunload", (event) => {
+    if (!hasUnsavedChanges) return;
+    window.clearTimeout(draftSaveTimer);
+    try { writeLocalDraft(collectData()); } catch (_) {}
+    event.preventDefault();
+    event.returnValue = "";
+  });
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) document.title = baseDocumentTitle;
+  });
+  document.addEventListener("keydown", (event) => {
+    const modKey = event.metaKey || event.ctrlKey;
+    if (modKey && !event.shiftKey && !event.altKey && event.code === "KeyS") {
+      event.preventDefault();
+      saveCase().catch((err) => toast(err.message));
+      return;
+    }
+    if (event.altKey && !modKey && event.code === "KeyN") {
+      event.preventDefault();
+      focusFirstMissing();
+    }
   });
   restoreDraftButton?.addEventListener("click", restoreLocalDraft);
   dismissDraftButton?.addEventListener("click", () => draftBanner?.classList.add("hidden"));
   jumpMissingButton?.addEventListener("click", () => focusFirstMissing());
   document.getElementById("saveCaseButton").addEventListener("click", () => saveCase().catch((err) => toast(err.message)));
   document.getElementById("diagnoseButton").addEventListener("click", diagnose);
+  document.getElementById("retryDiagnoseButton")?.addEventListener("click", () => {
+    hideAiErrorCard();
+    runDiagnose(updatePreview()).catch((err) => toast(err.message));
+  });
   document.getElementById("downloadJsonButton").addEventListener("click", downloadJson);
   exportHtmlButton?.addEventListener("click", () => exportHtmlReport().catch((err) => toast(err.message)));
   viewResultButton?.addEventListener("click", () => viewHtmlResult());
-  document.getElementById("importJsonButton").addEventListener("click", () => importJsonInput.click());
+  document.getElementById("importJsonButton").addEventListener("click", (event) => {
+    event.currentTarget.classList.remove("attention");
+    importJsonInput.click();
+  });
   importJsonInput.addEventListener("change", () => {
     const file = importJsonInput.files?.[0];
     importJson(file).catch((err) => toast(err.message)).finally(() => {
@@ -1889,6 +2093,19 @@
   });
   document.getElementById("downloadFhirButton").addEventListener("click", () => downloadFHIR().catch((err) => toast(err.message)));
   document.getElementById("newCaseButton").addEventListener("click", resetCase);
+  document.getElementById("demoCaseButton")?.addEventListener("click", async (event) => {
+    const button = event.currentTarget;
+    button.disabled = true;
+    try {
+      const response = await api("/api/cases/demo", {method: "POST", body: "{}"});
+      await openCase(response.case_id);
+      toast("Демо-кейс создан: данные синтетические");
+    } catch (err) {
+      toast(err.message);
+    } finally {
+      button.disabled = false;
+    }
+  });
   updatePreview();
   initDraftRestore();
   refreshAiJobs().catch(() => {});
