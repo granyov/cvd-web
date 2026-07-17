@@ -884,6 +884,31 @@ details.section {
   background: var(--panel);
 }
 
+.form-section-group {
+  display: grid;
+  gap: 3px;
+  margin: 18px 0 8px;
+  padding: 10px 12px;
+  border: 1px solid var(--border);
+  border-left: 4px solid var(--accent);
+  border-radius: var(--radius);
+  background: var(--panel-2);
+}
+
+.form-section-group:first-child {
+  margin-top: 0;
+}
+
+.form-section-group strong {
+  font-size: 0.95rem;
+}
+
+.form-section-group span {
+  color: var(--muted);
+  font-size: 0.82rem;
+  line-height: 1.35;
+}
+
 details.section > summary {
   display: flex;
   justify-content: space-between;
@@ -892,6 +917,27 @@ details.section > summary {
   padding: 11px 13px;
   cursor: pointer;
   font-weight: 700;
+}
+
+.section-summary-title {
+  display: inline-flex;
+  min-width: 0;
+  align-items: center;
+  gap: 9px;
+}
+
+.section-number {
+  display: inline-grid;
+  flex: 0 0 auto;
+  place-items: center;
+  min-width: 30px;
+  height: 24px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--panel-2);
+  color: var(--muted);
+  font-size: 0.74rem;
+  font-weight: 800;
 }
 
 .section-fill-badge {
@@ -1742,6 +1788,43 @@ body[data-theme="dark"] .check-row.warning .check-mark {
   width: min(860px, 100%);
 }
 
+.model-result-card {
+  width: min(1180px, 100%);
+  height: min(860px, calc(100vh - 40px));
+  height: min(860px, calc(100dvh - 40px));
+}
+
+.model-result-body {
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+}
+
+.model-result-body .model-output {
+  margin-bottom: 0;
+}
+
+.technical-response {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--field-bg);
+}
+
+.technical-response > summary {
+  padding: 10px 12px;
+  cursor: pointer;
+  font-weight: 700;
+}
+
+.technical-response[open] > summary {
+  border-bottom: 1px solid var(--border);
+}
+
+.technical-response pre {
+  max-height: 360px;
+  border: 0;
+  border-radius: 0;
+}
+
 .import-modal-card {
   width: min(1180px, 100%) !important;
 }
@@ -2525,9 +2608,8 @@ body[data-theme="dark"] .check-row.warning .check-mark {
 }
 
 body[data-interface-mode="doctor"] #tab-json,
+body[data-interface-mode="doctor"] .tab[data-tab="json"],
 body[data-interface-mode="doctor"] .secondary-actions,
-body[data-interface-mode="doctor"] .model-actions,
-body[data-interface-mode="doctor"] .section-nav,
 body[data-interface-mode="doctor"] #admin-logs-section,
 body[data-interface-mode="doctor"] #admin-settings-section {
   display: none !important;

@@ -1,17 +1,16 @@
-# CVD Web v0.9.7
+# CVD Web v0.9.8
 
-Release focused on persistent AI jobs for free-text preparation and diagnosis workflow reliability.
+Release focused on making the clinical workspace easier to scan and use during review.
 
 ## Highlights
 
-- Moves `Подготовить текст с AI` to a persistent background job so processing continues after closing the modal, tab, or browser.
-- Adds a combined workspace job line showing active and recently finished text-preparation and diagnosis jobs.
-- Preserves FIFO ordering across diagnosis and text-preparation jobs on the backend worker.
-- Lets users reopen finished text-preparation results and diagnosis results from the workspace job line.
-- Restores interrupted text-preparation jobs to the queue after an application restart.
-- Applies one per-user AI job limit across diagnosis and text-preparation jobs.
-- Keeps the full source text only while the worker still needs it, then leaves a short preview, hash, metrics, and the prepared result.
-- Updates the Umbrel package to use `ghcr.io/granyov/cvd-web:v0.9.7`.
+- Reorganizes patient data into clinical groups: anamnesis/source data, objective status, laboratory tests, instrumental studies, and treatment/conclusion.
+- Numbers every patient-data section and the section navigator.
+- Keeps all patient-data sections collapsed by default when opening the workspace, loading a case, restoring a draft, or starting a new case.
+- Moves the model response out of the narrow right panel into a larger working modal.
+- Keeps the model-response modal focused on structured CDS output, expert review, HTML export, and technical JSON.
+- Keeps the right panel for quick case checks and technical JSON, with numbered tabs.
+- Updates the Umbrel package to use `ghcr.io/granyov/cvd-web:v0.9.8`.
 
 ## Install
 
@@ -25,8 +24,8 @@ For release-archive installs:
 
 ```bash
 scripts/install_from_release.sh \
-  --url https://github.com/granyov/cvd-web/releases/download/v0.9.7/cvd-web-v0.9.7.tar.gz \
-  --sha256-url https://github.com/granyov/cvd-web/releases/download/v0.9.7/cvd-web-v0.9.7.tar.gz.sha256 \
+  --url https://github.com/granyov/cvd-web/releases/download/v0.9.8/cvd-web-v0.9.8.tar.gz \
+  --sha256-url https://github.com/granyov/cvd-web/releases/download/v0.9.8/cvd-web-v0.9.8.tar.gz.sha256 \
   -- --target local --unattended
 ```
 

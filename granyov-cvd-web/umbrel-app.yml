@@ -4,7 +4,7 @@ name: CVD Web
 tagline: Cardiovascular case workspace with local LLM review
 icon: https://raw.githubusercontent.com/granyov/cvd-web/main/granyov-cvd-web/icon.svg
 category: ai
-version: "0.9.7"
+version: "0.9.8"
 port: 8080
 description: >-
   CVD Web is a controlled cardiovascular case workspace for structuring patient
@@ -22,9 +22,9 @@ repo: https://github.com/granyov/cvd-web
 support: https://github.com/granyov/cvd-web/issues
 gallery: []
 releaseNotes: >-
-  Keeps text preparation and diagnosis requests in a persistent FIFO AI queue,
-  so processing continues after the browser window is closed and active jobs
-  stay visible in the workspace UI.
+  Reorganizes the clinical workspace into numbered collapsed patient-data
+  sections grouped by anamnesis, laboratory tests, instrumental studies, and
+  treatment, and moves the model response into a larger working modal.
 dependencies: []
 path: ""
 defaultUsername: "admin@umbrel.local"

@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.9.8 - 2026-07-17
+
+- Reorganize patient-data sections into clinical groups for anamnesis, objective status, laboratory tests, instrumental studies, and treatment/conclusion.
+- Number every patient-data section and keep all sections collapsed by default.
+- Move the model response from the right panel into a larger working modal with structured output, expert review, export, and technical JSON.
+- Keep the right panel focused on numbered quick-check and JSON tabs.
+- Update Umbrel metadata and image tag for `ghcr.io/granyov/cvd-web:v0.9.8`.
+
 ## v0.9.7 - 2026-07-17
 
 - Move free-text AI preparation to persistent background jobs that continue after closing the UI.

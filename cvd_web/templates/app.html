@@ -99,9 +99,9 @@
 
       <aside class="panel">
         <div class="tabs">
-          <button type="button" class="tab active" data-tab="quality">Проверка</button>
-          <button type="button" class="tab" data-tab="json">JSON</button>
-          <button type="button" class="tab" data-tab="model">Ответ</button>
+          <button type="button" class="tab active" data-tab="quality">1. Проверка</button>
+          <button type="button" class="tab" data-tab="json">2. JSON</button>
+          <button type="button" class="tab" data-tab="model">3. Ответ модели</button>
         </div>
         <div class="panel-body">
           <section id="tab-quality">
@@ -128,54 +128,73 @@
             </div>
             <pre id="jsonPreview">{}</pre>
           </section>
-          <section id="tab-model" class="hidden">
-            <div class="toolbar model-actions">
-              <button type="button" id="exportHtmlButton" disabled>Скачать HTML</button>
-            </div>
-            <div id="icdSummary" class="notice">Коды МКБ-10 ещё не сравнивались.</div>
-            <div style="height: 10px;"></div>
-            <div id="modelStructured" class="model-output"></div>
-            <form id="requestReviewForm" class="review-form hidden">
-              <h3>Экспертная оценка ответа</h3>
-              <div class="settings-grid">
-                <div class="field">
-                  <label>Оценка</label>
-                  <select name="rating" required>
-                    <option value="useful">Полезно</option>
-                    <option value="partial">Частично полезно</option>
-                    <option value="wrong">Неверно</option>
-                    <option value="unsafe">Небезопасно</option>
-                  </select>
-                </div>
-                <div class="field">
-                  <label>Типы ошибок<span class="key">через ;</span></label>
-                  <input name="issue_types" type="text" placeholder="wrong_icd; missed_red_flag">
-                </div>
-                <div class="field full">
-                  <label>Корректный диагноз</label>
-                  <textarea name="corrected_diagnosis"></textarea>
-                </div>
-                <div class="field">
-                  <label>Корректные МКБ-10<span class="key">через ;</span></label>
-                  <input name="corrected_icd10" type="text" placeholder="I10; I25.1">
-                </div>
-                <div class="field full">
-                  <label>Комментарий</label>
-                  <textarea name="comment"></textarea>
-                </div>
-              </div>
-              <div class="toolbar">
-                <button class="primary" type="submit">Сохранить оценку</button>
-                <span id="reviewStatus" class="pill">не оценено</span>
-              </div>
-            </form>
-            <div style="height: 10px;"></div>
-            <pre id="modelPreview">Технический ответ AI появится здесь.</pre>
-          </section>
         </div>
       </aside>
     </div>
   </main>
+
+  <div id="modelResultModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="modelResultModalTitle">
+    <div class="modal-card model-result-card">
+      <div class="modal-header">
+        <div>
+          <h2 id="modelResultModalTitle">Ответ модели</h2>
+          <p class="muted">Структурированный результат, экспертная оценка и технический JSON.</p>
+        </div>
+        <button type="button" id="closeModelResultModal" aria-label="Закрыть">×</button>
+      </div>
+      <div class="modal-body model-result-body">
+        <div class="toolbar model-actions">
+          <button type="button" id="exportHtmlButton" disabled>Скачать HTML</button>
+        </div>
+        <div id="icdSummary" class="notice">Коды МКБ-10 ещё не сравнивались.</div>
+        <div id="modelStructured" class="model-output">Структурированный ответ появится после AI-анализа.</div>
+        <form id="requestReviewForm" class="review-form hidden">
+          <h3>Экспертная оценка ответа</h3>
+          <div class="settings-grid">
+            <div class="field">
+              <label>Оценка</label>
+              <select name="rating" required>
+                <option value="useful">Полезно</option>
+                <option value="partial">Частично полезно</option>
+                <option value="wrong">Неверно</option>
+                <option value="unsafe">Небезопасно</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>Типы ошибок<span class="key">через ;</span></label>
+              <input name="issue_types" type="text" placeholder="wrong_icd; missed_red_flag">
+            </div>
+            <div class="field full">
+              <label>Корректный диагноз</label>
+              <textarea name="corrected_diagnosis"></textarea>
+            </div>
+            <div class="field">
+              <label>Корректные МКБ-10<span class="key">через ;</span></label>
+              <input name="corrected_icd10" type="text" placeholder="I10; I25.1">
+            </div>
+            <div class="field full">
+              <label>Комментарий</label>
+              <textarea name="comment"></textarea>
+            </div>
+          </div>
+          <div class="toolbar">
+            <button class="primary" type="submit">Сохранить оценку</button>
+            <span id="reviewStatus" class="pill">не оценено</span>
+          </div>
+        </form>
+        <details class="technical-response">
+          <summary>Технический JSON ответа</summary>
+          <pre id="modelPreview">Технический ответ AI появится здесь.</pre>
+        </details>
+      </div>
+      <div class="modal-footer">
+        <span class="muted">Используйте результат только после врачебной проверки.</span>
+        <div class="toolbar">
+          <button type="button" id="closeModelResultFooter">Закрыть</button>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <div id="passwordModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="passwordModalTitle">
     <div class="modal-card">

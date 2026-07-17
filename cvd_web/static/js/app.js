@@ -34,6 +34,7 @@
   const importSelectionStatus = document.getElementById("importSelectionStatus");
   const correctedTextBlock = document.getElementById("correctedTextBlock");
   const correctedTextContent = document.getElementById("correctedTextContent");
+  const modelResultModal = document.getElementById("modelResultModal");
   const structureTextModal = document.getElementById("structureTextModal");
   const structureTextForm = document.getElementById("structureTextForm");
   const structureTextInput = document.getElementById("structureTextInput");
@@ -71,6 +72,43 @@
 
   const qualityRules = window.CVDClinicalQuality;
   const requiredDataPoints = qualityRules.requiredDataPoints;
+  const panelTabs = ["quality", "json"];
+  const formSectionGroups = [
+    {
+      key: "anamnesis",
+      title: "Анамнез и исходные данные",
+      hint: "Идентификация случая, жалобы, факторы риска, перенесённые события и известные диагнозы.",
+      sectionKeys: ["GENERAL_INFO", "COMPLAINTS", "RISK_FACTORS", "PAST_EVENTS", "KNOWN_CVD_DIAGNOSES"]
+    },
+    {
+      key: "objective",
+      title: "Объективный статус",
+      hint: "Осмотр, витальные параметры и физикальные признаки.",
+      sectionKeys: ["PHYSICAL_EXAM"]
+    },
+    {
+      key: "laboratory",
+      title: "Лабораторные исследования",
+      hint: "ОАК, биохимия, липиды, кардиомаркеры и коагулограмма.",
+      sectionKeys: ["LABS_CBC", "LABS_BIOCHEM", "LABS_LIPIDS", "LABS_CARDIAC_MARKERS", "LABS_COAGULATION"]
+    },
+    {
+      key: "instrumental",
+      title: "Инструментальные исследования",
+      hint: "ЭКГ, мониторинг, эхокардиография, функциональные тесты и визуализация.",
+      sectionKeys: ["ECG_AND_BP_MONITORING", "ECHOCARDIOGRAPHY", "FUNCTIONAL_TESTS", "CORONARY_AND_VASCULAR_IMAGING"]
+    },
+    {
+      key: "treatment",
+      title: "Лечение, вмешательства и заключение",
+      hint: "Устройства, процедуры, текущая терапия, шкалы, диагноз врача и поля ответа модели.",
+      sectionKeys: ["DEVICES_AND_PROCEDURES", "CURRENT_MEDICATIONS", "SCORES_AND_CLASSES", "FINAL_DIAGNOSES", "MODEL_OUTPUT"]
+    }
+  ];
+  const sectionGroupByKey = new Map();
+  formSectionGroups.forEach((group) => {
+    group.sectionKeys.forEach((key) => sectionGroupByKey.set(key, group));
+  });
 
   function toast(message) {
     const node = document.createElement("div");
@@ -191,22 +229,59 @@
     return wrapper;
   }
 
+  function sectionNumber(index) {
+    return String(index + 1).padStart(2, "0");
+  }
+
+  function sectionGroup(section) {
+    return sectionGroupByKey.get(section.key) || {
+      key: "other",
+      title: "Прочие данные",
+      hint: "",
+      sectionKeys: []
+    };
+  }
+
+  function renderFormGroupHeader(group) {
+    const header = document.createElement("div");
+    header.className = "form-section-group";
+    const title = document.createElement("strong");
+    title.textContent = group.title;
+    const hint = document.createElement("span");
+    hint.textContent = group.hint;
+    header.append(title, hint);
+    return header;
+  }
+
   function renderForm() {
     form.innerHTML = "";
+    let currentGroupKey = "";
     window.CVD_SCHEMA.forEach((section, index) => {
+      const group = sectionGroup(section);
+      if (group.key !== currentGroupKey) {
+        currentGroupKey = group.key;
+        form.appendChild(renderFormGroupHeader(group));
+      }
       const details = document.createElement("details");
       details.className = "section";
       details.id = `section-${section.key}`;
-      details.open = index < 3 || section.key === "FINAL_DIAGNOSES" || section.key === "MODEL_OUTPUT";
+      details.dataset.group = group.key;
+      details.dataset.sectionIndex = String(index + 1);
 
       const summary = document.createElement("summary");
+      const heading = document.createElement("span");
+      heading.className = "section-summary-title";
+      const number = document.createElement("span");
+      number.className = "section-number";
+      number.textContent = `${sectionNumber(index)}. `;
       const title = document.createElement("span");
       title.textContent = section.title;
+      heading.append(number, title);
       const badge = document.createElement("span");
       badge.className = "section-fill-badge";
       badge.dataset.sectionBadge = section.key;
       badge.textContent = "0%";
-      summary.append(title, badge);
+      summary.append(heading, badge);
 
       const body = document.createElement("div");
       body.className = "section-body form-grid";
@@ -222,12 +297,12 @@
   function renderSectionNav() {
     if (!sectionNav) return;
     sectionNav.innerHTML = "";
-    window.CVD_SCHEMA.forEach((section) => {
+    window.CVD_SCHEMA.forEach((section, index) => {
       const button = document.createElement("button");
       button.type = "button";
       button.className = "section-nav-item";
       button.dataset.sectionNav = section.key;
-      button.textContent = section.title;
+      button.textContent = `${sectionNumber(index)}. ${section.title}`;
       button.addEventListener("click", () => focusSection(section.key));
       sectionNav.appendChild(button);
     });
@@ -240,6 +315,12 @@
     details.scrollIntoView({behavior: "smooth", block: "start"});
     const firstInput = details.querySelector("input, select, textarea");
     window.setTimeout(() => firstInput?.focus(), 250);
+  }
+
+  function collapseAllSections() {
+    form.querySelectorAll("details.section").forEach((details) => {
+      details.open = false;
+    });
   }
 
   function parseIcdString(value) {
@@ -383,6 +464,7 @@
     currentCaseId = pendingDraft.case_id || null;
     resetModelState(true);
     applyData(pendingDraft.patient_data);
+    collapseAllSections();
     saveStatus.textContent = currentCaseId ? `кейс #${currentCaseId} восстановлен из черновика` : "черновик восстановлен";
     suppressDraftSave = false;
     clearLocalDraft();
@@ -402,7 +484,7 @@
   }
 
   function updateSectionBadges(data) {
-    window.CVD_SCHEMA.forEach((section) => {
+    window.CVD_SCHEMA.forEach((section, index) => {
       const badge = form.querySelector(`[data-section-badge="${section.key}"]`);
       if (!badge) return;
       const {filled, total, percent} = sectionFillPercent(section, data);
@@ -410,7 +492,7 @@
       badge.className = `section-fill-badge ${percent === 100 ? "ok" : percent > 0 ? "warning" : ""}`.trim();
       const navItem = sectionNav?.querySelector(`[data-section-nav="${section.key}"]`);
       if (navItem) {
-        navItem.textContent = `${section.title} · ${percent}%`;
+        navItem.textContent = `${sectionNumber(index)}. ${section.title} · ${percent}%`;
         navItem.className = `section-nav-item ${percent === 100 ? "ok" : percent > 0 ? "warning" : ""}`.trim();
       }
     });
@@ -692,11 +774,26 @@
     return grid;
   }
 
+  function openModelResultModal() {
+    if (!modelResultModal) return;
+    openModalElement(modelResultModal, document.getElementById("closeModelResultModal"));
+  }
+
+  function closeModelResultModal() {
+    if (!modelResultModal) return;
+    closeModalElement(modelResultModal);
+  }
+
   function openTab(name) {
+    if (name === "model") {
+      openModelResultModal();
+      return;
+    }
+    if (!panelTabs.includes(name)) return;
     document.querySelectorAll(".tab").forEach((button) => {
       button.classList.toggle("active", button.dataset.tab === name);
     });
-    ["quality", "json", "model"].forEach((tabName) => {
+    panelTabs.forEach((tabName) => {
       document.getElementById(`tab-${tabName}`).classList.toggle("hidden", tabName !== name);
     });
   }
@@ -1006,6 +1103,8 @@
     modelStatus.textContent = "запрос выполняется";
     modelStatus.className = "pill warning";
     modelPreview.textContent = "Выполняется AI-анализ...";
+    modelStructured.textContent = "AI-анализ выполняется. Результат появится здесь после завершения задания.";
+    requestReviewForm?.classList.add("hidden");
     diagnosisQueueTimer = window.setInterval(async () => {
       try {
         const status = await api("/api/inference/status");
@@ -1061,6 +1160,7 @@
       fillModelOutput(response.parsed);
       renderModelOutput(response.parsed, response);
       showReviewForm(response.request_id, null);
+      openModelResultModal();
       lastModelDataFingerprint = requestFingerprint;
       setHtmlExportAvailable(true);
       const seconds = (Number(response.duration_ms || 0) / 1000).toFixed(1);
@@ -1099,6 +1199,7 @@
     currentCaseId = response.case.id;
     resetModelState();
     applyData(response.case.data);
+    collapseAllSections();
     toast("Кейс загружен");
   }
 
@@ -1604,7 +1705,7 @@
       modelSection?.fields.forEach((field) => setFieldValue(`MODEL_OUTPUT.${field.key}`, null));
     }
     modelPreview.textContent = "Технический ответ AI появится здесь.";
-    modelStructured.innerHTML = "";
+    modelStructured.textContent = "Структурированный ответ появится после AI-анализа.";
     lastModelSummary?.classList.add("hidden");
     if (lastModelSummary) lastModelSummary.innerHTML = "";
     modelStatus.textContent = "AI не запускался";
@@ -1615,6 +1716,7 @@
   function resetCase() {
     currentCaseId = null;
     form.reset();
+    collapseAllSections();
     resetModelState();
     clearLocalDraft();
     updatePreview();
@@ -1634,6 +1736,7 @@
     document.getElementById("interfaceModeSelect")?.querySelectorAll("option").forEach((option) => {
       option.selected = option.value === nextMode;
     });
+    if (nextMode === "doctor") openTab("quality");
   }
 
   function setupUser() {
@@ -1653,6 +1756,11 @@
     document.getElementById("closePasswordModal").addEventListener("click", closePasswordModal);
     document.getElementById("cancelPasswordModal").addEventListener("click", closePasswordModal);
     document.getElementById("reviewButton").addEventListener("click", () => openReviewModal(null, false));
+    document.getElementById("closeModelResultModal")?.addEventListener("click", closeModelResultModal);
+    document.getElementById("closeModelResultFooter")?.addEventListener("click", closeModelResultModal);
+    modelResultModal?.addEventListener("click", (event) => {
+      if (event.target === modelResultModal) closeModelResultModal();
+    });
     document.getElementById("closeReviewModal").addEventListener("click", closeReviewModal);
     document.getElementById("cancelReviewModal").addEventListener("click", closeReviewModal);
     confirmReviewButton.addEventListener("click", () => {
@@ -1680,6 +1788,7 @@
       event.preventDefault();
       if (modal === importModal) closeImportModal();
       else if (modal === structureTextModal) closeStructureTextModal();
+      else if (modal === modelResultModal) closeModelResultModal();
       else if (modal === reviewModal) closeReviewModal();
       else if (modal === passwordModal) closePasswordModal();
     });
