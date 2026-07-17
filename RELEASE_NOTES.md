@@ -1,19 +1,17 @@
-# CVD Web v0.9.3
+# CVD Web v0.9.7
 
-Release focused on deployability, controlled VPS/WSL2 operation, AI Gateway diagnostics, and a calmer clinical workspace UI.
+Release focused on persistent AI jobs for free-text preparation and diagnosis workflow reliability.
 
 ## Highlights
 
-- Adds a reproducible release archive builder with SHA-256 checksum output.
-- Adds installer support for local, WSL2, and Debian/Ubuntu VPS targets, including generated environment files and service setup.
-- Adds WSL2 guidance for Windows localhost access and optional LAN port forwarding.
-- Adds VPS-oriented defaults for controlled evaluation before HTTPS production hardening.
-- Adds `/readyz` runtime checks for database, templates, static assets, security posture, and production queue readiness.
-- Adds a WSGI entrypoint for production runners behind reverse proxies.
-- Improves the clinical workspace by removing duplicated metrics, duplicated next-action guidance, and repeated workflow/progress panels.
-- Fixes mobile layout ordering so the patient form appears before the review sidebar on narrow screens.
-- Extends model quality validation with severity and expected missing-data checks in the Gold Set workflow.
-- Fixes SQLite backup/restore connection cleanup.
+- Moves `Подготовить текст с AI` to a persistent background job so processing continues after closing the modal, tab, or browser.
+- Adds a combined workspace job line showing active and recently finished text-preparation and diagnosis jobs.
+- Preserves FIFO ordering across diagnosis and text-preparation jobs on the backend worker.
+- Lets users reopen finished text-preparation results and diagnosis results from the workspace job line.
+- Restores interrupted text-preparation jobs to the queue after an application restart.
+- Applies one per-user AI job limit across diagnosis and text-preparation jobs.
+- Keeps the full source text only while the worker still needs it, then leaves a short preview, hash, metrics, and the prepared result.
+- Updates the Umbrel package to use `ghcr.io/granyov/cvd-web:v0.9.7`.
 
 ## Install
 
@@ -27,8 +25,8 @@ For release-archive installs:
 
 ```bash
 scripts/install_from_release.sh \
-  --url https://github.com/granyov/cvd-web/releases/download/v0.9.3/cvd-web-v0.9.3.tar.gz \
-  --sha256-url https://github.com/granyov/cvd-web/releases/download/v0.9.3/cvd-web-v0.9.3.tar.gz.sha256 \
+  --url https://github.com/granyov/cvd-web/releases/download/v0.9.7/cvd-web-v0.9.7.tar.gz \
+  --sha256-url https://github.com/granyov/cvd-web/releases/download/v0.9.7/cvd-web-v0.9.7.tar.gz.sha256 \
   -- --target local --unattended
 ```
 
@@ -36,5 +34,5 @@ scripts/install_from_release.sh \
 
 - Not a medical device and not clinically validated.
 - Use only synthetic or deidentified data.
-- The SQLite batch worker and in-process inference queue support one backend process.
+- The SQLite worker and in-process inference queue support one backend process.
 - Production deployments must add HTTPS and should use external queue/rate-limit adapters before strict production readiness.

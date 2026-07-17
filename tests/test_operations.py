@@ -552,6 +552,124 @@ class OperationsTests(unittest.TestCase):
                 self.assertTrue(payload["result"]["ok"])
                 self.assertIsNotNone(payload["result"]["request_id"])
 
+    def test_text_preparation_jobs_are_persistent_and_fifo_with_diagnosis(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = CVDApplication(make_test_config(Path(tmp) / "cvd.sqlite3"), start_batch_worker=False)
+            cookie, csrf = self.login(app)
+
+            status, _, body = call_wsgi(
+                app,
+                "/api/model/diagnose/jobs",
+                method="POST",
+                cookie=cookie,
+                csrf=csrf,
+                body={
+                    "patient_data": {
+                        "GENERAL_INFO": {"Patient_ID": "FIFO-1", "Age": 63},
+                        "COMPLAINTS": {"Main_complaint": "Одышка при нагрузке"},
+                    }
+                },
+            )
+            self.assertTrue(status.startswith("201"), body)
+            diagnosis_job_id = json.loads(body.decode("utf-8"))["job_id"]
+
+            status, _, body = call_wsgi(
+                app,
+                "/api/model/structure-text/jobs",
+                method="POST",
+                cookie=cookie,
+                csrf=csrf,
+                body={"text": "Пациент 63 лет жалуется на одышку при нагрузке."},
+            )
+            self.assertTrue(status.startswith("201"), body)
+            text_job_id = json.loads(body.decode("utf-8"))["job_id"]
+
+            status, _, body = call_wsgi(app, "/api/ai/jobs", cookie=cookie)
+            self.assertTrue(status.startswith("200"), body)
+            jobs = json.loads(body.decode("utf-8"))["jobs"]
+            active_order = [(job["type"], job["id"]) for job in jobs if job["status"] == "queued"]
+            self.assertEqual(active_order[:2], [("diagnosis", diagnosis_job_id), ("text_preparation", text_job_id)])
+            queued = {(job["type"], job["id"]): job["position"] for job in jobs if job["status"] == "queued"}
+            self.assertEqual(queued[("diagnosis", diagnosis_job_id)], 1)
+            self.assertEqual(queued[("text_preparation", text_job_id)], 2)
+
+            parsed = {
+                "CDS_OUTPUT": {
+                    "summary": "Диагностический ответ.",
+                    "possible_diagnoses": [],
+                    "red_flags": [],
+                    "missing_data": [],
+                    "recommended_next_data": [],
+                    "limitations": [],
+                    "model_should_abstain": True,
+                },
+                "MODEL_OUTPUT": {"Final_model_diagnosis": "Тест"},
+            }
+            structuring_result = {
+                "corrected_text": "Пациент 63 лет жалуется на одышку при нагрузке.",
+                "mappings": [{
+                    "path": "GENERAL_INFO.Age",
+                    "value": 63,
+                    "confidence": "high",
+                    "source_conflict": False,
+                    "sources": [{"label": "63 лет"}],
+                }],
+                "warnings": [],
+            }
+            processing_order: list[str] = []
+
+            def model_response(**kwargs):
+                processing_order.append("diagnosis")
+                return (
+                    {"model": kwargs["model"]},
+                    {"raw": {"usage": {}, "choices": [{"finish_reason": "stop"}]}, "content": "{}"},
+                    parsed,
+                    100,
+                )
+
+            def text_response(**kwargs):
+                processing_order.append("text")
+                return (
+                    {},
+                    {"raw": {"usage": {}, "choices": [{"finish_reason": "stop"}]}, "content": "{}"},
+                    structuring_result,
+                    100,
+                )
+
+            with patch("cvd_web.app.call_lm_studio", side_effect=model_response), patch(
+                "cvd_web.app.call_text_structuring",
+                side_effect=text_response,
+            ):
+                self.assertTrue(app.process_next_inference_job())
+                self.assertTrue(app.process_next_inference_job())
+                self.assertFalse(app.process_next_inference_job())
+            self.assertEqual(processing_order, ["diagnosis", "text"])
+
+            status, _, body = call_wsgi(app, f"/api/model/structure-text/jobs/{text_job_id}", cookie=cookie)
+            self.assertTrue(status.startswith("200"), body)
+            payload = json.loads(body.decode("utf-8"))
+            self.assertEqual(payload["job"]["status"], "success")
+            self.assertEqual(payload["job"]["result"]["source_format"], "ai-text")
+            self.assertEqual(payload["job"]["result"]["mappings"][0]["path"], "GENERAL_INFO.Age")
+            self.assertEqual(payload["job"]["text_preview"], "Пациент 63 лет жалуется на одышку при нагрузке.")
+
+            with connect(app.config.db_path) as conn:
+                stored_job = conn.execute(
+                    "SELECT request_json FROM text_preparation_jobs WHERE id = ?",
+                    (text_job_id,),
+                ).fetchone()
+            stored_request = json.loads(stored_job["request_json"])
+            self.assertNotIn("text", stored_request)
+            self.assertEqual(stored_request["text_preview"], "Пациент 63 лет жалуется на одышку при нагрузке.")
+
+            status, _, body = call_wsgi(app, "/api/ai/jobs", cookie=cookie)
+            self.assertTrue(status.startswith("200"), body)
+            jobs_payload = json.loads(body.decode("utf-8"))
+            self.assertEqual(jobs_payload["active_count"], 0)
+            finished = {(job["type"], job["id"]): job["status"] for job in jobs_payload["jobs"]}
+            self.assertEqual(finished[("diagnosis", diagnosis_job_id)], "success")
+            self.assertEqual(finished[("text_preparation", text_job_id)], "success")
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -138,6 +138,7 @@ class CVDApplication:
         self.batch_worker_event = threading.Event()
         self.inference_worker_event = threading.Event()
         self.recover_interrupted_inference_jobs()
+        self.recover_interrupted_text_preparation_jobs()
         self.recover_interrupted_batch_jobs()
         self.batch_worker_thread: threading.Thread | None = None
         self.inference_worker_thread: threading.Thread | None = None
@@ -230,6 +231,8 @@ class CVDApplication:
             return self.list_clinical_imports(request, user)
         if request.path == "/api/text-preparations" and request.method == "GET":
             return self.list_text_preparations(request, user)
+        if request.path == "/api/ai/jobs" and request.method == "GET":
+            return self.list_ai_jobs(user)
         if match := re.fullmatch(r"/api/imports/(\d+)/applied", request.path):
             if request.method == "POST":
                 return self.mark_clinical_import_applied(request, user, int(match.group(1)))
@@ -252,6 +255,11 @@ class CVDApplication:
         if match := re.fullmatch(r"/api/model/diagnose/jobs/(\d+)", request.path):
             if request.method == "GET":
                 return self.get_diagnosis_job(user, int(match.group(1)))
+        if request.path == "/api/model/structure-text/jobs" and request.method == "POST":
+            return self.create_text_preparation_job(request, user)
+        if match := re.fullmatch(r"/api/model/structure-text/jobs/(\d+)", request.path):
+            if request.method == "GET":
+                return self.get_text_preparation_job(user, int(match.group(1)))
         if request.path == "/api/model/structure-text" and request.method == "POST":
             return self.structure_text(request, user)
         if request.path == "/api/inference/status" and request.method == "GET":
@@ -1313,6 +1321,34 @@ class CVDApplication:
                 raise HTTPError(404, "Кейс не найден")
         return patient_data, case_id
 
+    def active_ai_job_count(self, conn: sqlite3.Connection, user_id: int) -> int:
+        diagnosis_count = conn.execute(
+            """
+            SELECT COUNT(*) AS c
+            FROM inference_jobs
+            WHERE user_id = ? AND status IN ('queued', 'running')
+            """,
+            (user_id,),
+        ).fetchone()["c"]
+        text_count = conn.execute(
+            """
+            SELECT COUNT(*) AS c
+            FROM text_preparation_jobs
+            WHERE user_id = ? AND status IN ('queued', 'running')
+            """,
+            (user_id,),
+        ).fetchone()["c"]
+        return int(diagnosis_count or 0) + int(text_count or 0)
+
+    def enforce_user_ai_job_limit(self, conn: sqlite3.Connection, user_id: int, settings: dict[str, str]) -> None:
+        per_user_limit = self.setting_int(settings, "lm_studio_per_user_limit", 2)
+        outstanding = self.active_ai_job_count(conn, user_id)
+        if outstanding >= per_user_limit:
+            raise HTTPError(
+                429,
+                f"У пользователя уже есть {outstanding} AI-задания в очереди или выполнении. Дождитесь результата.",
+            )
+
     def create_diagnosis_job(self, request: Request, user: dict[str, Any]):
         settings = self.load_settings()
         self.enforce_rate_limit(
@@ -1322,22 +1358,9 @@ class CVDApplication:
             message="Слишком много запросов к модели",
         )
         patient_data, case_id = self.parse_diagnosis_payload(request, user, settings)
-        per_user_limit = self.setting_int(settings, "lm_studio_per_user_limit", 2)
         now = utc_now()
         with connect(self.config.db_path) as conn:
-            outstanding = conn.execute(
-                """
-                SELECT COUNT(*) AS c
-                FROM inference_jobs
-                WHERE user_id = ? AND status IN ('queued', 'running')
-                """,
-                (user["id"],),
-            ).fetchone()["c"]
-            if int(outstanding or 0) >= per_user_limit:
-                raise HTTPError(
-                    429,
-                    f"У пользователя уже есть {outstanding} AI-задания в очереди или выполнении. Дождитесь результата.",
-                )
+            self.enforce_user_ai_job_limit(conn, user["id"], settings)
             cur = conn.execute(
                 """
                 INSERT INTO inference_jobs
@@ -1427,6 +1450,355 @@ class CVDApplication:
         if request_row:
             payload["result"] = self.model_request_payload(request_row)
         return self.json_response(payload)
+
+    def parse_structure_text_payload(self, request: Request, settings: dict[str, str]) -> str:
+        self.ensure_request_size(request, settings)
+        data = request.json()
+        source_text = str(data.get("text") or "").strip()
+        if len(source_text) < 10:
+            raise HTTPError(400, "Добавьте медицинский текст длиной не менее 10 символов")
+        if len(source_text) > TEXT_MAX_INPUT_CHARS:
+            raise HTTPError(413, f"Текст не должен превышать {TEXT_MAX_INPUT_CHARS:,} символов".replace(",", " "))
+        return source_text
+
+    def execute_text_preparation(
+        self,
+        *,
+        user: dict[str, Any],
+        source_text: str,
+        settings: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
+        settings = settings or self.load_settings()
+        api_url = settings.get("lm_studio_api_url") or self.config.lm_studio_api_url
+        model = settings.get("text_structuring_model") or settings.get("lm_studio_model") or self.config.lm_studio_model
+        timeout_seconds = self.setting_int(settings, "lm_studio_timeout_seconds", self.config.lm_studio_timeout_seconds)
+        max_tokens = self.setting_int(settings, "lm_studio_max_tokens", self.config.lm_studio_max_tokens)
+        queue_timeout_seconds = self.configure_inference_queue(settings)
+        content_sha256 = hashlib.sha256(source_text.encode("utf-8")).hexdigest()
+        response_payload: dict[str, Any] | None = None
+        result: dict[str, Any] | None = None
+        duration_ms = 0
+        queue_wait_ms = 0
+        queue_error = False
+        error = None
+
+        @contextmanager
+        def queued_model_call():
+            nonlocal queue_wait_ms
+            with self.inference_queue.acquire(
+                user_id=user["id"],
+                kind="text_structuring",
+                timeout_seconds=queue_timeout_seconds,
+            ) as lease:
+                queue_wait_ms += lease.wait_ms
+                yield
+
+        try:
+            _, response_payload, result, duration_ms = call_text_structuring(
+                api_url=api_url,
+                model=model,
+                text=source_text,
+                timeout_seconds=timeout_seconds,
+                max_tokens=max_tokens,
+                call_guard=queued_model_call,
+                extra_headers=self.ai_gateway_headers(settings),
+            )
+        except Exception as exc:
+            queue_error = isinstance(exc, InferenceQueueError)
+            queue_wait_ms = max(queue_wait_ms, int(getattr(exc, "wait_ms", 0) or 0))
+            error = str(exc)[:4000]
+            response_payload = getattr(exc, "response_payload", None) or response_payload
+            duration_ms = int(getattr(exc, "duration_ms", 0) or 0)
+            if isinstance(exc, LMStudioError) and not queue_error and isinstance(response_payload, dict):
+                result = {
+                    "corrected_text": source_text[:20000],
+                    "mappings": [],
+                    "warnings": [
+                        "AI не вернул пригодную структуру полей CVD. Исходный текст сохранён для ручной проверки.",
+                        error,
+                    ],
+                }
+
+        metrics = self.model_metrics(response_payload, duration_ms)
+        chunk_count = max(1, int(response_payload.get("chunk_count") or 1)) if response_payload else 1
+        failed_chunk_count = max(0, int(response_payload.get("failed_chunk_count") or 0)) if response_payload else 0
+        with connect(self.config.db_path) as conn:
+            prep_cur = conn.execute(
+                """
+                INSERT INTO data_preparation_requests
+                  (user_id, status, model, input_sha256, chunk_count, mapped_fields, warning_count,
+                   duration_ms, prompt_tokens, completion_tokens, total_tokens,
+                   finish_reason, queue_wait_ms, error, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    user["id"],
+                    "success" if result is not None else "error",
+                    model,
+                    content_sha256,
+                    chunk_count,
+                    len(result["mappings"]) if result else 0,
+                    len(result["warnings"]) if result else 0,
+                    duration_ms,
+                    metrics["prompt_tokens"],
+                    metrics["completion_tokens"],
+                    metrics["total_tokens"],
+                    metrics["finish_reason"],
+                    queue_wait_ms,
+                    error,
+                    utc_now(),
+                ),
+            )
+            data_preparation_request_id = int(prep_cur.lastrowid)
+            if result is not None:
+                import_cur = conn.execute(
+                    """
+                    INSERT INTO data_imports
+                      (user_id, case_id, source_format, mapping_version, filename, content_sha256,
+                       mapped_fields, mapped_paths_json, warning_count, selected_paths_json, status, created_at)
+                    VALUES (?, NULL, 'ai-text', ?, ?, ?, ?, ?, ?, '[]', 'previewed', ?)
+                    """,
+                    (
+                        user["id"],
+                        TEXT_STRUCTURING_VERSION,
+                        "Свободный медицинский текст",
+                        content_sha256,
+                        len(result["mappings"]),
+                        json.dumps([item["path"] for item in result["mappings"]], ensure_ascii=False),
+                        len(result["warnings"]),
+                        utc_now(),
+                    ),
+                )
+                import_id = int(import_cur.lastrowid)
+                now_text_item = utc_now()
+                conn.execute(
+                    """
+                    INSERT INTO text_preparation_items
+                      (data_preparation_request_id, import_id, user_id, status, source_label,
+                       input_sha256, corrected_text, mappings_json, warnings_json,
+                       mapped_fields, warning_count, created_at, updated_at)
+                    VALUES (?, ?, ?, 'prepared', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        data_preparation_request_id,
+                        import_id,
+                        user["id"],
+                        "Свободный медицинский текст",
+                        content_sha256,
+                        str(result.get("corrected_text") or "")[:20000],
+                        json.dumps(result["mappings"], ensure_ascii=False),
+                        json.dumps(result["warnings"], ensure_ascii=False),
+                        len(result["mappings"]),
+                        len(result["warnings"]),
+                        now_text_item,
+                        now_text_item,
+                    ),
+                )
+            else:
+                import_id = None
+            audit(
+                conn,
+                user_id=user["id"],
+                action="data_preparation",
+                target_type="data_preparation_request",
+                target_id=data_preparation_request_id,
+                details={
+                    "status": "success" if result is not None else "error",
+                    "mapped_fields": len(result["mappings"]) if result else 0,
+                    "chunk_count": chunk_count,
+                    "duration_ms": duration_ms,
+                    "queue_wait_ms": queue_wait_ms,
+                    "failed_chunk_count": failed_chunk_count,
+                },
+            )
+
+        if result is None:
+            return {
+                "ok": False,
+                "data_preparation_request_id": data_preparation_request_id,
+                "import_id": import_id,
+                "error": error,
+                "queue_error": queue_error,
+                "duration_ms": duration_ms,
+                "queue_wait_ms": queue_wait_ms,
+                "chunk_count": chunk_count,
+                "failed_chunk_count": failed_chunk_count,
+                **metrics,
+            }
+        return {
+            "ok": True,
+            "data_preparation_request_id": data_preparation_request_id,
+            "import_id": import_id,
+            "source_format": "ai-text",
+            "mapping_version": TEXT_STRUCTURING_VERSION,
+            "filename": "AI-подготовка текста",
+            "mappings": result["mappings"],
+            "warnings": result["warnings"],
+            "corrected_text": result["corrected_text"],
+            "summary": {"mapped_fields": len(result["mappings"])},
+            "chunk_count": chunk_count,
+            "failed_chunk_count": failed_chunk_count,
+            "duration_ms": duration_ms,
+            "queue_wait_ms": queue_wait_ms,
+            **metrics,
+        }
+
+    def create_text_preparation_job(self, request: Request, user: dict[str, Any]):
+        settings = self.load_settings()
+        self.enforce_rate_limit(
+            f"structure-text:{user['id']}",
+            limit=30,
+            window_seconds=3600,
+            message="Слишком много запросов на подготовку данных",
+        )
+        source_text = self.parse_structure_text_payload(request, settings)
+        content_sha256 = hashlib.sha256(source_text.encode("utf-8")).hexdigest()
+        now = utc_now()
+        with connect(self.config.db_path) as conn:
+            self.enforce_user_ai_job_limit(conn, user["id"], settings)
+            cur = conn.execute(
+                """
+                INSERT INTO text_preparation_jobs
+                  (user_id, status, request_json, input_sha256, created_at)
+                VALUES (?, 'queued', ?, ?, ?)
+                """,
+                (
+                    user["id"],
+                    json.dumps({"text": source_text}, ensure_ascii=False),
+                    content_sha256,
+                    now,
+                ),
+            )
+            job_id = int(cur.lastrowid)
+            audit(
+                conn,
+                user_id=user["id"],
+                action="text_preparation_job_create",
+                target_type="text_preparation_job",
+                target_id=job_id,
+                details={"input_sha256": content_sha256, "chars": len(source_text)},
+            )
+        self.inference_worker_event.set()
+        return self.json_response({"ok": True, "job_id": job_id, "status": "queued"}, status=201)
+
+    def text_preparation_job_payload(self, row: sqlite3.Row | dict[str, Any], *, include_result: bool = True) -> dict[str, Any]:
+        getter = row.get if isinstance(row, dict) else lambda key, default=None: row[key] if key in row.keys() else default
+        result = None
+        if include_result and getter("result_json"):
+            try:
+                result = json.loads(getter("result_json") or "null")
+            except (TypeError, json.JSONDecodeError):
+                result = None
+        text_preview = ""
+        try:
+            request_data = json.loads(getter("request_json") or "{}")
+            text_preview = str(request_data.get("text_preview") or request_data.get("text") or "").strip()[:120]
+        except (TypeError, json.JSONDecodeError):
+            text_preview = ""
+        payload: dict[str, Any] = {
+            "id": getter("id"),
+            "status": getter("status"),
+            "data_preparation_request_id": getter("data_preparation_request_id"),
+            "import_id": getter("import_id"),
+            "error": getter("error"),
+            "input_sha256": getter("input_sha256"),
+            "text_preview": text_preview,
+            "created_at": getter("created_at"),
+            "started_at": getter("started_at"),
+            "finished_at": getter("finished_at"),
+        }
+        if result is not None:
+            payload["result"] = result
+        return payload
+
+    def get_text_preparation_job(self, user: dict[str, Any], job_id: int):
+        with connect(self.config.db_path) as conn:
+            job = conn.execute(
+                """
+                SELECT *
+                FROM text_preparation_jobs
+                WHERE id = ? AND (user_id = ? OR ? = 'admin')
+                """,
+                (job_id, user["id"], user["role"]),
+            ).fetchone()
+        if not job:
+            raise HTTPError(404, "AI-задача подготовки текста не найдена")
+        return self.json_response({"ok": True, "job": self.text_preparation_job_payload(job)})
+
+    def list_ai_jobs(self, user: dict[str, Any]):
+        with connect(self.config.db_path) as conn:
+            rows = conn.execute(
+                """
+                SELECT type, id, status, created_at, started_at, finished_at, error,
+                       case_id, model_request_id, input_sha256, data_preparation_request_id,
+                       import_id, request_json, result_json
+                FROM (
+                  SELECT 'diagnosis' AS type, id, status, created_at, started_at, finished_at, error,
+                         case_id, model_request_id, NULL AS input_sha256, NULL AS data_preparation_request_id,
+                         NULL AS import_id, request_json, NULL AS result_json
+                  FROM inference_jobs
+                  WHERE user_id = ?
+                  UNION ALL
+                  SELECT 'text_preparation' AS type, id, status, created_at, started_at, finished_at, error,
+                         NULL AS case_id, NULL AS model_request_id, input_sha256, data_preparation_request_id,
+                         import_id, request_json, result_json
+                  FROM text_preparation_jobs
+                  WHERE user_id = ?
+                )
+                WHERE status IN ('queued', 'running', 'success', 'error')
+                ORDER BY
+                  CASE WHEN status IN ('queued', 'running') THEN 0 ELSE 1 END,
+                  CASE WHEN status IN ('queued', 'running') THEN created_at ELSE NULL END ASC,
+                  CASE WHEN status NOT IN ('queued', 'running') THEN COALESCE(finished_at, created_at) ELSE NULL END DESC,
+                  type,
+                  id
+                LIMIT 20
+                """,
+                (user["id"], user["id"]),
+            ).fetchall()
+            queued_order = conn.execute(
+                """
+                SELECT type, id
+                FROM (
+                  SELECT 'diagnosis' AS type, id, created_at FROM inference_jobs WHERE user_id = ? AND status = 'queued'
+                  UNION ALL
+                  SELECT 'text_preparation' AS type, id, created_at FROM text_preparation_jobs WHERE user_id = ? AND status = 'queued'
+                )
+                ORDER BY created_at, type, id
+                """,
+                (user["id"], user["id"]),
+            ).fetchall()
+        positions = {(row["type"], row["id"]): index + 1 for index, row in enumerate(queued_order)}
+        jobs: list[dict[str, Any]] = []
+        for row in rows:
+            item = row_to_dict(row)
+            job: dict[str, Any] = {
+                "type": item["type"],
+                "id": item["id"],
+                "status": item["status"],
+                "created_at": item["created_at"],
+                "started_at": item["started_at"],
+                "finished_at": item["finished_at"],
+                "error": item["error"],
+                "position": positions.get((item["type"], item["id"]), 0),
+            }
+            if item["type"] == "diagnosis":
+                job.update({
+                    "case_id": item["case_id"],
+                    "model_request_id": item["model_request_id"],
+                })
+            else:
+                job.update(self.text_preparation_job_payload(item, include_result=False))
+                job["type"] = "text_preparation"
+            jobs.append(job)
+        active_jobs = [item for item in jobs if item["status"] in {"queued", "running"}]
+        return self.json_response({
+            "ok": True,
+            "jobs": jobs,
+            "active_count": len(active_jobs),
+            "queued_count": sum(1 for item in active_jobs if item["status"] == "queued"),
+            "running_count": sum(1 for item in active_jobs if item["status"] == "running"),
+        })
 
     def export_html_report(self, request: Request, user: dict[str, Any]):
         settings = self.load_settings()
@@ -1687,183 +2059,20 @@ class CVDApplication:
 
     def structure_text(self, request: Request, user: dict[str, Any]):
         settings = self.load_settings()
-        self.ensure_request_size(request, settings)
         self.enforce_rate_limit(
             f"structure-text:{user['id']}",
             limit=30,
             window_seconds=3600,
             message="Слишком много запросов на подготовку данных",
         )
-        data = request.json()
-        source_text = str(data.get("text") or "").strip()
-        if len(source_text) < 10:
-            raise HTTPError(400, "Добавьте медицинский текст длиной не менее 10 символов")
-        if len(source_text) > TEXT_MAX_INPUT_CHARS:
-            raise HTTPError(413, f"Текст не должен превышать {TEXT_MAX_INPUT_CHARS:,} символов".replace(",", " "))
-
-        api_url = settings.get("lm_studio_api_url") or self.config.lm_studio_api_url
-        model = settings.get("text_structuring_model") or settings.get("lm_studio_model") or self.config.lm_studio_model
-        timeout_seconds = self.setting_int(settings, "lm_studio_timeout_seconds", self.config.lm_studio_timeout_seconds)
-        max_tokens = self.setting_int(settings, "lm_studio_max_tokens", self.config.lm_studio_max_tokens)
-        queue_timeout_seconds = self.configure_inference_queue(settings)
-        content_sha256 = hashlib.sha256(source_text.encode("utf-8")).hexdigest()
-        response_payload: dict[str, Any] | None = None
-        result: dict[str, Any] | None = None
-        duration_ms = 0
-        queue_wait_ms = 0
-        queue_error = False
-        error = None
-
-        @contextmanager
-        def queued_model_call():
-            nonlocal queue_wait_ms
-            with self.inference_queue.acquire(
-                user_id=user["id"],
-                kind="text_structuring",
-                timeout_seconds=queue_timeout_seconds,
-            ) as lease:
-                queue_wait_ms += lease.wait_ms
-                yield
-
-        try:
-            _, response_payload, result, duration_ms = call_text_structuring(
-                api_url=api_url,
-                model=model,
-                text=source_text,
-                timeout_seconds=timeout_seconds,
-                max_tokens=max_tokens,
-                call_guard=queued_model_call,
-                extra_headers=self.ai_gateway_headers(settings),
-            )
-        except Exception as exc:
-            queue_error = isinstance(exc, InferenceQueueError)
-            queue_wait_ms = max(queue_wait_ms, int(getattr(exc, "wait_ms", 0) or 0))
-            error = str(exc)[:4000]
-            response_payload = getattr(exc, "response_payload", None) or response_payload
-            duration_ms = int(getattr(exc, "duration_ms", 0) or 0)
-            if isinstance(exc, LMStudioError) and not queue_error and isinstance(response_payload, dict):
-                result = {
-                    "corrected_text": source_text[:20000],
-                    "mappings": [],
-                    "warnings": [
-                        "AI не вернул пригодную структуру полей CVD. Исходный текст сохранён для ручной проверки.",
-                        error,
-                    ],
-                }
-
-        metrics = self.model_metrics(response_payload, duration_ms)
-        chunk_count = max(1, int(response_payload.get("chunk_count") or 1)) if response_payload else 1
-        failed_chunk_count = max(0, int(response_payload.get("failed_chunk_count") or 0)) if response_payload else 0
-        with connect(self.config.db_path) as conn:
-            prep_cur = conn.execute(
-                """
-                INSERT INTO data_preparation_requests
-                  (user_id, status, model, input_sha256, chunk_count, mapped_fields, warning_count,
-                   duration_ms, prompt_tokens, completion_tokens, total_tokens,
-                   finish_reason, queue_wait_ms, error, created_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    user["id"],
-                    "success" if result is not None else "error",
-                    model,
-                    content_sha256,
-                    chunk_count,
-                    len(result["mappings"]) if result else 0,
-                    len(result["warnings"]) if result else 0,
-                    duration_ms,
-                    metrics["prompt_tokens"],
-                    metrics["completion_tokens"],
-                    metrics["total_tokens"],
-                    metrics["finish_reason"],
-                    queue_wait_ms,
-                    error,
-                    utc_now(),
-                ),
-            )
-            if result is not None:
-                import_cur = conn.execute(
-                    """
-                    INSERT INTO data_imports
-                      (user_id, case_id, source_format, mapping_version, filename, content_sha256,
-                       mapped_fields, mapped_paths_json, warning_count, selected_paths_json, status, created_at)
-                    VALUES (?, NULL, 'ai-text', ?, ?, ?, ?, ?, ?, '[]', 'previewed', ?)
-                    """,
-                    (
-                        user["id"],
-                        TEXT_STRUCTURING_VERSION,
-                        "Свободный медицинский текст",
-                        content_sha256,
-                        len(result["mappings"]),
-                        json.dumps([item["path"] for item in result["mappings"]], ensure_ascii=False),
-                        len(result["warnings"]),
-                        utc_now(),
-                    ),
-                )
-                import_id = int(import_cur.lastrowid)
-                now_text_item = utc_now()
-                conn.execute(
-                    """
-                    INSERT INTO text_preparation_items
-                      (data_preparation_request_id, import_id, user_id, status, source_label,
-                       input_sha256, corrected_text, mappings_json, warnings_json,
-                       mapped_fields, warning_count, created_at, updated_at)
-                    VALUES (?, ?, ?, 'prepared', ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        prep_cur.lastrowid,
-                        import_id,
-                        user["id"],
-                        "Свободный медицинский текст",
-                        content_sha256,
-                        str(result.get("corrected_text") or "")[:20000],
-                        json.dumps(result["mappings"], ensure_ascii=False),
-                        json.dumps(result["warnings"], ensure_ascii=False),
-                        len(result["mappings"]),
-                        len(result["warnings"]),
-                        now_text_item,
-                        now_text_item,
-                    ),
-                )
-            else:
-                import_id = None
-            audit(
-                conn,
-                user_id=user["id"],
-                action="data_preparation",
-                target_type="data_preparation_request",
-                target_id=prep_cur.lastrowid,
-                details={
-                    "status": "success" if result is not None else "error",
-                    "mapped_fields": len(result["mappings"]) if result else 0,
-                    "chunk_count": chunk_count,
-                    "duration_ms": duration_ms,
-                    "queue_wait_ms": queue_wait_ms,
-                    "failed_chunk_count": failed_chunk_count,
-                },
-            )
-
-        if result is None:
+        source_text = self.parse_structure_text_payload(request, settings)
+        result = self.execute_text_preparation(user=user, source_text=source_text, settings=settings)
+        if not result["ok"]:
             raise HTTPError(
-                429 if queue_error else 502,
+                429 if result.get("queue_error") else 502,
                 "Сервис AI временно не смог подготовить данные. Подробности сохранены для администратора",
             )
-        return self.json_response({
-            "ok": True,
-            "import_id": import_id,
-            "source_format": "ai-text",
-            "mapping_version": TEXT_STRUCTURING_VERSION,
-            "filename": "AI-подготовка текста",
-            "mappings": result["mappings"],
-            "warnings": result["warnings"],
-            "corrected_text": result["corrected_text"],
-            "summary": {"mapped_fields": len(result["mappings"])},
-            "chunk_count": chunk_count,
-            "failed_chunk_count": failed_chunk_count,
-            "duration_ms": duration_ms,
-            "queue_wait_ms": queue_wait_ms,
-            **metrics,
-        })
+        return self.json_response(result)
 
     def list_requests(self, request: Request, user: dict[str, Any]):
         query = str(request.query.get("q", [""])[0]).strip()[:200]
@@ -2563,6 +2772,12 @@ class CVDApplication:
                 "UPDATE inference_jobs SET status = 'queued', started_at = NULL WHERE status = 'running'"
             )
 
+    def recover_interrupted_text_preparation_jobs(self) -> None:
+        with connect(self.config.db_path) as conn:
+            conn.execute(
+                "UPDATE text_preparation_jobs SET status = 'queued', started_at = NULL WHERE status = 'running'"
+            )
+
     def inference_worker_loop(self) -> None:
         while True:
             try:
@@ -2579,23 +2794,41 @@ class CVDApplication:
         with connect(self.config.db_path) as conn:
             job = conn.execute(
                 """
-                SELECT id, user_id, case_id, request_json
-                FROM inference_jobs
-                WHERE status = 'queued'
-                ORDER BY created_at, id
+                SELECT job_type, id, user_id, case_id, request_json
+                FROM (
+                  SELECT 'diagnosis' AS job_type, id, user_id, case_id, request_json, created_at
+                  FROM inference_jobs
+                  WHERE status = 'queued'
+                  UNION ALL
+                  SELECT 'text_preparation' AS job_type, id, user_id, NULL AS case_id, request_json, created_at
+                  FROM text_preparation_jobs
+                  WHERE status = 'queued'
+                )
+                ORDER BY created_at, job_type, id
                 LIMIT 1
                 """
             ).fetchone()
             if not job:
                 return False
-            claimed = conn.execute(
-                "UPDATE inference_jobs SET status = 'running', started_at = ? WHERE id = ? AND status = 'queued'",
-                (now, job["id"]),
-            )
+            if job["job_type"] == "diagnosis":
+                claimed = conn.execute(
+                    "UPDATE inference_jobs SET status = 'running', started_at = ? WHERE id = ? AND status = 'queued'",
+                    (now, job["id"]),
+                )
+            else:
+                claimed = conn.execute(
+                    "UPDATE text_preparation_jobs SET status = 'running', started_at = ? WHERE id = ? AND status = 'queued'",
+                    (now, job["id"]),
+                )
             if claimed.rowcount == 0:
                 return True
             job_data = row_to_dict(job)
 
+        if job_data["job_type"] == "text_preparation":
+            return self.process_text_preparation_job(job_data)
+        return self.process_diagnosis_job(job_data)
+
+    def process_diagnosis_job(self, job_data: dict[str, Any]) -> bool:
         request_id = None
         item_status = "error"
         error = None
@@ -2630,6 +2863,66 @@ class CVDApplication:
                 target_type="inference_job",
                 target_id=job_data["id"],
                 details={"status": item_status, "model_request_id": request_id, "error": bool(error)},
+            )
+        return True
+
+    def process_text_preparation_job(self, job_data: dict[str, Any]) -> bool:
+        item_status = "error"
+        error = None
+        data_preparation_request_id = None
+        import_id = None
+        result_json = None
+        source_text = ""
+        try:
+            payload = json.loads(job_data["request_json"])
+            source_text = str(payload.get("text") or "").strip()
+            if len(source_text) < 10:
+                raise ValueError("Некорректное задание подготовки текста")
+            result = self.execute_text_preparation(
+                user={"id": job_data["user_id"], "role": "user"},
+                source_text=source_text,
+            )
+            data_preparation_request_id = result.get("data_preparation_request_id")
+            import_id = result.get("import_id")
+            item_status = "success" if result.get("ok") else "error"
+            error = result.get("error")
+            if result.get("ok"):
+                result_json = json.dumps(result, ensure_ascii=False)
+        except Exception as exc:
+            error = str(exc)[:4000]
+
+        request_preview_json = json.dumps({"text_preview": source_text[:120]}, ensure_ascii=False) if source_text else job_data.get("request_json") or "{}"
+        with connect(self.config.db_path) as conn:
+            conn.execute(
+                """
+                UPDATE text_preparation_jobs
+                SET status = ?, data_preparation_request_id = ?, import_id = ?, result_json = ?, error = ?,
+                    request_json = ?, finished_at = ?
+                WHERE id = ?
+                """,
+                (
+                    item_status,
+                    data_preparation_request_id,
+                    import_id,
+                    result_json,
+                    error,
+                    request_preview_json,
+                    utc_now(),
+                    job_data["id"],
+                ),
+            )
+            audit(
+                conn,
+                user_id=job_data["user_id"],
+                action="text_preparation_job_finish",
+                target_type="text_preparation_job",
+                target_id=job_data["id"],
+                details={
+                    "status": item_status,
+                    "data_preparation_request_id": data_preparation_request_id,
+                    "import_id": import_id,
+                    "error": bool(error),
+                },
             )
         return True
 

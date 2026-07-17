@@ -90,6 +90,21 @@ CREATE TABLE IF NOT EXISTS inference_jobs (
   finished_at TEXT
 );
 
+CREATE TABLE IF NOT EXISTS text_preparation_jobs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'success', 'error', 'cancelled')),
+  request_json TEXT NOT NULL,
+  input_sha256 TEXT NOT NULL,
+  data_preparation_request_id INTEGER REFERENCES data_preparation_requests(id) ON DELETE SET NULL,
+  import_id INTEGER REFERENCES data_imports(id) ON DELETE SET NULL,
+  result_json TEXT,
+  error TEXT,
+  created_at TEXT NOT NULL,
+  started_at TEXT,
+  finished_at TEXT
+);
+
 CREATE TABLE IF NOT EXISTS audit_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
   user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
@@ -254,6 +269,8 @@ CREATE INDEX IF NOT EXISTS idx_cases_user_updated ON cases(user_id, updated_at D
 CREATE INDEX IF NOT EXISTS idx_requests_user_created ON model_requests(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_inference_jobs_user_created ON inference_jobs(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_inference_jobs_status_created ON inference_jobs(status, created_at);
+CREATE INDEX IF NOT EXISTS idx_text_jobs_user_created ON text_preparation_jobs(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_text_jobs_status_created ON text_preparation_jobs(status, created_at);
 CREATE INDEX IF NOT EXISTS idx_audit_created ON audit_log(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_reviews_request ON model_request_reviews(model_request_id);
 CREATE INDEX IF NOT EXISTS idx_reviews_created ON model_request_reviews(created_at DESC);
@@ -285,6 +302,7 @@ SCHEMA_MIGRATIONS = [
     "0010_gold_release_gate",
     "0011_inference_jobs",
     "0012_q8_streaming_defaults",
+    "0013_text_preparation_jobs",
 ]
 
 
@@ -495,6 +513,30 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
     )
     conn.execute("CREATE INDEX IF NOT EXISTS idx_inference_jobs_user_created ON inference_jobs(user_id, created_at DESC)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_inference_jobs_status_created ON inference_jobs(status, created_at)")
+
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS text_preparation_jobs (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+          status TEXT NOT NULL CHECK (status IN ('queued', 'running', 'success', 'error', 'cancelled')),
+          request_json TEXT NOT NULL,
+          input_sha256 TEXT NOT NULL,
+          data_preparation_request_id INTEGER REFERENCES data_preparation_requests(id) ON DELETE SET NULL,
+          import_id INTEGER REFERENCES data_imports(id) ON DELETE SET NULL,
+          result_json TEXT,
+          error TEXT,
+          created_at TEXT NOT NULL,
+          started_at TEXT,
+          finished_at TEXT
+        )
+        """
+    )
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_text_jobs_user_created ON text_preparation_jobs(user_id, created_at DESC)")
+    conn.execute("CREATE INDEX IF NOT EXISTS idx_text_jobs_status_created ON text_preparation_jobs(status, created_at)")
+    text_job_columns = {row["name"] for row in conn.execute("PRAGMA table_info(text_preparation_jobs)").fetchall()}
+    if text_job_columns and "result_json" not in text_job_columns:
+        conn.execute("ALTER TABLE text_preparation_jobs ADD COLUMN result_json TEXT")
 
     import_columns = {row["name"] for row in conn.execute("PRAGMA table_info(data_imports)").fetchall()}
     if import_columns and "mapping_version" not in import_columns:

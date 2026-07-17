@@ -984,6 +984,48 @@ details.section[open] > summary {
   font-size: 0.9rem;
 }
 
+.active-jobs-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: -2px 0 12px;
+}
+
+.job-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 28px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 3px 9px;
+  background: var(--field-bg);
+  color: var(--text);
+  font-size: 0.78rem;
+  line-height: 1.25;
+}
+
+button.job-chip {
+  cursor: pointer;
+}
+
+.job-chip .muted {
+  color: var(--muted);
+}
+
+.job-chip.warning {
+  border-color: color-mix(in srgb, var(--warning) 40%, var(--border));
+}
+
+.job-chip.ok {
+  border-color: color-mix(in srgb, var(--ok) 40%, var(--border));
+}
+
+.job-chip.error {
+  border-color: color-mix(in srgb, var(--danger) 40%, var(--border));
+}
+
 .draft-banner {
   display: flex;
   align-items: center;

@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.9.7 - 2026-07-17
+
+- Move free-text AI preparation to persistent background jobs that continue after closing the UI.
+- Show active and recently finished diagnosis/text-preparation jobs in the workspace.
+- Process diagnosis and text-preparation jobs through one backend FIFO worker.
+- Restore interrupted text-preparation jobs after restart.
+- Apply per-user AI job limits across both diagnosis and text-preparation jobs.
+- Keep full source text in the job record only until the worker finishes, then retain a preview, hash, metrics, and result.
+- Update Umbrel metadata and image tag for `ghcr.io/granyov/cvd-web:v0.9.7`.
+
 ## v0.9.3 - 2026-07-07
 
 - Add release archive build/publish tooling with SHA-256 checksums.

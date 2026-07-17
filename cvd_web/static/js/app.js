@@ -9,6 +9,7 @@
   const saveStatus = document.getElementById("saveStatus");
   const modelStatus = document.getElementById("modelStatus");
   const queueStatus = document.getElementById("queueStatus");
+  const activeJobsLine = document.getElementById("activeJobsLine");
   const sectionNav = document.getElementById("sectionNav");
   const icdSummary = document.getElementById("icdSummary");
   const patientSnapshot = document.getElementById("patientSnapshot");
@@ -62,6 +63,7 @@
   let structureQueueState = null;
   let structureQueueTimer = null;
   let diagnosisQueueTimer = null;
+  let activeJobsTimer = null;
   let draftSaveTimer = null;
   let suppressDraftSave = false;
   let pendingDraft = null;
@@ -604,6 +606,76 @@
     return new Promise((resolve) => window.setTimeout(resolve, ms));
   }
 
+  function aiJobTitle(job) {
+    return job.type === "text_preparation" ? `Текст #${job.id}` : `Диагноз #${job.id}`;
+  }
+
+  function aiJobStatusText(job) {
+    if (job.status === "queued") return job.position ? `очередь ${job.position}` : "в очереди";
+    if (job.status === "running") return "выполняется";
+    if (job.status === "success") return "готово";
+    if (job.status === "error") return "ошибка";
+    return job.status || "статус";
+  }
+
+  async function openAiJob(job) {
+    if (job.type === "text_preparation") {
+      if (job.status !== "success") {
+        toast(job.status === "error" ? job.error || "Подготовка текста завершилась ошибкой" : "Подготовка текста ещё выполняется");
+        return;
+      }
+      const response = await api(`/api/model/structure-text/jobs/${job.id}`);
+      const result = response.job?.result;
+      if (!result) throw new Error("Результат подготовки текста ещё не сохранён");
+      openImportPreview(result);
+      return;
+    }
+    if (job.type === "diagnosis") {
+      if (job.status !== "success" || !job.model_request_id) {
+        toast(job.status === "error" ? job.error || "AI-анализ завершился ошибкой" : "AI-анализ ещё выполняется");
+        return;
+      }
+      const response = await api(`/api/requests/${job.model_request_id}`);
+      openRequestResult(response.request);
+    }
+  }
+
+  function renderActiveJobs(payload) {
+    if (!activeJobsLine) return;
+    const jobs = payload?.jobs || [];
+    const visible = [
+      ...jobs.filter((job) => ["queued", "running"].includes(job.status)),
+      ...jobs.filter((job) => ["success", "error"].includes(job.status)).slice(0, 3)
+    ].slice(0, 6);
+    activeJobsLine.innerHTML = "";
+    activeJobsLine.classList.toggle("hidden", visible.length === 0);
+    visible.forEach((job) => {
+      const actionable = job.status === "success" && (
+        (job.type === "text_preparation" && job.import_id) ||
+        (job.type === "diagnosis" && job.model_request_id)
+      );
+      const node = document.createElement(actionable ? "button" : "span");
+      if (actionable) node.type = "button";
+      node.className = `job-chip ${job.status === "success" ? "ok" : job.status === "error" ? "error" : "warning"}`;
+      const title = document.createElement("strong");
+      title.textContent = aiJobTitle(job);
+      const state = document.createElement("span");
+      state.className = "muted";
+      state.textContent = aiJobStatusText(job);
+      node.append(title, state);
+      if (actionable) {
+        node.addEventListener("click", () => openAiJob(job).catch((err) => toast(err.message)));
+      }
+      activeJobsLine.appendChild(node);
+    });
+  }
+
+  async function refreshAiJobs() {
+    const payload = await api("/api/ai/jobs");
+    renderActiveJobs(payload);
+    return payload;
+  }
+
   function renderModelMetaGrid(items) {
     const grid = document.createElement("div");
     grid.className = "model-meta-grid";
@@ -966,10 +1038,12 @@
           patient_data: patientData
         })
       });
+      await refreshAiJobs();
       modelStatus.textContent = `задание #${job.job_id} в очереди`;
       while (true) {
         await wait(2000);
         const jobStatus = await api(`/api/model/diagnose/jobs/${job.job_id}`);
+        refreshAiJobs().catch(() => {});
         const item = jobStatus.job || {};
         if (item.status === "queued") {
           modelStatus.textContent = `задание #${item.id} ожидает`;
@@ -1321,18 +1395,12 @@
   }
 
   function closeStructureTextModal() {
-    if (structureTextBusy) {
-      toast("Дождитесь завершения AI-разбора");
-      return;
-    }
     closeModalElement(structureTextModal);
   }
 
   function setStructureTextBusy(busy) {
     structureTextBusy = busy;
     document.getElementById("submitStructureTextButton").disabled = busy;
-    document.getElementById("cancelStructureTextModal").disabled = busy;
-    document.getElementById("closeStructureTextModal").disabled = busy;
   }
 
   function stopStructureTextProgress() {
@@ -1373,30 +1441,21 @@
     structureTextStartedAt = Date.now();
     structureTextChunkEstimate = Math.max(1, Math.ceil(text.length / 1400));
     updateStructureTextProgress();
-    structureTextTimer = window.setInterval(updateStructureTextProgress, 1000);
-    structureQueueTimer = window.setInterval(async () => {
-      try {
-        const status = await api("/api/inference/status");
-        structureQueueState = status.queue?.user?.by_kind?.text_structuring || null;
-        updateStructureTextProgress();
-      } catch (_) {
-        structureQueueState = null;
-      }
-    }, 2000);
     structureTextStatus.className = "pill warning";
     try {
-      const preview = await api("/api/model/structure-text", {
+      const job = await api("/api/model/structure-text/jobs", {
         method: "POST",
         body: JSON.stringify({text})
       });
-      const chunks = Number(preview.chunk_count || 1) > 1 ? ` · частей: ${preview.chunk_count}` : "";
-      const failed = Number(preview.failed_chunk_count || 0);
-      structureTextStatus.textContent = `${failed ? "частично готово" : "готово"} · ${preview.mappings?.length || 0} полей${chunks}`;
-      structureTextStatus.className = `pill ${failed ? "warning" : "ok"}`;
+      structureTextStatus.textContent = `задание #${job.job_id} в очереди`;
+      structureTextStatus.className = "pill warning";
       stopStructureTextProgress();
       setStructureTextBusy(false);
       closeStructureTextModal();
-      openImportPreview(preview);
+      structureTextInput.value = "";
+      updateStructureTextCounter();
+      await refreshAiJobs();
+      toast(`Подготовка текста поставлена в очередь: #${job.job_id}`);
     } catch (error) {
       structureTextStatus.textContent = "ошибка обработки";
       structureTextStatus.className = "pill error";
@@ -1723,5 +1782,9 @@
   document.getElementById("newCaseButton").addEventListener("click", resetCase);
   updatePreview();
   initDraftRestore();
+  refreshAiJobs().catch(() => {});
+  activeJobsTimer = window.setInterval(() => {
+    refreshAiJobs().catch(() => {});
+  }, 5000);
   initializeWorkspace().catch((err) => toast(err.message));
 })();
