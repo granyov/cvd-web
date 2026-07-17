@@ -205,7 +205,7 @@ class OperationsTests(unittest.TestCase):
                 3200,
                 response_payload=response_payload,
             )
-            with patch("cvd_web.app.call_text_structuring", side_effect=error):
+            with patch("cvd_web.handlers_ai.call_text_structuring", side_effect=error):
                 status, _, body = call_wsgi(
                     app,
                     "/api/model/structure-text",
@@ -244,7 +244,7 @@ class OperationsTests(unittest.TestCase):
                 request_body={"model": "test", "max_tokens": 768},
                 response_payload=response_payload,
             )
-            with patch("cvd_web.app.call_lm_studio", side_effect=error):
+            with patch("cvd_web.handlers_ai.call_lm_studio", side_effect=error):
                 result = app.execute_model_request(
                     user_id=1,
                     case_id=None,
@@ -266,7 +266,7 @@ class OperationsTests(unittest.TestCase):
             app,
             "/api/login",
             method="POST",
-            body={"email": "admin@test.local", "password": "admin12345"},
+            body={"email": "admin@test.local", "password": "Test-admin-strong-password-2026"},
         )
         self.assertTrue(status.startswith("200"), body)
         cookie = headers["Set-Cookie"].split(";", 1)[0]
@@ -389,7 +389,7 @@ class OperationsTests(unittest.TestCase):
                 "content": "{}",
             }
             parsed = {"CDS_OUTPUT": {"summary": "Тестовый результат"}}
-            with patch("cvd_web.app.call_lm_studio", return_value=({}, model_response, parsed, 1000)):
+            with patch("cvd_web.handlers_ai.call_lm_studio", return_value=({}, model_response, parsed, 1000)):
                 self.assertTrue(app.process_next_batch_item())
                 self.assertTrue(app.process_next_batch_item())
                 self.assertFalse(app.process_next_batch_item())
@@ -414,7 +414,7 @@ class OperationsTests(unittest.TestCase):
                 "warnings": [],
             }
             with patch(
-                "cvd_web.app.call_text_structuring",
+                "cvd_web.handlers_ai.call_text_structuring",
                 return_value=({}, model_response, structuring_result, 800),
             ):
                 status, _, body = call_wsgi(
@@ -537,7 +537,7 @@ class OperationsTests(unittest.TestCase):
                     100,
                 )
 
-            with patch("cvd_web.app.call_lm_studio", side_effect=model_response) as model_call:
+            with patch("cvd_web.handlers_ai.call_lm_studio", side_effect=model_response) as model_call:
                 processed = 0
                 while app.process_next_inference_job():
                     processed += 1
@@ -636,8 +636,8 @@ class OperationsTests(unittest.TestCase):
                     100,
                 )
 
-            with patch("cvd_web.app.call_lm_studio", side_effect=model_response), patch(
-                "cvd_web.app.call_text_structuring",
+            with patch("cvd_web.handlers_ai.call_lm_studio", side_effect=model_response), patch(
+                "cvd_web.handlers_ai.call_text_structuring",
                 side_effect=text_response,
             ):
                 self.assertTrue(app.process_next_inference_job())

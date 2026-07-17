@@ -40,7 +40,7 @@ def make_test_config(db_path: Path) -> Config:
         cookie_secure=False,
         session_days=7,
         admin_email="admin@test.local",
-        admin_password="admin12345",
+        admin_password="Test-admin-strong-password-2026",
         lm_studio_api_url="http://127.0.0.1:1234/v1/chat/completions",
         lm_studio_model="healtheart-cvd-engine",
         lm_studio_timeout_seconds=5,
@@ -151,7 +151,7 @@ class CoreTests(unittest.TestCase):
                 app,
                 "/api/login",
                 method="POST",
-                body={"email": "admin@test.local", "password": "admin12345"},
+                body={"email": "admin@test.local", "password": "Test-admin-strong-password-2026"},
             )
             self.assertTrue(status.startswith("200"), body)
             cookie = headers["Set-Cookie"].split(";", 1)[0]
@@ -187,7 +187,7 @@ class CoreTests(unittest.TestCase):
                 },
                 "MODEL_OUTPUT": {"Final_model_diagnosis": "ИБС под вопросом", "Model_ICD10_codes": ["I25.9"]},
             }
-            with patch("cvd_web.app.call_lm_studio", return_value=({"messages": []}, {"choices": []}, parsed, 1200)):
+            with patch("cvd_web.handlers_ai.call_lm_studio", return_value=({"messages": []}, {"choices": []}, parsed, 1200)):
                 status, _, body = call_wsgi(
                     app,
                     "/api/model/diagnose",
@@ -563,7 +563,7 @@ class CoreTests(unittest.TestCase):
                 app,
                 "/api/login",
                 method="POST",
-                body={"email": "admin@test.local", "password": "admin12345"},
+                body={"email": "admin@test.local", "password": "Test-admin-strong-password-2026"},
             )
             self.assertTrue(status.startswith("200"), body)
             cookie = headers["Set-Cookie"].split(";", 1)[0]
@@ -817,7 +817,7 @@ class CoreTests(unittest.TestCase):
             self.assertTrue(status.startswith("200"), body)
             security_audit = json.loads(body.decode("utf-8"))
             security_checks = {item["key"]: item for item in security_audit["checks"]}
-            self.assertFalse(security_checks["default_admin_password"]["ok"])
+            self.assertTrue(security_checks["default_admin_password"]["ok"])
             self.assertTrue(security_checks["cloudflared_access_headers"]["ok"])
 
             status, _, body = call_wsgi(app, "/api/admin/audit?limit=10", cookie=cookie)
@@ -840,7 +840,7 @@ class CoreTests(unittest.TestCase):
             self.assertEqual(production_queue["worker_mode"], "external")
             self.assertFalse(production_queue["production_ready"])
 
-            with patch("cvd_web.app.list_lm_models", return_value={"api_version": "v1", "models": [{"id": "healtheart-cvd-engine", "state": "loaded", "loaded_context_length": 8192}]}) as list_models:
+            with patch("cvd_web.handlers_admin.list_lm_models", return_value={"api_version": "v1", "models": [{"id": "healtheart-cvd-engine", "state": "loaded", "loaded_context_length": 8192}]}) as list_models:
                 status, _, body = call_wsgi(
                     app,
                     "/api/admin/ai-gateway/test",
@@ -1272,7 +1272,7 @@ class CoreTests(unittest.TestCase):
                 method="POST",
                 cookie=cookie,
                 csrf=csrf,
-                body={"current_password": "admin12345", "new_password": "too-short"},
+                body={"current_password": "Test-admin-strong-password-2026", "new_password": "too-short"},
             )
             self.assertTrue(status.startswith("400"), body)
 
@@ -1282,8 +1282,52 @@ class CoreTests(unittest.TestCase):
                 method="POST",
                 cookie=cookie,
                 csrf=csrf,
-                body={"current_password": "admin12345", "new_password": "Long-enough-password-2026"},
+                body={"current_password": "Test-admin-strong-password-2026", "new_password": "Long-enough-password-2026"},
             )
+            self.assertTrue(status.startswith("200"), body)
+
+    def test_default_admin_password_forces_change_before_other_apis(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            config = make_test_config(Path(tmp) / "cvd.sqlite3")
+            config = Config(**{**config.__dict__, "admin_password": "admin12345"})
+            app = CVDApplication(config, start_batch_worker=False)
+
+            status, headers, body = call_wsgi(
+                app,
+                "/api/login",
+                method="POST",
+                body={"email": "admin@test.local", "password": "admin12345"},
+            )
+            self.assertTrue(status.startswith("200"), body)
+            cookie = headers["Set-Cookie"].split(";", 1)[0]
+
+            status, _, body = call_wsgi(app, "/api/me", cookie=cookie)
+            self.assertTrue(status.startswith("200"), body)
+            me = json.loads(body.decode("utf-8"))
+            self.assertTrue(me["user"]["must_change_password"])
+            csrf = me["csrfToken"]
+
+            status, _, body = call_wsgi(app, "/api/cases", cookie=cookie)
+            self.assertTrue(status.startswith("403"), body)
+
+            status, headers, _ = call_wsgi(app, "/cases", cookie=cookie)
+            self.assertTrue(status.startswith("302"), status)
+            self.assertEqual(dict(headers).get("Location"), "/app")
+
+            status, _, body = call_wsgi(app, "/api/admin/security-audit", cookie=cookie)
+            self.assertTrue(status.startswith("403"), body)
+
+            status, _, body = call_wsgi(
+                app,
+                "/api/me/password",
+                method="POST",
+                cookie=cookie,
+                csrf=csrf,
+                body={"current_password": "admin12345", "new_password": "Fresh-strong-password-2026"},
+            )
+            self.assertTrue(status.startswith("200"), body)
+
+            status, _, body = call_wsgi(app, "/api/cases", cookie=cookie)
             self.assertTrue(status.startswith("200"), body)
 
     def test_login_rate_limit(self):

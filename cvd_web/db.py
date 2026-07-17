@@ -339,12 +339,13 @@ def init_db(config: Config) -> None:
                 """
                 INSERT INTO users
                   (email, full_name, password_hash, role, is_active, must_change_password, created_at, updated_at)
-                VALUES (?, ?, ?, 'admin', 1, 1, ?, ?)
+                VALUES (?, ?, ?, 'admin', 1, ?, ?, ?)
                 """,
                 (
                     config.admin_email.lower().strip(),
                     "Initial administrator",
                     hash_password(config.admin_password),
+                    1 if config.admin_password in DEFAULT_ADMIN_PASSWORDS else 0,
                     now,
                     now,
                 ),
