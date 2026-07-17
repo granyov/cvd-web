@@ -1,6 +1,6 @@
 # CVD Web
 
-**Текущая версия: `v0.9.8`**
+**Текущая версия: `v0.9.9`**
 
 Веб-приложение для структурированных CVD-кейсов, простой авторизации, админки пользователей и журналирования запросов к LM Studio.
 
@@ -43,6 +43,15 @@
 - Админская аналитика качества данных: средняя заполненность, готовность, сигналы и пропущенные обязательные поля.
 - Dashboard качества моделей: сравнение моделей по Gold Set, экспертным оценкам, unsafe-rate, скорости и успешности запросов.
 - Production-надежность: admin backup/download/restore SQLite, readiness-настройки Redis/PostgreSQL очереди и расширенный monitoring LM Studio.
+- Принудительная смена пароля администратора при входе с паролем по умолчанию: остальные API блокируются до смены пароля.
+- Защита от потери данных анкеты: локальный черновик, предупреждение при закрытии вкладки и индикатор несохранённых изменений.
+- Быстрое продолжение работы: последние кейсы на стартовом экране рабочего места.
+- Уведомления о готовности фоновых AI-заданий: тост, бейдж в заголовке вкладки и браузерное уведомление.
+- Референсные интервалы у числовых полей с подсветкой значений вне диапазона при вводе.
+- Понятные ошибки AI-анализа с советом по устранению и кнопкой повтора.
+- Горячие клавиши: Ctrl/Cmd+S — сохранить кейс, Alt+N — к первому незаполненному ключевому полю.
+- Синтетический демо-кейс одной кнопкой для оценки продукта (`POST /api/cases/demo`).
+- Планшетная вёрстка: рабочее место, архив и админка без горизонтальной прокрутки от 768px.
 - Светлая и тёмная темы с переключателем.
 - Базовые защитные меры: CSRF, Fetch Metadata/Origin checks, security headers, лимит размера JSON, парольная политика и in-memory rate limit для логина/запросов к модели.
 - Без обязательных pip/npm зависимостей, только Python 3.11+ stdlib.
@@ -56,10 +65,10 @@
 ### Сборка архива
 
 ```bash
-scripts/build_release.sh --version v0.9.8
+scripts/build_release.sh --version v0.9.9
 ```
 
-Скрипт запускает Python-тесты, собирает `dist/cvd-web-v0.9.8.tar.gz` и создаёт рядом `.sha256`. Этот архив можно передать в WSL2 или на VPS, распаковать и запустить bundled `install.sh`.
+Скрипт запускает Python-тесты, собирает `dist/cvd-web-v0.9.9.tar.gz` и создаёт рядом `.sha256`. Этот архив можно передать в WSL2 или на VPS, распаковать и запустить bundled `install.sh`.
 
 ### Компьютер в домашней сети
 
@@ -105,7 +114,7 @@ journalctl --user -u cvd-web.service -f
 
 ```bash
 scripts/install_from_release.sh \
-  --url https://storage.example.com/cvd-web/v0.9.8/cvd-web-v0.9.8.tar.gz \
+  --url https://storage.example.com/cvd-web/v0.9.9/cvd-web-v0.9.9.tar.gz \
   --sha256 <archive-sha256> \
   -- --target local
 ```
@@ -127,8 +136,8 @@ scripts/install_from_release.sh -- --target local --unattended
 export GH_TOKEN=<github-token-with-repo-or-public_repo-scope>
 export GH_REPO=<owner>/<repo>
 scripts/publish_github_release.sh \
-  --tag v0.9.8 \
-  --archive /workspace/cvd-web-release/cvd-web-v0.9.8.tar.gz
+  --tag v0.9.9 \
+  --archive /workspace/cvd-web-release/cvd-web-v0.9.9.tar.gz
 ```
 
 Скрипт проверит авторизацию `gh`, создаст release, если его ещё нет, или перезальёт архив и `.sha256` через `gh release upload --clobber`, если release уже существует.
@@ -265,7 +274,7 @@ docker compose up -d --build
 https://github.com/granyov/cvd-web
 ```
 
-Umbrel package находится в `granyov-cvd-web/` и использует image `ghcr.io/granyov/cvd-web:v0.9.8`. GitHub Actions workflow `Docker Image` публикует этот image в GHCR на tag `v*` или при ручном запуске workflow. Иконка приложения задаётся абсолютным URL `https://raw.githubusercontent.com/granyov/cvd-web/main/granyov-cvd-web/icon.svg`, чтобы Community App Store корректно показывал её в UI Umbrel.
+Umbrel package находится в `granyov-cvd-web/` и использует image `ghcr.io/granyov/cvd-web:v0.9.9`. GitHub Actions workflow `Docker Image` публикует этот image в GHCR на tag `v*` или при ручном запуске workflow. Иконка приложения задаётся абсолютным URL `https://raw.githubusercontent.com/granyov/cvd-web/main/granyov-cvd-web/icon.svg`, чтобы Community App Store корректно показывал её в UI Umbrel.
 
 Данные приложения хранятся в `${APP_DATA_DIR}/data` и монтируются в контейнер как `/app/data`. Первый вход в Umbrel-сборке:
 
@@ -279,7 +288,7 @@ UmbrelCVD2026Pass!
 Проверка доступности AI Gateway из Docker на Umbrel:
 
 ```bash
-sudo docker run --rm ghcr.io/granyov/cvd-web:v0.9.8 python -c 'from cvd_web.lmstudio import call_json_lm_studio; req={"model":"medgemma-27b-text-it@q8_0","messages":[{"role":"user","content":"Respond with OK only."}],"max_tokens":4,"temperature":0,"stream":True}; print(call_json_lm_studio(api_url="https://api-cvd.granyov.com/v1/chat/completions", request_body=req, timeout_seconds=30)[1])'
+sudo docker run --rm ghcr.io/granyov/cvd-web:v0.9.9 python -c 'from cvd_web.lmstudio import call_json_lm_studio; req={"model":"medgemma-27b-text-it@q8_0","messages":[{"role":"user","content":"Respond with OK only."}],"max_tokens":4,"temperature":0,"stream":True}; print(call_json_lm_studio(api_url="https://api-cvd.granyov.com/v1/chat/completions", request_body=req, timeout_seconds=30)[1])'
 ```
 
 ### Backup SQLite

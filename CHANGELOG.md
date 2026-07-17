@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.9.9 - 2026-07-17
+
+- Force administrators who sign in with a default password to set a new one before using any other part of the application.
+- Only flag the bootstrap administrator for a forced password change when the configured password is a known default, keeping unattended installs with strong passwords untouched.
+- Protect unsaved patient-form data with a beforeunload warning, synchronous draft flush, and an unsaved-changes indicator.
+- Show recent cases on the workspace start screen for one-click resume.
+- Notify about finished background AI jobs with a toast, tab-title badge, and desktop notification when the tab is hidden.
+- Show adult reference ranges next to 30+ numeric fields and highlight out-of-range values while typing.
+- Replace raw AI failures with an actionable error card (cause, advice, retry button).
+- Add Ctrl/Cmd+S to save the case and Alt+N to jump to the first missing key field.
+- Add a one-click synthetic demo case (`POST /api/cases/demo`) in the workspace and empty archive.
+- Add call-to-action empty states in the case archive and the admin activity chart.
+- Translate the remaining English admin navigation and backup texts into Russian.
+- Fix tablet layouts: no horizontal overflow at 768px, wrapping top bar.
+- Split the 4400-line `app.py` into domain handler mixins with a shared HTTP core; no behavior change.
+- Add WSGI-level smoke tests covering login, case lifecycle, demo case with FHIR export, archive filters, admin dashboards, and logout.
+- Update Umbrel metadata and image tag for `ghcr.io/granyov/cvd-web:v0.9.9`.
+
 ## v0.9.8 - 2026-07-17
 
 - Reorganize patient-data sections into clinical groups for anamnesis, objective status, laboratory tests, instrumental studies, and treatment/conclusion.

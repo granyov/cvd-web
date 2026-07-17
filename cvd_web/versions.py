@@ -1,4 +1,4 @@
-APP_VERSION = "v0.9.8"
+APP_VERSION = "v0.9.9"
 PATIENT_SCHEMA_VERSION = "cvd-schema-2026-06-27"
 MODEL_PROMPT_VERSION = "cvd-cds-prompt-v4"
 MODEL_OUTPUT_SCHEMA_VERSION = "cvd-cds-output-v3"

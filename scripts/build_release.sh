@@ -56,6 +56,7 @@ log "Running Python tests before packaging"
 log "Building $ARCHIVE_PATH"
 tar -C "$ROOT_DIR" \
   --exclude='.git' \
+  --exclude='.claude' \
   --exclude='.env' \
   --exclude='data' \
   --exclude='backups' \
