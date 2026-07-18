@@ -9,74 +9,71 @@
   <link rel="stylesheet" href="/static/css/styles.css">
 </head>
 <body data-theme="{{default_theme}}">
-  <div class="emoji-layer" aria-hidden="true">
-    <span>🫀</span><span>🩺</span><span>💊</span><span>💉</span><span>🧬</span>
-    <span>🧪</span><span>🩹</span><span>🩻</span><span>⚕️</span><span>🩸</span>
-    <span>🧫</span><span>🌡️</span><span>🧠</span><span>🫁</span><span>🦷</span>
-    <span>👩‍⚕️</span><span>👨‍⚕️</span><span>🏥</span><span>🚑</span><span>🧑‍⚕️</span>
-  </div>
+  <svg style="display:none" aria-hidden="true">
+    <symbol id="i-plus" viewBox="0 0 24 24"><path d="M12 5v14M5 12h14"/></symbol>
+    <symbol id="i-save" viewBox="0 0 24 24"><path d="M19 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11l5 5v11a2 2 0 0 1-2 2z"/><path d="M17 21v-8H7v8M7 3v5h8"/></symbol>
+    <symbol id="i-upload" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12"/></symbol>
+    <symbol id="i-file-text" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6M16 13H8M16 17H8"/></symbol>
+    <symbol id="i-shield-check" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></symbol>
+    <symbol id="i-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></symbol>
+    <symbol id="i-flask" viewBox="0 0 24 24"><path d="M9 3h6M10 3v6L4.5 19a1.7 1.7 0 0 0 1.6 2.4h11.8a1.7 1.7 0 0 0 1.6-2.4L14 9V3"/></symbol>
+  </svg>
   <header class="topbar">
-    <div>
-      <div class="brand">{{app_name}} <span class="pill">{{app_version}}</span></div>
-    </div>
+    <div class="brand">{{app_name}} <span class="pill">{{app_version}}</span></div>
     <nav class="nav">
-      <span id="userLabel" class="pill"></span>
-      <a class="button" href="/cases">Кейсы и история</a>
-      <a id="adminLink" class="button hidden" href="/admin">Админка</a>
-      <select id="interfaceModeSelect" class="mode-select" aria-label="Режим интерфейса">
-        <option value="doctor">Врач</option>
-        <option value="researcher">Исследователь</option>
-        <option value="admin">Админ</option>
-      </select>
-      <button type="button" data-theme-toggle>Тема</button>
-      <button id="changePasswordButton" type="button">Сменить пароль</button>
-      <button id="logoutButton" type="button">Выйти</button>
+      <a class="nav-link active" href="/app">Рабочее место</a>
+      <a class="nav-link" href="/cases">Кейсы и история</a>
+      <a id="adminLink" class="nav-link hidden" href="/admin">Админка</a>
+      <div class="user-menu" data-menu>
+        <button type="button" class="user-menu-button" data-menu-toggle aria-haspopup="true" aria-expanded="false">
+          <span id="userLabel"></span>
+        </button>
+        <div class="dropdown-menu hidden" data-menu-panel>
+          <label class="dropdown-field">Режим интерфейса
+            <select id="interfaceModeSelect" class="mode-select" aria-label="Режим интерфейса">
+              <option value="doctor">Врач</option>
+              <option value="researcher">Исследователь</option>
+              <option value="admin">Админ</option>
+            </select>
+          </label>
+          <button type="button" data-theme-toggle>Тёмная тема</button>
+          <button id="changePasswordButton" type="button">Сменить пароль</button>
+          <button id="logoutButton" type="button">Выйти</button>
+        </div>
+      </div>
     </nav>
   </header>
 
   <main class="container">
-    <div class="clinical-hero">
-      <div>
-        <p class="eyebrow">{{organization_name}}</p>
-        <h1>Кардиологический кейс</h1>
-      </div>
-    </div>
-
     <div class="layout">
       <section class="panel">
         <div class="panel-header">
-          <h2>Данные пациента</h2>
-          <div class="toolbar workflow-actions" aria-label="Действия с кейсом">
-            <div class="action-group">
-              <button type="button" id="newCaseButton">Новый кейс</button>
-              <button type="button" id="importJsonButton">Импорт</button>
-              <button type="button" id="structureTextButton">AI-подготовка</button>
-            </div>
-            <div class="action-group secondary-actions">
-              <button type="button" id="downloadJsonButton">JSON</button>
-              <button type="button" id="reviewButton">Проверить</button>
-              <button type="button" id="demoCaseButton" title="Создать синтетический демо-кейс с заполненной анкетой">Демо-кейс</button>
-            </div>
-            <button type="button" id="saveCaseButton" title="Сохранить кейс (Ctrl/Cmd+S)">Сохранить</button>
-            <button type="button" id="diagnoseButton" class="primary">Запустить AI-анализ</button>
-            <input id="importJsonInput" class="hidden" type="file" accept="application/json,application/xml,text/xml,.json,.xml">
-          </div>
-        </div>
-        <div class="panel-body">
-          <div class="workflow-strip" aria-label="Маршрут кейса">
-            <span class="workflow-step active" id="workflowStepData">1. Данные</span>
-            <span class="workflow-step" id="workflowStepCheck">2. Проверка</span>
-            <span class="workflow-step" id="workflowStepAi">3. AI-анализ</span>
-            <span class="workflow-step" id="workflowStepResult">4. Результат</span>
-          </div>
-          <div class="next-action-card" id="nextActionCard" role="status" aria-live="polite">
-            <strong>Следующее действие</strong>
-            <span id="nextActionText">Заполните ключевые поля пациента.</span>
-          </div>
-          <div class="status-line" style="margin-bottom: 12px;">
+          <div class="case-context">
             <span id="saveStatus" class="pill">не сохранено</span>
             <span id="modelStatus" class="pill">AI не запускался</span>
             <span id="queueStatus" class="pill hidden">очередь AI</span>
+          </div>
+          <div class="toolbar workflow-actions" aria-label="Действия с кейсом">
+            <button type="button" id="newCaseButton"><svg class="icon"><use href="#i-plus"/></svg>Новый кейс</button>
+            <button type="button" id="saveCaseButton" title="Сохранить кейс (Ctrl/Cmd+S)"><svg class="icon"><use href="#i-save"/></svg>Сохранить</button>
+            <button type="button" id="diagnoseButton" class="primary">Запустить AI-анализ</button>
+            <div class="more-menu" data-menu>
+              <button type="button" id="moreActionsButton" data-menu-toggle aria-haspopup="true" aria-expanded="false">Ещё</button>
+              <div class="dropdown-menu hidden" data-menu-panel>
+                <button type="button" id="importJsonButton" title="JSON пациента, FHIR Bundle, CDA/СЭМД XML или PDF из ЕМИАС.ИНФО"><svg class="icon"><use href="#i-upload"/></svg>Импорт файла…</button>
+                <button type="button" id="structureTextButton"><svg class="icon"><use href="#i-file-text"/></svg>AI-подготовка текста…</button>
+                <button type="button" id="reviewButton"><svg class="icon"><use href="#i-shield-check"/></svg>Проверка перед AI…</button>
+                <button type="button" id="downloadJsonButton"><svg class="icon"><use href="#i-download"/></svg>Скачать JSON</button>
+                <button type="button" id="demoCaseButton" title="Создать синтетический демо-кейс с заполненной анкетой"><svg class="icon"><use href="#i-flask"/></svg>Демо-кейс</button>
+              </div>
+            </div>
+            <input id="importJsonInput" class="hidden" type="file" accept="application/json,application/xml,text/xml,application/pdf,.json,.xml,.pdf">
+          </div>
+        </div>
+        <div class="panel-body">
+          <div class="next-action-line" id="nextActionCard" role="status" aria-live="polite">
+            <strong>Далее:</strong>
+            <span id="nextActionText">Заполните ключевые поля пациента.</span>
           </div>
           <div id="activeJobsLine" class="active-jobs-line hidden" aria-live="polite"></div>
           <div id="draftBanner" class="draft-banner hidden" role="status" aria-live="polite">
@@ -90,7 +87,6 @@
             <strong>Продолжить работу</strong>
             <div id="recentCasesList" class="recent-cases-list"></div>
           </div>
-          <nav id="sectionNav" class="section-nav" aria-label="Навигация по разделам формы"></nav>
           <div id="aiErrorCard" class="ai-error-card hidden" role="alert">
             <div class="ai-error-body">
               <strong>AI-анализ не выполнен</strong>
@@ -112,9 +108,9 @@
 
       <aside class="panel">
         <div class="tabs">
-          <button type="button" class="tab active" data-tab="quality">1. Проверка</button>
-          <button type="button" class="tab" data-tab="json">2. JSON</button>
-          <button type="button" class="tab" data-tab="model">3. Ответ модели</button>
+          <button type="button" class="tab active" data-tab="quality">Проверка</button>
+          <button type="button" class="tab" data-tab="json">JSON</button>
+          <button type="button" class="tab hidden" id="modelTabButton" data-tab="model">Результат</button>
         </div>
         <div class="panel-body">
           <section id="tab-quality">
@@ -131,9 +127,7 @@
               <h3>Сигналы по данным</h3>
               <div id="signalsPanel" class="quality-list"></div>
             </div>
-            <div class="notice safety-note">
-              Результат AI-анализа требует проверки врачом.
-            </div>
+            <p class="safety-footnote">Результат AI-анализа требует проверки врачом.</p>
           </section>
           <section id="tab-json" class="hidden">
             <div class="toolbar" style="margin-bottom: 10px;">
@@ -150,8 +144,8 @@
     <div class="modal-card model-result-card">
       <div class="modal-header">
         <div>
-          <h2 id="modelResultModalTitle">Ответ модели</h2>
-          <p class="muted">Структурированный результат, экспертная оценка и технический JSON.</p>
+          <h2 id="modelResultModalTitle">Результат AI-анализа</h2>
+          <p class="muted">Проверьте заключение, сохраните экспертную оценку и при необходимости обновите анализ.</p>
         </div>
         <button type="button" id="closeModelResultModal" aria-label="Закрыть">×</button>
       </div>
@@ -203,6 +197,7 @@
       <div class="modal-footer">
         <span class="muted">Используйте результат только после врачебной проверки.</span>
         <div class="toolbar">
+          <button type="button" id="rerunAnalysisButton" class="primary">Обновить анализ</button>
           <button type="button" id="closeModelResultFooter">Закрыть</button>
         </div>
       </div>
@@ -309,7 +304,7 @@
       <form id="structureTextForm" class="modal-body">
         <div class="field">
           <label for="structureTextInput">Медицинская запись <span id="structureTextCounter" class="key">0 / 10000</span></label>
-          <textarea id="structureTextInput" name="text" class="source-textarea" maxlength="10000" required placeholder="Вставьте жалобы, анамнез, результаты осмотра, исследований и назначения..."></textarea>
+          <textarea id="structureTextInput" name="text" class="source-textarea" maxlength="10000" required placeholder="Вставьте текст протокола или выписки (например, из ЕМИАС): жалобы, анамнез, осмотр, исследования, назначения... Или загрузите PDF через «Ещё» → «Импорт файла»."></textarea>
         </div>
         <div class="notice safety-note">Используйте синтетические или деидентифицированные данные. Перед применением каждое извлечённое поле нужно проверить.</div>
         <div id="structureTextError" class="notice error-note hidden" role="alert"></div>

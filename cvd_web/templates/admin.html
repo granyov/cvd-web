@@ -9,25 +9,28 @@
   <link rel="stylesheet" href="/static/css/styles.css">
 </head>
 <body data-theme="{{default_theme}}">
-  <div class="emoji-layer" aria-hidden="true">
-    <span>🫀</span><span>🩺</span><span>💊</span><span>💉</span><span>🧬</span>
-    <span>🧪</span><span>🩹</span><span>🩻</span><span>⚕️</span><span>🩸</span>
-    <span>🧫</span><span>🌡️</span><span>🧠</span><span>🫁</span><span>🦷</span>
-    <span>👩‍⚕️</span><span>👨‍⚕️</span><span>🏥</span><span>🚑</span><span>🧑‍⚕️</span>
-  </div>
   <header class="topbar">
-    <div>
-      <div class="brand">{{app_name}} - админка <span class="pill">{{app_version}}</span></div>
-    </div>
+    <div class="brand">{{app_name}} - админка <span class="pill">{{app_version}}</span></div>
     <nav class="nav">
-      <a class="button" href="/app">Рабочее место</a>
-      <select id="adminModeSelect" class="mode-select" aria-label="Плотность админки">
-        <option value="admin">Админ</option>
-        <option value="researcher">Исследователь</option>
-        <option value="doctor">Врач</option>
-      </select>
-      <button type="button" data-theme-toggle>Тема</button>
-      <button id="logoutButton" type="button">Выйти</button>
+      <a class="nav-link" href="/app">Рабочее место</a>
+      <a class="nav-link" href="/cases">Кейсы и история</a>
+      <a class="nav-link active" href="/admin">Админка</a>
+      <div class="user-menu" data-menu>
+        <button type="button" class="user-menu-button" data-menu-toggle aria-haspopup="true" aria-expanded="false">
+          <span id="userLabel"></span>
+        </button>
+        <div class="dropdown-menu hidden" data-menu-panel>
+          <label class="dropdown-field">Плотность админки
+            <select id="adminModeSelect" class="mode-select" aria-label="Плотность админки">
+              <option value="admin">Админ</option>
+              <option value="researcher">Исследователь</option>
+              <option value="doctor">Врач</option>
+            </select>
+          </label>
+          <button type="button" data-theme-toggle>Тёмная тема</button>
+          <button id="logoutButton" type="button">Выйти</button>
+        </div>
+      </div>
     </nav>
   </header>
 
