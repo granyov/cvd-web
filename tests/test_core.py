@@ -272,6 +272,87 @@ class CoreTests(unittest.TestCase):
         self.assertIn("Контроль АД до целевых значений.", report)
         self.assertIn("Отказ от курения", report)
 
+    def test_html_report_is_a_printable_document(self):
+        report = build_html_report(
+            {
+                "GENERAL_INFO": {"Patient_ID": "CVD-77", "Full_name": "Демо Пациент", "Age": 62, "Sex": "male"},
+                "FINAL_DIAGNOSES": {
+                    "Main_cardiovascular_diagnosis_text": "ИБС: стабильная стенокардия II ФК",
+                    "ICD10_codes": ["I20.8", "I10"],
+                },
+            },
+            {
+                "CDS_OUTPUT": {
+                    "summary": "Клиническая картина стабильной стенокардии.",
+                    "possible_diagnoses": [
+                        {"name": "ИБС", "icd10_codes": ["I20.8"], "confidence": "high", "supporting_findings": ["боль"]}
+                    ],
+                    "red_flags": [],
+                    "missing_data": [],
+                    "recommended_next_data": [],
+                    "limitations": [],
+                    "model_should_abstain": False,
+                },
+                "MODEL_OUTPUT": {
+                    "Final_model_diagnosis": "ИБС: стабильная стенокардия напряжения II ФК",
+                    "Model_ICD10_codes": ["I20.8", "I10"],
+                    "Model_treatment_recommendations": "Контроль АД.",
+                    "Model_rehabilitation_recommendations": "Отказ от курения.",
+                },
+            },
+            {
+                "request_id": 12,
+                "case_id": 5,
+                "generated_at": "2026-07-18T22:52:15+00:00",
+                "doctor_name": "Иванов И.И.",
+                "organization_name": "Health Heart",
+            },
+        )
+        # Заключение идёт до обоснования: врач видит главное первым.
+        self.assertLess(report.index("Заключение</h2>"), report.index("Обоснование AI"))
+        self.assertIn("Диагноз врача", report)
+        self.assertIn("ИБС: стабильная стенокардия II ФК", report)
+        self.assertIn("Черновик AI", report)
+        self.assertIn("ИБС: стабильная стенокардия напряжения II ФК", report)
+        # Человеческая дата вместо ISO.
+        self.assertIn("18 июля 2026, 22:52", report)
+        self.assertNotIn("2026-07-18T22:52:15", report)
+        # Подпись врача и колонтитул для печати.
+        self.assertIn("Иванов И.И.", report)
+        self.assertIn("Подпись", report)
+        self.assertIn("running-head", report)
+        self.assertIn("@page", report)
+        self.assertIn("hide-appendix", report)
+        # Исходные данные — приложением, с новой страницы.
+        self.assertIn("Приложение: исходные данные пациента", report)
+        self.assertIn("break-before:page", report)
+        self.assertIn("Кейс №5", report)
+
+    def test_html_report_falls_back_to_leading_ai_diagnosis_and_marks_abstain(self):
+        report = build_html_report(
+            {"GENERAL_INFO": {"Patient_ID": "CVD-78"}},
+            {
+                "CDS_OUTPUT": {
+                    "summary": "Данных недостаточно.",
+                    "possible_diagnoses": [],
+                    "red_flags": [],
+                    "missing_data": [],
+                    "recommended_next_data": [],
+                    "limitations": [],
+                    "model_should_abstain": True,
+                },
+                "MODEL_OUTPUT": {
+                    "Final_model_diagnosis": "",
+                    "Model_ICD10_codes": [],
+                    "Model_treatment_recommendations": "",
+                    "Model_rehabilitation_recommendations": "",
+                },
+            },
+            {"request_id": 13},
+        )
+        self.assertIn("AI воздержался от заключения", report)
+        self.assertIn("Рабочий диагноз врача не заполнен", report)
+
     def test_html_report_omits_recommendations_when_model_did_not_provide_them(self):
         report = build_html_report(
             {"GENERAL_INFO": {"Patient_ID": "CASE-2"}},
@@ -1028,7 +1109,7 @@ class CoreTests(unittest.TestCase):
             self.assertTrue(status.startswith("200"), body)
             self.assertEqual(report_headers["Content-Type"], "text/html; charset=utf-8")
             self.assertIn(f"cvd-report-{request_id}.html", report_headers["Content-Disposition"])
-            self.assertIn("Распечатать", body.decode("utf-8"))
+            self.assertIn("Печать / Сохранить PDF", body.decode("utf-8"))
             self.assertNotIn("healtheart-cvd-engine", body.decode("utf-8"))
             self.assertNotIn("LM Studio", body.decode("utf-8"))
 

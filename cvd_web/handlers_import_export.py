@@ -318,7 +318,9 @@ class ImportExportMixin:
                     "organization_name": settings.get("organization_name", ""),
                     "generated_at": utc_now(),
                     "request_id": row["id"],
+                    "case_id": row["case_id"],
                     "duration_ms": row["duration_ms"],
+                    "doctor_name": user.get("full_name") or "",
                 },
             )
             audit(

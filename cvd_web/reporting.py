@@ -56,8 +56,26 @@ FIELD_LABELS = {
 }
 
 
+MONTHS_RU = (
+    "января", "февраля", "марта", "апреля", "мая", "июня",
+    "июля", "августа", "сентября", "октября", "ноября", "декабря",
+)
+
+
 def _is_filled(value: Any) -> bool:
     return value is not None and value != "" and value != []
+
+
+def _human_datetime(value: Any) -> str:
+    """ISO-время -> «18 июля 2026, 22:52» для печатного документа."""
+    raw = str(value or "").strip()
+    if not raw:
+        return ""
+    try:
+        moment = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return raw
+    return f"{moment.day} {MONTHS_RU[moment.month - 1]} {moment.year}, {moment:%H:%M}"
 
 
 def _text(value: Any) -> str:
@@ -142,6 +160,59 @@ def _recommendations_block(model_output: dict[str, Any]) -> str:
     )
 
 
+def _codes_html(codes: Any) -> str:
+    items = codes if isinstance(codes, list) else []
+    chips = "".join(f"<span class=\"code\">{escape(_text(code))}</span>" for code in items if _is_filled(code))
+    return chips or "<span class=\"muted\">коды не указаны</span>"
+
+
+def _conclusion_block(patient_data: dict[str, Any], cds: dict[str, Any], model_output: dict[str, Any]) -> str:
+    """Заключение первым экраном: диагноз врача рядом с черновиком AI."""
+    final = patient_data.get("FINAL_DIAGNOSES") if isinstance(patient_data.get("FINAL_DIAGNOSES"), dict) else {}
+    doctor_diagnosis = _text(final.get("Main_cardiovascular_diagnosis_text") or "")
+    doctor_codes = final.get("ICD10_codes")
+    ai_diagnosis = _text(model_output.get("Final_model_diagnosis") or "")
+    if not ai_diagnosis:
+        diagnoses = cds.get("possible_diagnoses") if isinstance(cds.get("possible_diagnoses"), list) else []
+        lead = diagnoses[0] if diagnoses and isinstance(diagnoses[0], dict) else {}
+        ai_diagnosis = _text(lead.get("name") or "")
+        ai_codes = lead.get("icd10_codes")
+    else:
+        ai_codes = model_output.get("Model_ICD10_codes")
+    abstained = bool(cds.get("model_should_abstain"))
+
+    doctor_html = (
+        f"<p class=\"conclusion-text\">{escape(doctor_diagnosis)}</p><div class=\"codes\">{_codes_html(doctor_codes)}</div>"
+        if doctor_diagnosis
+        else "<p class=\"muted\">Рабочий диагноз врача не заполнен.</p>"
+    )
+    if abstained:
+        ai_html = "<p class=\"conclusion-text muted\">AI воздержался от заключения: данных недостаточно.</p>"
+    elif ai_diagnosis:
+        ai_html = f"<p class=\"conclusion-text\">{escape(ai_diagnosis)}</p><div class=\"codes\">{_codes_html(ai_codes)}</div>"
+    else:
+        ai_html = "<p class=\"muted\">Заключение AI отсутствует.</p>"
+
+    return (
+        "<section class=\"conclusion\">"
+        "<div class=\"conclusion-col\"><h3>Диагноз врача</h3>" + doctor_html + "</div>"
+        "<div class=\"conclusion-col ai\"><h3>Черновик AI</h3>" + ai_html + "</div>"
+        "</section>"
+    )
+
+
+def _signature_block(metadata: dict[str, Any]) -> str:
+    doctor = _text(metadata.get("doctor_name") or "")
+    doctor_line = escape(doctor) if doctor else "&nbsp;"
+    return (
+        "<section class=\"signature\">"
+        "<div><span class=\"sig-label\">Врач</span><div class=\"sig-line\">" + doctor_line + "</div></div>"
+        "<div><span class=\"sig-label\">Подпись</span><div class=\"sig-line\">&nbsp;</div></div>"
+        "<div><span class=\"sig-label\">Дата</span><div class=\"sig-line\">&nbsp;</div></div>"
+        "</section>"
+    )
+
+
 def build_html_report(
     patient_data: dict[str, Any],
     parsed_output: dict[str, Any],
@@ -159,17 +230,33 @@ def build_html_report(
     organization = _text(metadata.get("organization_name") or "")
     request_id = _text(metadata.get("request_id") or "-")
     duration_ms = int(metadata.get("duration_ms") or 0)
+    case_id = _text(metadata.get("case_id") or "")
+    generated_human = _human_datetime(generated_at) or generated_at
+    general_info = general
+    age = _text(general_info.get("Age") or "")
+    sex_map = {"male": "муж.", "female": "жен.", "other": "иное", "unknown": "не указан"}
+    sex = sex_map.get(str(general_info.get("Sex") or ""), "")
+    patient_facts = " · ".join(
+        part for part in (
+            f"ID случая: {patient_id}",
+            f"Кейс №{case_id}" if case_id else "",
+            f"{age} лет" if age else "",
+            sex,
+        ) if part
+    )
     report_details = [
-        f"Запрос: #{request_id}",
-        f"Длительность: {duration_ms / 1000:.1f} с",
+        f"Отчёт по анализу №{request_id}",
+        f"Длительность анализа: {duration_ms / 1000:.1f} с",
+        f"Сформировано: {generated_human}",
     ]
+    running_id = " · ".join(part for part in (patient_name, f"ID {patient_id}" if patient_id else "") if part)
 
     return f"""<!doctype html>
 <html lang="ru">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Заключение CVD - {escape(patient_name)}</title>
+  <title>Кардиологическое заключение — {escape(patient_name)}</title>
   <style>
     :root {{ color-scheme: light; --ink:#17212b; --muted:#5e6b78; --line:#d9e2ea; --soft:#f4f8fb; --accent:#087ea4; --danger:#a62b2b; }}
     * {{ box-sizing:border-box; }}
@@ -188,20 +275,57 @@ def build_html_report(
     dl {{ display:grid; grid-template-columns:minmax(130px,.7fr) minmax(0,1.3fr); gap:7px 14px; margin:0; }} dt {{ color:var(--muted); }} dd {{ margin:0; overflow-wrap:anywhere; }}
     ul {{ margin:5px 0 0; padding-left:20px; }} .meta {{ margin-top:22px; font-size:12px; }}
     .warning {{ margin-top:24px; padding:13px 15px; color:#6f2929; background:#fff4f4; border:1px solid #e9c8c8; font-weight:600; }}
-    @media (max-width:700px) {{ .page {{ width:100%; margin:0; padding:20px; border:0; }} header {{ align-items:flex-start; }} .result-grid,.patient-grid {{ grid-template-columns:1fr; }} dl {{ grid-template-columns:1fr; gap:2px; }} dd {{ margin-bottom:7px; }} }}
-    @media print {{ @page {{ size:A4; margin:14mm; }} body {{ background:#fff; font-size:10pt; }} .page {{ width:auto; margin:0; padding:0; border:0; }} .print-button {{ display:none; }} h2 {{ break-after:avoid; }} }}
+    .toolbar {{ display:flex; flex-wrap:wrap; align-items:center; gap:10px 16px; }}
+    .print-toggle {{ display:inline-flex; align-items:center; gap:7px; color:var(--muted); font-size:13px; cursor:pointer; }}
+    .conclusion {{ display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:14px; margin:6px 0 4px; break-inside:avoid; }}
+    .conclusion-col {{ padding:15px 16px; border:1px solid var(--line); border-top:3px solid var(--ink); }}
+    .conclusion-col.ai {{ border-top-color:var(--accent); background:var(--soft); }}
+    .conclusion-col h3 {{ color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }}
+    .conclusion-text {{ margin:0; font-size:15px; font-weight:600; line-height:1.4; }}
+    .codes {{ display:flex; flex-wrap:wrap; gap:6px; margin-top:9px; }}
+    .code {{ padding:2px 9px; border:1px solid var(--line); border-radius:999px; background:#fff; font-size:12px; font-weight:700; }}
+    .signature {{ display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:22px; margin-top:26px; break-inside:avoid; }}
+    .sig-label {{ color:var(--muted); font-size:12px; }}
+    .sig-line {{ margin-top:20px; padding-top:5px; border-top:1px solid var(--ink); font-weight:600; min-height:24px; }}
+    .appendix-title {{ display:flex; align-items:baseline; justify-content:space-between; gap:16px; }}
+    .running-head {{ display:none; }}
+    @media (max-width:700px) {{ .page {{ width:100%; margin:0; padding:20px; border:0; }} header {{ align-items:flex-start; }} .result-grid,.patient-grid,.conclusion,.signature {{ grid-template-columns:1fr; }} dl {{ grid-template-columns:1fr; gap:2px; }} dd {{ margin-bottom:7px; }} }}
+    @media print {{
+      @page {{ size:A4; margin:16mm 14mm 18mm; }}
+      body {{ background:#fff; font-size:10pt; }}
+      .page {{ width:auto; margin:0; padding:0; border:0; }}
+      .no-print {{ display:none !important; }}
+      h2 {{ break-after:avoid; font-size:13pt; }} h1 {{ font-size:18pt; }}
+      .conclusion, .signature, .diagnosis, .result-section, .data-section, .summary {{ break-inside:avoid; }}
+      .appendix {{ break-before:page; }}
+      body.hide-appendix .appendix {{ display:none; }}
+      .running-head {{ display:block; position:fixed; top:-11mm; left:0; right:0; color:var(--muted); font-size:8pt; border-bottom:1px solid var(--line); padding-bottom:2mm; }}
+      a {{ color:inherit; text-decoration:none; }}
+    }}
   </style>
 </head>
 <body>
+  <div class="running-head">{escape(running_id)} · Отчёт №{escape(request_id)}</div>
   <main class="page">
     <header>
-      <div><p class="eyebrow">{escape(organization or app_name)}</p><h1>Результат клинического анализа</h1><p class="muted">Сформировано: {escape(generated_at)}</p></div>
-      <button class="print-button" type="button" onclick="window.print()">Распечатать</button>
+      <div>
+        <p class="eyebrow">{escape(organization or app_name)}</p>
+        <h1>Кардиологическое заключение</h1>
+        <p class="muted">Сформировано: {escape(generated_human)}</p>
+      </div>
+      <div class="toolbar no-print">
+        <button class="print-button" type="button" onclick="window.print()">Печать / Сохранить PDF</button>
+        <label class="print-toggle"><input id="appendixToggle" type="checkbox" checked> Печатать исходные данные</label>
+      </div>
     </header>
-    <div class="patient-line"><strong>{escape(patient_name)}</strong><span>ID случая: {escape(patient_id)}</span></div>
-    <h2>Результат AI-анализа</h2>
-    <section class="summary{' abstain' if abstained else ''}"><h3>{'AI не сформировал заключение' if abstained else 'Клиническая сводка'}</h3><p>{escape(summary)}</p></section>
-    <h2>Возможные диагнозы</h2>
+    <div class="patient-line"><strong>{escape(patient_name)}</strong><span>{escape(patient_facts)}</span></div>
+    <h2>Заключение</h2>
+    {_conclusion_block(patient_data, cds, model_output)}
+    <section class="summary{' abstain' if abstained else ''}"><h3>{'AI не сформировал заключение' if abstained else 'Клиническая сводка AI'}</h3><p>{escape(summary)}</p></section>
+    {_recommendations_block(model_output)}
+    {_signature_block(metadata)}
+    <div class="warning">Черновик системы поддержки принятия решений. Требует проверки врачом и не является самостоятельным медицинским заключением.</div>
+    <h2>Обоснование AI</h2>
     <div class="diagnoses">{_diagnoses_block(cds.get('possible_diagnoses'))}</div>
     <div class="result-grid">
       {_list_block('Red flags', cds.get('red_flags'), 'Не указаны.')}
@@ -209,11 +333,16 @@ def build_html_report(
       {_list_block('Что ещё собрать', cds.get('recommended_next_data'), 'Не указано.')}
       {_list_block('Ограничения', cds.get('limitations'), 'Не указаны.')}
     </div>
-    {_recommendations_block(model_output)}
-    <h2>Исходные данные пациента</h2>
-    <div class="patient-grid">{_patient_sections(patient_data)}</div>
+    <section class="appendix">
+      <div class="appendix-title"><h2>Приложение: исходные данные пациента</h2></div>
+      <div class="patient-grid">{_patient_sections(patient_data)}</div>
+    </section>
     <p class="meta">{escape(' · '.join(report_details))}</p>
-    <div class="warning">Результат сформирован системой поддержки принятия решений и требует обязательной проверки врачом. Документ не является медицинским заключением.</div>
   </main>
+  <script>
+    document.getElementById("appendixToggle")?.addEventListener("change", (event) => {{
+      document.body.classList.toggle("hide-appendix", !event.target.checked);
+    }});
+  </script>
 </body>
 </html>"""
