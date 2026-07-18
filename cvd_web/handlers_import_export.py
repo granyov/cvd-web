@@ -9,11 +9,44 @@ from typing import Any
 from .auth import utc_now
 from .db import audit, connect, rows_to_dicts
 from .integration_import import KNOWN_PATHS, parse_clinical_import
+from .pdf_text import PDFTextError, extract_pdf_text
 from .reporting import build_html_report
 from .web_core import HTTPError, Request
 
 
 class ImportExportMixin:
+    def import_pdf_text(self, request: Request, user: dict[str, Any]):
+        self.ensure_request_size(request)
+        self.enforce_rate_limit(
+            f"pdf-import:{user['id']}",
+            limit=60,
+            window_seconds=3600,
+            message="Слишком много PDF-импортов",
+        )
+        raw = request.body()
+        if not raw:
+            raise HTTPError(400, "Пустой файл")
+        try:
+            result = extract_pdf_text(raw)
+        except PDFTextError as exc:
+            raise HTTPError(400, str(exc)) from exc
+        if not result["has_text_layer"]:
+            raise HTTPError(
+                422,
+                "В PDF не найден текстовый слой — похоже, это скан. "
+                "Скопируйте текст из документа вручную или используйте OCR, затем вставьте его в AI-подготовку.",
+            )
+        with connect(self.config.db_path) as conn:
+            audit(
+                conn,
+                user_id=user["id"],
+                action="pdf_text_extract",
+                target_type="import",
+                target_id="",
+                details={"pages": result["pages"], "chars": len(result["text"]), "bytes": len(raw)},
+            )
+        return self.json_response({"ok": True, "text": result["text"], "pages": result["pages"]})
+
     def preview_clinical_import(self, request: Request, user: dict[str, Any]):
         self.ensure_request_size(request)
         self.enforce_rate_limit(

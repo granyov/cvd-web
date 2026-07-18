@@ -134,6 +134,8 @@ class CVDApplication(AuthMixin, CasesMixin, ImportExportMixin, AiMixin, AdminMix
             return self.library_summary(user)
         if request.path == "/api/import/preview" and request.method == "POST":
             return self.preview_clinical_import(request, user)
+        if request.path == "/api/import/pdf-text" and request.method == "POST":
+            return self.import_pdf_text(request, user)
         if request.path == "/api/imports" and request.method == "GET":
             return self.list_clinical_imports(request, user)
         if request.path == "/api/text-preparations" and request.method == "GET":

@@ -94,8 +94,8 @@ window.CVD_SCHEMA = [
     fields: [
       { key: "Creatinine_umol_L", label: "Креатинин, мкмоль/л", type: "number" },
       { key: "eGFR_ml_min_1_73m2", label: "СКФ, мл/мин/1.73 м2", type: "number" },
-      { key: "ALT_U_L", label: "АЛТ", type: "number" },
-      { key: "AST_U_L", label: "АСТ", type: "number" },
+      { key: "ALT_U_L", label: "АЛТ, Ед/л", type: "number" },
+      { key: "AST_U_L", label: "АСТ, Ед/л", type: "number" },
       { key: "Na_mmol_L", label: "Na, ммоль/л", type: "number", step: "0.1" },
       { key: "K_mmol_L", label: "K, ммоль/л", type: "number", step: "0.1" },
       { key: "Mg_mmol_L", label: "Mg, ммоль/л", type: "number", step: "0.01" },

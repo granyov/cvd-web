@@ -116,6 +116,12 @@
   formSectionGroups.forEach((group) => {
     group.sectionKeys.forEach((key) => sectionGroupByKey.set(key, group));
   });
+  // Секции с преимущественно числовыми полями показываются плотной сеткой.
+  const denseSectionKeys = new Set([
+    "PHYSICAL_EXAM", "LABS_CBC", "LABS_BIOCHEM", "LABS_LIPIDS",
+    "LABS_CARDIAC_MARKERS", "LABS_COAGULATION", "ECHOCARDIOGRAPHY",
+    "FUNCTIONAL_TESTS", "SCORES_AND_CLASSES"
+  ]);
 
   function toast(message) {
     const node = document.createElement("div");
@@ -212,7 +218,19 @@
     const id = fieldId(section.key, field.key);
     const label = document.createElement("label");
     label.htmlFor = id;
-    label.textContent = field.label;
+    // У числовых полей единица измерения из подписи переезжает суффиксом в само поле.
+    let labelText = field.label;
+    let unit = "";
+    if (field.type === "number" && field.label.includes(", ")) {
+      const unitIndex = field.label.lastIndexOf(", ");
+      const candidate = field.label.slice(unitIndex + 2);
+      // Длинные единицы (СКФ и т.п.) не влезают суффиксом — остаются в подписи.
+      if (candidate.length <= 10) {
+        labelText = field.label.slice(0, unitIndex);
+        unit = candidate;
+      }
+    }
+    label.textContent = labelText;
 
     let input;
     if (field.type === "textarea") {
@@ -239,7 +257,16 @@
     if (field.placeholder) input.placeholder = field.placeholder;
 
     wrapper.appendChild(label);
-    wrapper.appendChild(input);
+    if (unit) {
+      const unitWrap = document.createElement("div");
+      unitWrap.className = "input-unit";
+      const unitLabel = document.createElement("span");
+      unitLabel.textContent = unit;
+      unitWrap.append(input, unitLabel);
+      wrapper.appendChild(unitWrap);
+    } else {
+      wrapper.appendChild(input);
+    }
     const reference = qualityRules.referenceRanges?.[input.name];
     if (reference) {
       const hint = document.createElement("small");
@@ -321,7 +348,7 @@
       summary.append(heading, badge);
 
       const body = document.createElement("div");
-      body.className = "section-body form-grid";
+      body.className = `section-body form-grid${denseSectionKeys.has(section.key) ? " dense" : ""}`;
       section.fields.forEach((field) => body.appendChild(renderField(section, field)));
 
       details.appendChild(summary);
@@ -428,8 +455,9 @@
   function updateIcdComparison(data) {
     const trueCodes = new Set(data.FINAL_DIAGNOSES?.ICD10_codes || []);
     const modelCodes = new Set(data.MODEL_OUTPUT?.Model_ICD10_codes || []);
-    if (trueCodes.size === 0 && modelCodes.size === 0) {
-      icdSummary.textContent = "Коды МКБ-10 ещё не сравнивались.";
+    if (trueCodes.size === 0 || modelCodes.size === 0) {
+      // Сравнение имеет смысл только когда есть и коды врача, и коды AI.
+      icdSummary.classList.add("hidden");
       return;
     }
     let matches = 0;
@@ -437,7 +465,11 @@
     let extra = 0;
     trueCodes.forEach((code) => modelCodes.has(code) ? matches++ : missed++);
     modelCodes.forEach((code) => { if (!trueCodes.has(code)) extra++; });
-    icdSummary.textContent = `Совпадений: ${matches}. Пропущено: ${missed}. Лишние: ${extra}.`;
+    icdSummary.classList.remove("hidden");
+    icdSummary.className = `notice ${missed || extra ? "warning-note" : "ok-note"}`;
+    icdSummary.textContent = missed || extra
+      ? `МКБ-10: совпадает ${matches} · только в диагнозе врача ${missed} · только у AI ${extra}. Сверьте кодировку перед выгрузкой.`
+      : `МКБ-10: все ${matches} кода(ов) врача и AI совпадают.`;
   }
 
   function updatePreview() {
@@ -522,17 +554,13 @@
   }
 
   function updateSectionBadges(data) {
-    window.CVD_SCHEMA.forEach((section, index) => {
+    window.CVD_SCHEMA.forEach((section) => {
       const badge = form.querySelector(`[data-section-badge="${section.key}"]`);
       if (!badge) return;
       const {filled, total, percent} = sectionFillPercent(section, data);
-      badge.textContent = `${filled}/${total} · ${percent}%`;
-      badge.className = `section-fill-badge ${percent === 100 ? "ok" : percent > 0 ? "warning" : ""}`.trim();
-      const navItem = sectionNav?.querySelector(`[data-section-nav="${section.key}"]`);
-      if (navItem) {
-        navItem.textContent = `${sectionNumber(index)}. ${section.title} · ${percent}%`;
-        navItem.className = `section-nav-item ${percent === 100 ? "ok" : percent > 0 ? "warning" : ""}`.trim();
-      }
+      // Пустые секции не шумят бейджами; частично заполненные показывают счётчик.
+      badge.textContent = percent === 0 ? "" : percent === 100 ? "✓" : `${filled}/${total}`;
+      badge.className = `section-fill-badge ${percent === 100 ? "ok" : percent > 0 ? "warning" : "empty"}`.trim();
     });
   }
 
@@ -554,13 +582,23 @@
     const systolic = getValue(data, "PHYSICAL_EXAM.Blood_pressure_right_systolic_mmHg");
     const diastolic = getValue(data, "PHYSICAL_EXAM.Blood_pressure_right_diastolic_mmHg");
     const bp = isFilled(systolic) || isFilled(diastolic) ? `${displayValue(systolic, "?")}/${displayValue(diastolic, "?")} мм рт.ст.` : null;
+    const age = getValue(data, "GENERAL_INFO.Age");
+    const sex = getValue(data, "GENERAL_INFO.Sex");
+    const heartRate = getValue(data, "PHYSICAL_EXAM.Heart_rate_bpm");
     const cards = [
-      ["Пациент", displayValue(getValue(data, "GENERAL_INFO.Full_name"))],
-      ["Случай", displayValue(getValue(data, "GENERAL_INFO.Patient_ID"))],
-      ["Возраст / пол", `${displayValue(getValue(data, "GENERAL_INFO.Age"), "?")} лет · ${displayValue(getValue(data, "GENERAL_INFO.Sex"), "?")}`],
-      ["АД / ЧСС", `${displayValue(bp)} · ${displayValue(getValue(data, "PHYSICAL_EXAM.Heart_rate_bpm"), "?")} уд/мин`],
-      ["Диагноз врача", displayValue(getValue(data, "FINAL_DIAGNOSES.Main_cardiovascular_diagnosis_text"))]
-    ];
+      ["Пациент", isFilled(getValue(data, "GENERAL_INFO.Full_name")) ? displayValue(getValue(data, "GENERAL_INFO.Full_name")) : null],
+      ["Случай", isFilled(getValue(data, "GENERAL_INFO.Patient_ID")) ? displayValue(getValue(data, "GENERAL_INFO.Patient_ID")) : null],
+      ["Возраст / пол", isFilled(age) || isFilled(sex) ? `${displayValue(age, "?")} лет · ${displayValue(sex, "?")}` : null],
+      ["АД / ЧСС", bp || isFilled(heartRate) ? `${displayValue(bp)} · ${displayValue(heartRate, "?")} уд/мин` : null],
+      ["Диагноз врача", isFilled(getValue(data, "FINAL_DIAGNOSES.Main_cardiovascular_diagnosis_text")) ? displayValue(getValue(data, "FINAL_DIAGNOSES.Main_cardiovascular_diagnosis_text")) : null]
+    ].filter(([, value]) => value !== null);
+    if (!cards.length) {
+      const empty = document.createElement("p");
+      empty.className = "muted snapshot-empty";
+      empty.textContent = "Сводка пациента появится по мере заполнения анкеты.";
+      patientSnapshot.appendChild(empty);
+      return;
+    }
     cards.forEach(([label, value]) => {
       const card = document.createElement("div");
       card.className = "clinical-card";
@@ -578,10 +616,6 @@
     const hasCase = Boolean(currentCaseId);
     const hasResult = Boolean(currentModelRequestId);
     const ready = missing.length === 0;
-    document.getElementById("workflowStepData")?.classList.toggle("done", hasCase || ready);
-    document.getElementById("workflowStepCheck")?.classList.toggle("done", ready);
-    document.getElementById("workflowStepAi")?.classList.toggle("done", hasResult);
-    document.getElementById("workflowStepResult")?.classList.toggle("done", hasResult);
     let nextAction = "Заполните ключевые поля пациента.";
     let ctaText = "Запустить AI-анализ";
     if (!hasCase) {
@@ -631,28 +665,51 @@
     if (!readinessPanel) return;
     readinessPanel.innerHTML = "";
     const missing = missingRequiredData(data);
-    const ready = requiredDataPoints.length - missing.length;
-    const percent = Math.round((ready / requiredDataPoints.length) * 100);
+    const total = requiredDataPoints.length;
+    const ready = total - missing.length;
+    const percent = Math.round((ready / total) * 100);
     if (jumpMissingButton) {
       jumpMissingButton.disabled = missing.length === 0;
       jumpMissingButton.textContent = missing.length ? `К первому незаполненному (${missing.length})` : "Ключевые поля заполнены";
     }
-    requiredDataPoints.forEach(([path, label]) => {
-      const ok = isFilled(getValue(data, path));
+    const progress = document.createElement("div");
+    progress.className = "readiness-progress";
+    const caption = document.createElement("div");
+    caption.className = "readiness-progress-caption";
+    const captionText = document.createElement("span");
+    captionText.textContent = `Заполнено ${ready} из ${total}`;
+    const captionPercent = document.createElement("strong");
+    captionPercent.textContent = `${percent}%`;
+    caption.append(captionText, captionPercent);
+    const track = document.createElement("div");
+    track.className = "readiness-progress-track";
+    const bar = document.createElement("div");
+    bar.className = `readiness-progress-bar ${percent === 100 ? "ok" : ""}`.trim();
+    bar.style.width = `${percent}%`;
+    track.appendChild(bar);
+    progress.append(caption, track);
+    readinessPanel.appendChild(progress);
+    if (!missing.length) {
+      const row = document.createElement("div");
+      row.className = "check-row ok";
+      row.textContent = "Все ключевые поля заполнены.";
+      readinessPanel.appendChild(row);
+      return;
+    }
+    missing.forEach(([path, label]) => {
       const row = document.createElement("button");
       row.type = "button";
-      row.className = `check-row ${ok ? "ok" : "warning"}`;
-      row.disabled = ok;
-      row.title = ok ? `${label}: заполнено` : `Перейти к полю: ${label}`;
+      row.className = "check-row warning";
+      row.title = `Перейти к полю: ${label}`;
       const mark = document.createElement("span");
       mark.className = "check-mark";
-      mark.textContent = ok ? "✓" : "!";
+      mark.textContent = "!";
       const text = document.createElement("span");
       text.textContent = label;
       const state = document.createElement("small");
-      state.textContent = ok ? "заполнено" : "заполнить";
+      state.textContent = "заполнить";
       row.append(mark, text, state);
-      if (!ok) row.addEventListener("click", () => focusFieldPath(path));
+      row.addEventListener("click", () => focusFieldPath(path));
       readinessPanel.appendChild(row);
     });
   }
@@ -763,10 +820,14 @@
   function renderActiveJobs(payload) {
     if (!activeJobsLine) return;
     const jobs = payload?.jobs || [];
+    const recentFinishedCutoffMs = Date.now() - 30 * 60 * 1000;
     const visible = [
       ...jobs.filter((job) => ["queued", "running"].includes(job.status)),
-      ...jobs.filter((job) => ["success", "error"].includes(job.status)).slice(0, 3)
-    ].slice(0, 6);
+      ...jobs
+        .filter((job) => ["success", "error"].includes(job.status))
+        .filter((job) => new Date(job.finished_at || job.created_at || 0).getTime() >= recentFinishedCutoffMs)
+        .slice(0, 1)
+    ].slice(0, 5);
     activeJobsLine.innerHTML = "";
     activeJobsLine.classList.toggle("hidden", visible.length === 0);
     visible.forEach((job) => {
@@ -842,6 +903,15 @@
     return payload;
   }
 
+  function isDoctorMode() {
+    return (document.body.dataset.interfaceMode || "doctor") === "doctor";
+  }
+
+  function displayModelName(model) {
+    // Врач видит бренд сервиса, а не внутреннее имя модели.
+    return isDoctorMode() ? "CVD Engine" : (model || "—");
+  }
+
   function renderModelMetaGrid(items) {
     const grid = document.createElement("div");
     grid.className = "model-meta-grid";
@@ -910,8 +980,8 @@
     stats.append(
       pill(`${diagnoses.length} диагнозов`),
       pill(`${redFlags.length} red flags`, redFlags.length ? "error" : ""),
-      pill(`${missing.length} missing`, missing.length ? "warning" : ""),
-      pill(durationText(meta.duration_ms))
+      pill(`не хватает: ${missing.length}`, missing.length ? "warning" : ""),
+      pill(displayModelName(meta.model))
     );
     lastModelSummary.append(toolbar, summary, stats);
     lastModelSummary.classList.remove("hidden");
@@ -931,22 +1001,54 @@
     const missing = Array.isArray(cds.missing_data) ? cds.missing_data.filter(Boolean) : [];
     const summary = document.createElement("div");
     summary.className = `model-summary-card ${cds.model_should_abstain ? "warning" : redFlags.length ? "danger" : ""}`.trim();
-    const titleRow = document.createElement("div");
-    titleRow.className = "model-summary-title";
-    const title = document.createElement("strong");
-    title.textContent = cds.model_should_abstain ? "AI воздержался от заключения" : "Клиническая сводка";
-    titleRow.append(title, pill(cds.model_should_abstain ? "нужна ручная оценка" : "готово", cds.model_should_abstain ? "warning" : "ok"));
+    const confidenceLabels = {high: "высокая уверенность", medium: "средняя уверенность", low: "низкая уверенность"};
+    const leadDiagnosis = diagnoses[0];
+    const eyebrow = document.createElement("span");
+    eyebrow.className = "verdict-eyebrow";
+    eyebrow.textContent = cds.model_should_abstain ? "Заключение AI" : "Ведущий диагноз AI";
+    const verdictTitle = document.createElement("h3");
+    verdictTitle.className = "verdict-title";
+    verdictTitle.textContent = cds.model_should_abstain
+      ? "AI воздержался от заключения — нужна ручная оценка"
+      : leadDiagnosis?.name || cds.summary || "Диагноз не указан";
+    summary.append(eyebrow, verdictTitle);
+    if (!cds.model_should_abstain && leadDiagnosis) {
+      const verdictMeta = document.createElement("div");
+      verdictMeta.className = "verdict-meta";
+      if (confidenceLabels[leadDiagnosis.confidence]) {
+        verdictMeta.appendChild(pill(confidenceLabels[leadDiagnosis.confidence], leadDiagnosis.confidence === "high" ? "ok" : leadDiagnosis.confidence === "low" ? "warning" : ""));
+      }
+      (leadDiagnosis.icd10_codes || []).slice(0, 4).forEach((code) => verdictMeta.appendChild(pill(code)));
+      summary.appendChild(verdictMeta);
+    }
     const text = document.createElement("p");
     text.textContent = cds.summary || "Сводка не указана.";
-    summary.append(titleRow, text, renderModelMetaGrid([
-      ["Модель", meta.model || "—"],
-      ["Время анализа", durationText(meta.duration_ms)],
-      ["Ожидание", durationText(meta.queue_wait_ms)],
+    const metaItems = [
+      ["Сервис", displayModelName(meta.model)],
+      ["Время анализа", durationText(meta.duration_ms)]
+    ];
+    if (!isDoctorMode()) metaItems.push(["Ожидание", durationText(meta.queue_wait_ms)]);
+    metaItems.push(
       ["Диагнозов", String(diagnoses.length)],
       ["Red flags", String(redFlags.length), redFlags.length ? "danger" : ""],
       ["Не хватает", String(missing.length), missing.length ? "warning" : ""]
-    ]));
+    );
+    summary.append(text, renderModelMetaGrid(metaItems));
     modelStructured.appendChild(summary);
+    if (redFlags.length > 0) {
+      const strip = document.createElement("div");
+      strip.className = "red-flag-strip";
+      const stripTitle = document.createElement("strong");
+      stripTitle.textContent = "Red flags";
+      strip.appendChild(stripTitle);
+      redFlags.forEach((flag) => {
+        const badge = document.createElement("span");
+        badge.className = "red-flag-badge";
+        badge.textContent = flag;
+        strip.appendChild(badge);
+      });
+      modelStructured.appendChild(strip);
+    }
     renderLastModelSummary(cds, meta);
     if (meta.ai_result_stale) {
       modelStructured.appendChild(renderStaleDiff(meta.ai_result_changes || []));
@@ -961,7 +1063,25 @@
       modelStructured.appendChild(section);
     }
 
-    modelStructured.appendChild(renderModelList("Red flags", cds.red_flags, "Нет явных red flags в результате AI-анализа."));
+    if (redFlags.length === 0) {
+      modelStructured.appendChild(renderModelList("Red flags", [], "Нет явных red flags в результате AI-анализа."));
+    }
+    const modelOutput = parsed?.MODEL_OUTPUT || {};
+    const treatment = String(modelOutput.Model_treatment_recommendations || "").trim();
+    const rehabilitation = String(modelOutput.Model_rehabilitation_recommendations || "").trim();
+    if (treatment || rehabilitation) {
+      const section = document.createElement("div");
+      section.className = "model-section recommendations-section";
+      const heading = document.createElement("h3");
+      heading.textContent = "Черновик рекомендаций";
+      const note = document.createElement("p");
+      note.className = "muted recommendations-note";
+      note.textContent = "Ориентиры по тактике без препаратов и доз. Назначения определяет врач.";
+      section.append(heading, note);
+      if (treatment) section.appendChild(renderRecommendationBlock("Тактика ведения", treatment));
+      if (rehabilitation) section.appendChild(renderRecommendationBlock("Реабилитация и профилактика", rehabilitation));
+      modelStructured.appendChild(section);
+    }
     modelStructured.appendChild(renderModelList("Недостающие данные", cds.missing_data, "Недостающие данные не указаны."));
     modelStructured.appendChild(renderModelList("Что ещё собрать", cds.recommended_next_data, "Дополнительные данные не указаны."));
     modelStructured.appendChild(renderModelList("Ограничения", cds.limitations, "Ограничения не указаны."));
@@ -1026,9 +1146,27 @@
     confidence.textContent = confidenceLabels[diagnosis.confidence] || diagnosis.confidence || "не указана";
     header.append(name, confidence);
     card.appendChild(header);
-    const codes = document.createElement("small");
-    codes.textContent = (diagnosis.icd10_codes || []).join("; ") || "МКБ-10 не указаны";
-    card.appendChild(codes);
+    const codeList = diagnosis.icd10_codes || [];
+    if (codeList.length) {
+      const chips = document.createElement("div");
+      chips.className = "icd-chips";
+      codeList.forEach((code) => {
+        const chip = document.createElement("button");
+        chip.type = "button";
+        chip.className = "icd-chip";
+        chip.textContent = code;
+        chip.title = "Скопировать код";
+        chip.addEventListener("click", () => {
+          navigator.clipboard?.writeText(code).then(() => toast(`Код ${code} скопирован`)).catch(() => {});
+        });
+        chips.appendChild(chip);
+      });
+      card.appendChild(chips);
+    } else {
+      const codes = document.createElement("small");
+      codes.textContent = "МКБ-10 не указаны";
+      card.appendChild(codes);
+    }
     card.appendChild(renderInlineList("За", diagnosis.supporting_findings));
     card.appendChild(renderInlineList("Против", diagnosis.against_findings));
     card.appendChild(renderInlineList("Не хватает", diagnosis.missing_data));
@@ -1044,6 +1182,17 @@
     text.textContent = Array.isArray(items) && items.length ? items.join("; ") : "нет";
     wrapper.append(title, text);
     return wrapper;
+  }
+
+  function renderRecommendationBlock(title, text) {
+    const block = document.createElement("div");
+    block.className = "recommendation-block";
+    const heading = document.createElement("strong");
+    heading.textContent = title;
+    const body = document.createElement("p");
+    body.textContent = text;
+    block.append(heading, body);
+    return block;
   }
 
   function renderModelList(title, items, emptyText) {
@@ -1071,8 +1220,13 @@
     return section;
   }
 
+  function updateModelTabVisibility() {
+    document.getElementById("modelTabButton")?.classList.toggle("hidden", !currentModelRequestId);
+  }
+
   function showReviewForm(requestId, review = null) {
     currentModelRequestId = requestId;
+    updateModelTabVisibility();
     if (!requestReviewForm) return;
     requestReviewForm.classList.toggle("hidden", !requestId);
     if (!requestId) return;
@@ -1085,9 +1239,10 @@
     reviewStatus.className = `pill ${review ? "ok" : ""}`;
   }
 
-  function setHtmlExportAvailable(available) {
+  function setHtmlExportAvailable(available, {showBanner = true} = {}) {
     if (exportHtmlButton) exportHtmlButton.disabled = !available;
-    resultReadyBanner?.classList.toggle("hidden", !available);
+    // Баннер — только для свежего результата; при загрузке из истории достаточно карточки и вкладки.
+    resultReadyBanner?.classList.toggle("hidden", !(available && showBanner));
     if (viewResultButton) viewResultButton.disabled = !available;
   }
 
@@ -1293,7 +1448,7 @@
   function aiErrorAdviceText(message) {
     const text = String(message || "").toLowerCase();
     if (text.includes("недоступ") || text.includes("connection") || text.includes("unreachable")) {
-      return "Похоже, сервис AI не запущен или недоступен по сети. Убедитесь, что LM Studio работает и модель загружена, затем повторите. Если ошибка повторяется — сообщите администратору.";
+      return "Сервис CVD Engine сейчас недоступен. Повторите попытку через минуту; если ошибка повторяется — сообщите администратору.";
     }
     if (text.includes("не ответила") || text.includes("timeout")) {
       return "Модель не успела ответить за отведённое время. Повторите попытку; при повторении администратор может увеличить таймаут или разгрузить очередь.";
@@ -1324,6 +1479,7 @@
     applyData(response.case.data);
     collapseAllSections();
     hideRecentCases();
+    loadLatestCaseResult(currentCaseId).catch(() => {});
     toast("Кейс загружен");
   }
 
@@ -1356,8 +1512,8 @@
     container.classList.remove("hidden");
   }
 
-  function openRequestResult(item) {
-    openTab("model");
+  function openRequestResult(item, {openModal = true} = {}) {
+    if (openModal) openTab("model");
     currentModelRequestId = item.id;
     lastModelDataFingerprint = qualityRules.dataFingerprint(collectData());
     modelStatus.textContent = item.status === "success"
@@ -1367,8 +1523,16 @@
     modelPreview.textContent = JSON.stringify(item.parsed_output || {error: requestErrorText()}, null, 2);
     renderModelOutput(item.parsed_output || {}, item);
     showReviewForm(item.id, item.review);
-    setHtmlExportAvailable(item.status === "success");
+    setHtmlExportAvailable(item.status === "success", {showBanner: openModal});
     updateWorkflow(updatePreview());
+  }
+
+  async function loadLatestCaseResult(caseId) {
+    const payload = await api(`/api/requests?case_id=${caseId}&status=success&limit=1`);
+    const item = (payload.requests || [])[0];
+    if (!item || !item.parsed_output) return;
+    if (currentCaseId !== caseId) return;
+    openRequestResult(item, {openModal: false});
   }
 
   function downloadJson() {
@@ -1415,10 +1579,37 @@
     }).join("\n") || "Локальный файл CVD";
   }
 
+  async function importPdf(file) {
+    const response = await fetch("/api/import/pdf-text", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/pdf",
+        "X-CSRF-Token": csrfToken,
+        "Accept": "application/json"
+      },
+      body: file
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(data.error || `HTTP ${response.status}`);
+    const fullText = String(data.text || "");
+    openStructureTextModal();
+    structureTextInput.value = fullText.slice(0, 10000);
+    updateStructureTextCounter();
+    if (fullText.length > 10000) {
+      toast(`Текст из PDF обрезан до 10 000 символов (${data.pages} стр.) — проверьте перед AI-подготовкой`);
+    } else {
+      toast(`Текст извлечён из PDF (${data.pages} стр.). Проверьте его и запустите AI-подготовку`);
+    }
+  }
+
   async function importJson(file) {
     if (!file) return;
     if (file.size > maxImportBytes) {
       throw new Error("Файл больше 5 МБ");
+    }
+    if (file.type === "application/pdf" || /\.pdf$/i.test(file.name || "")) {
+      await importPdf(file);
+      return;
     }
     const text = await file.text();
     let preview;
@@ -1855,6 +2046,7 @@
     lastModelDataFingerprint = null;
     setHtmlExportAvailable(false);
     hideAiErrorCard();
+    updateModelTabVisibility();
     if (clearFields) {
       const modelSection = window.CVD_SCHEMA.find((section) => section.key === "MODEL_OUTPUT");
       modelSection?.fields.forEach((field) => setFieldValue(`MODEL_OUTPUT.${field.key}`, null));
@@ -1896,7 +2088,7 @@
 
   function setupUser() {
     const user = window.CURRENT_USER || {};
-    document.getElementById("userLabel").textContent = `${user.email || ""} · ${user.role || ""}`;
+    document.getElementById("userLabel").textContent = user.email || "";
     if (user.role === "admin") {
       document.getElementById("adminLink").classList.remove("hidden");
     } else {
@@ -2014,10 +2206,9 @@
   async function initializeWorkspace() {
     const params = new URLSearchParams(window.location.search);
     if (params.get("import")) {
-      const importButton = document.getElementById("importJsonButton");
-      importButton?.classList.add("attention");
-      importButton?.scrollIntoView({block: "center"});
-      toast("Нажмите «Импорт», чтобы выбрать файл JSON, FHIR или CDA");
+      document.getElementById("moreActionsButton")?.classList.add("attention");
+      document.getElementById("importJsonButton")?.classList.add("attention");
+      toast("Откройте «Ещё» → «Импорт файла»: JSON, FHIR, CDA/СЭМД или PDF из ЕМИАС");
     }
     const caseId = Number(params.get("case") || 0);
     const requestId = Number(params.get("request") || 0);
@@ -2028,7 +2219,7 @@
       const response = await api(`/api/requests/${requestId}`);
       openRequestResult(response.request);
     }
-    if (!caseId && !requestId) {
+    if (!caseId && !requestId && !pendingDraft) {
       showRecentCases().catch(() => {});
     }
   }
@@ -2077,6 +2268,10 @@
   document.getElementById("retryDiagnoseButton")?.addEventListener("click", () => {
     hideAiErrorCard();
     runDiagnose(updatePreview()).catch((err) => toast(err.message));
+  });
+  document.getElementById("rerunAnalysisButton")?.addEventListener("click", () => {
+    closeModelResultModal();
+    diagnose();
   });
   document.getElementById("downloadJsonButton").addEventListener("click", downloadJson);
   exportHtmlButton?.addEventListener("click", () => exportHtmlReport().catch((err) => toast(err.message)));

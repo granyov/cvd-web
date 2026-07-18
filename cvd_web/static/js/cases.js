@@ -69,6 +69,19 @@
   let importSearchTimer = null;
   let preparationSearchTimer = null;
 
+  let interfaceMode = "doctor";
+  try { interfaceMode = window.localStorage.getItem("cvd:interface-mode") || "doctor"; } catch (_) {}
+  if (interfaceMode === "admin" && window.CURRENT_USER?.role !== "admin") interfaceMode = "doctor";
+
+  function displayModelName(model) {
+    // Врач видит бренд сервиса, а не внутреннее имя модели.
+    return interfaceMode === "doctor" ? "CVD Engine" : (model || "модель не указана");
+  }
+
+  if (interfaceMode === "doctor") {
+    document.getElementById("resultModelFilter")?.classList.add("hidden");
+  }
+
   async function api(path, options = {}) {
     const response = await fetch(path, {
       ...options,
@@ -474,7 +487,7 @@
       const footer = document.createElement("div");
       footer.className = "result-record-footer";
       const meta = document.createElement("span");
-      meta.textContent = `${formatDateTime(item.created_at)} · ${item.model || "модель не указана"} · ${(Number(item.duration_ms || 0) / 1000).toFixed(1)} с`;
+      meta.textContent = `${formatDateTime(item.created_at)} · ${displayModelName(item.model)} · ${(Number(item.duration_ms || 0) / 1000).toFixed(1)} с`;
       const actions = document.createElement("div");
       actions.className = "toolbar";
       if (item.status === "success") actions.appendChild(actionLink("Открыть отчёт", `/reports/${item.id}`, true));
@@ -624,7 +637,7 @@
 
   function setupActions() {
     const user = window.CURRENT_USER || {};
-    document.getElementById("userLabel").textContent = `${user.email || ""} · ${user.role || ""}`;
+    document.getElementById("userLabel").textContent = user.email || "";
     if (user.role === "admin") document.getElementById("adminLink").classList.remove("hidden");
     document.getElementById("logoutButton").addEventListener("click", async () => {
       const response = await api("/api/logout", {method: "POST", body: "{}"});
