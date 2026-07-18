@@ -9,7 +9,16 @@
   const saveStatus = document.getElementById("saveStatus");
   const modelStatus = document.getElementById("modelStatus");
   const queueStatus = document.getElementById("queueStatus");
+  const caseStatusText = document.getElementById("caseStatusText");
+  const readinessStatusText = document.getElementById("readinessStatusText");
+  const aiStatusText = document.getElementById("aiStatusText");
+  const workflowProgressBar = document.getElementById("workflowProgressBar");
+  const taskCountBadge = document.getElementById("taskCountBadge");
   const activeJobsLine = document.getElementById("activeJobsLine");
+  const openTaskCenterButton = document.getElementById("openTaskCenterButton");
+  const taskCenterModal = document.getElementById("taskCenterModal");
+  const taskCenterSummary = document.getElementById("taskCenterSummary");
+  const taskCenterList = document.getElementById("taskCenterList");
   const sectionNav = document.getElementById("sectionNav");
   const icdSummary = document.getElementById("icdSummary");
   const patientSnapshot = document.getElementById("patientSnapshot");
@@ -50,6 +59,22 @@
   const jumpMissingButton = document.getElementById("jumpMissingButton");
   const lastModelSummary = document.getElementById("lastModelSummary");
   const saveCaseButton = document.getElementById("saveCaseButton");
+  const scenarioSelect = document.getElementById("scenarioSelect");
+  const scenarioHint = document.getElementById("scenarioHint");
+  const quickFieldsGrid = document.getElementById("quickFieldsGrid");
+  const quickWorkspaceToggle = document.getElementById("quickWorkspaceToggle");
+  const quickWorkspaceSummary = document.getElementById("quickWorkspaceSummary");
+  const quickMissingButton = document.getElementById("quickMissingButton");
+  const fieldSearchInput = document.getElementById("fieldSearchInput");
+  const fieldSearchResults = document.getElementById("fieldSearchResults");
+  const doctorDiagnosisWorkbench = document.getElementById("doctorDiagnosisWorkbench");
+  const aiDiagnosisWorkbench = document.getElementById("aiDiagnosisWorkbench");
+  const acceptModelDraftButton = document.getElementById("acceptModelDraftButton");
+  const copyModelDiagnosisButton = document.getElementById("copyModelDiagnosisButton");
+  const openModelReportButton = document.getElementById("openModelReportButton");
+  const markModelIssueButton = document.getElementById("markModelIssueButton");
+  const importDecisionPanel = document.getElementById("importDecisionPanel");
+  const importDiffDetails = document.getElementById("importDiffDetails");
   const minimumPasswordLength = 15;
   const maxImportBytes = 5 * 1024 * 1024;
   const draftStorageKey = `cvd:case-draft:${window.CURRENT_USER?.email || "user"}`;
@@ -71,6 +96,9 @@
   let pendingDraft = null;
   let hasUnsavedChanges = false;
   let passwordChangeForced = false;
+  let selectedScenarioKey = "general";
+  let quickWorkspaceExpanded = false;
+  let lastModelParsed = null;
   const baseDocumentTitle = document.title;
   const knownJobStatuses = new Map();
   let jobStatusesPrimed = false;
@@ -122,6 +150,117 @@
     "LABS_CARDIAC_MARKERS", "LABS_COAGULATION", "ECHOCARDIOGRAPHY",
     "FUNCTIONAL_TESTS", "SCORES_AND_CLASSES"
   ]);
+  const commonQuickPaths = [
+    "GENERAL_INFO.Patient_ID",
+    "GENERAL_INFO.Age",
+    "GENERAL_INFO.Sex",
+    "COMPLAINTS.Main_complaint",
+    "PHYSICAL_EXAM.Blood_pressure_right_systolic_mmHg",
+    "PHYSICAL_EXAM.Blood_pressure_right_diastolic_mmHg",
+    "PHYSICAL_EXAM.Heart_rate_bpm",
+    "ECG_AND_BP_MONITORING.Resting_ECG_summary",
+    "FINAL_DIAGNOSES.Main_cardiovascular_diagnosis_text",
+    "FINAL_DIAGNOSES.ICD10_codes"
+  ];
+  const clinicalScenarios = [
+    {
+      key: "general",
+      title: "Общий кардиологический кейс",
+      hint: "Базовый набор для первичного анализа и архивации.",
+      quickPaths: commonQuickPaths,
+      requiredPaths: []
+    },
+    {
+      key: "acs",
+      title: "ИБС / ОКС",
+      hint: "Акцент на боли в груди, ЭКГ, тропонине, коронарной визуализации и антиагрегантах.",
+      quickPaths: [
+        ...commonQuickPaths,
+        "LABS_CARDIAC_MARKERS.Troponin_ng_L",
+        "LABS_LIPIDS.LDL_mmol_L",
+        "CORONARY_AND_VASCULAR_IMAGING.Coronary_angiography_or_CTCA",
+        "CURRENT_MEDICATIONS.Antiplatelets"
+      ],
+      requiredPaths: [
+        ["LABS_CARDIAC_MARKERS.Troponin_ng_L", "Тропонин"],
+        ["CORONARY_AND_VASCULAR_IMAGING.Coronary_angiography_or_CTCA", "Коронарография / КТКА"]
+      ]
+    },
+    {
+      key: "hf",
+      title: "ХСН",
+      hint: "Акцент на одышке, ФВ ЛЖ, NT-proBNP, СКФ, калии и терапии ХСН.",
+      quickPaths: [
+        ...commonQuickPaths,
+        "ECHOCARDIOGRAPHY.LVEF_percent",
+        "LABS_CARDIAC_MARKERS.NT_proBNP_pg_ml",
+        "LABS_BIOCHEM.eGFR_ml_min_1_73m2",
+        "LABS_BIOCHEM.K_mmol_L",
+        "CURRENT_MEDICATIONS.ACEi_ARB_ARNI",
+        "CURRENT_MEDICATIONS.Beta_blockers",
+        "CURRENT_MEDICATIONS.SGLT2_inhibitors"
+      ],
+      requiredPaths: [
+        ["ECHOCARDIOGRAPHY.LVEF_percent", "ФВ ЛЖ"],
+        ["LABS_CARDIAC_MARKERS.NT_proBNP_pg_ml", "NT-proBNP"],
+        ["LABS_BIOCHEM.K_mmol_L", "Калий"]
+      ]
+    },
+    {
+      key: "arrhythmia",
+      title: "Аритмии",
+      hint: "Акцент на ЭКГ/Холтере, ЧСС, антикоагулянтах и тромбоэмболическом риске.",
+      quickPaths: [
+        ...commonQuickPaths,
+        "ECG_AND_BP_MONITORING.Holter_ECG_summary",
+        "SCORES_AND_CLASSES.CHA2DS2_VASc",
+        "SCORES_AND_CLASSES.HAS_BLED",
+        "CURRENT_MEDICATIONS.Anticoagulants",
+        "CURRENT_MEDICATIONS.Antiarrhythmics"
+      ],
+      requiredPaths: [
+        ["ECG_AND_BP_MONITORING.Holter_ECG_summary", "Холтер-ЭКГ"],
+        ["SCORES_AND_CLASSES.CHA2DS2_VASc", "CHA2DS2-VASc"]
+      ]
+    },
+    {
+      key: "hypertension",
+      title: "Артериальная гипертензия",
+      hint: "Акцент на АД, СМАД, факторах риска, почечной функции и терапии.",
+      quickPaths: [
+        ...commonQuickPaths,
+        "ECG_AND_BP_MONITORING.ABPM_summary",
+        "LABS_BIOCHEM.Creatinine_umol_L",
+        "LABS_BIOCHEM.eGFR_ml_min_1_73m2",
+        "LABS_LIPIDS.LDL_mmol_L",
+        "CURRENT_MEDICATIONS.ACEi_ARB_ARNI",
+        "CURRENT_MEDICATIONS.Diuretics"
+      ],
+      requiredPaths: [
+        ["ECG_AND_BP_MONITORING.ABPM_summary", "СМАД"],
+        ["LABS_BIOCHEM.Creatinine_umol_L", "Креатинин"]
+      ]
+    },
+    {
+      key: "valves",
+      title: "Клапанные пороки",
+      hint: "Акцент на ЭхоКГ, легочной гипертензии, вмешательствах и симптомах.",
+      quickPaths: [
+        ...commonQuickPaths,
+        "ECHOCARDIOGRAPHY.LVEF_percent",
+        "ECHOCARDIOGRAPHY.PASP_mmHg",
+        "ECHOCARDIOGRAPHY.Valvular_regurgitation",
+        "ECHOCARDIOGRAPHY.Mitral_valve_area_cm2",
+        "ECHOCARDIOGRAPHY.Aortic_valve_area_cm2",
+        "DEVICES_AND_PROCEDURES.Valve_surgery_or_prosthesis"
+      ],
+      requiredPaths: [
+        ["ECHOCARDIOGRAPHY.Valvular_regurgitation", "Клапанные регургитации"],
+        ["ECHOCARDIOGRAPHY.PASP_mmHg", "PASP"]
+      ]
+    }
+  ];
+  const scenarioByKey = new Map(clinicalScenarios.map((scenario) => [scenario.key, scenario]));
 
   function toast(message) {
     const node = document.createElement("div");
@@ -143,6 +282,34 @@
     saveStatus.textContent = text;
     saveStatus.classList.toggle("warning", hasUnsavedChanges);
     saveCaseButton?.classList.toggle("attention", hasUnsavedChanges);
+    syncStatusBar();
+  }
+
+  function syncStatusBar(data = null) {
+    if (!caseStatusText && !readinessStatusText && !aiStatusText && !workflowProgressBar) return;
+    const snapshot = data || (form ? collectData() : {});
+    const required = scenarioRequiredDataPoints();
+    const missing = missingRequiredData(snapshot);
+    const ready = required.length - missing.length;
+    const percent = required.length ? Math.round((ready / required.length) * 100) : 0;
+    if (caseStatusText) {
+      caseStatusText.textContent = currentCaseId
+        ? hasUnsavedChanges ? `Кейс #${currentCaseId} изменён` : `Кейс #${currentCaseId} сохранён`
+        : hasUnsavedChanges ? "Новый кейс с черновиком" : "Новый кейс";
+    }
+    if (readinessStatusText) readinessStatusText.textContent = `${percent}% · ${ready}/${required.length}`;
+    if (aiStatusText) aiStatusText.textContent = modelStatus?.textContent || "не запускался";
+    if (workflowProgressBar) {
+      workflowProgressBar.style.width = `${percent}%`;
+      workflowProgressBar.classList.toggle("ok", percent === 100);
+    }
+  }
+
+  function setModelStatus(text, kind = "") {
+    if (!modelStatus) return;
+    modelStatus.textContent = text;
+    modelStatus.className = `pill ${kind}`.trim();
+    syncStatusBar();
   }
 
   function openModalElement(modal, focusTarget = null) {
@@ -211,6 +378,138 @@
     return qualityRules.numericValue(data, path);
   }
 
+  function normalizeSearchText(value) {
+    return String(value || "").toLowerCase().replace(/\s+/g, " ").trim();
+  }
+
+  function selectedScenario() {
+    return scenarioByKey.get(selectedScenarioKey) || clinicalScenarios[0];
+  }
+
+  function uniquePaths(paths) {
+    return Array.from(new Set((paths || []).filter(Boolean)));
+  }
+
+  function fieldMeta(path) {
+    const [sectionKey, fieldKey] = String(path || "").split(".");
+    const section = window.CVD_SCHEMA.find((item) => item.key === sectionKey);
+    const field = section?.fields.find((item) => item.key === fieldKey);
+    if (!section || !field) return null;
+    return {path, section, field, sectionKey, fieldKey};
+  }
+
+  function scenarioRequiredDataPoints() {
+    const base = requiredDataPoints.map(([path, label]) => [path, label]);
+    selectedScenario().requiredPaths.forEach(([path, label]) => {
+      if (!base.some(([existingPath]) => existingPath === path)) base.push([path, label]);
+    });
+    return base;
+  }
+
+  function scenarioMissingRequiredData(data) {
+    return scenarioRequiredDataPoints().filter(([path]) => !isFilled(getValue(data, path)));
+  }
+
+  function quickInputValue(path, data) {
+    const value = getValue(data, path);
+    return Array.isArray(value) ? value.join("; ") : value ?? "";
+  }
+
+  function buildQuickControl(meta, data) {
+    const field = meta.field;
+    let input;
+    if (field.type === "textarea") {
+      input = document.createElement("textarea");
+      input.rows = 2;
+    } else if (field.type === "select") {
+      input = document.createElement("select");
+      (field.options || []).forEach(([value, text]) => {
+        const option = document.createElement("option");
+        option.value = value;
+        option.textContent = text;
+        input.appendChild(option);
+      });
+    } else {
+      input = document.createElement("input");
+      input.type = field.type || "text";
+      if (field.step) input.step = field.step;
+      if (field.min !== undefined) input.min = field.min;
+      if (field.max !== undefined) input.max = field.max;
+    }
+    input.dataset.quickPath = meta.path;
+    input.value = quickInputValue(meta.path, data);
+    if (field.placeholder) input.placeholder = field.placeholder;
+    input.addEventListener("input", () => {
+      setFieldValue(meta.path, input.value);
+      if (meta.path === "GENERAL_INFO.Height_cm" || meta.path === "GENERAL_INFO.Weight_kg") calculateBMI();
+      const snapshot = updatePreview();
+      scheduleDraftSave(snapshot);
+      hideRecentCases();
+      setHtmlExportAvailable(false);
+      setSaveState(currentCaseId ? `кейс #${currentCaseId} изменён` : "не сохранено", true);
+    });
+    input.addEventListener("focus", () => {
+      const realInput = form.elements[meta.path];
+      realInput?.closest("details.section")?.classList.add("linked-highlight");
+    });
+    input.addEventListener("blur", () => {
+      form.elements[meta.path]?.closest("details.section")?.classList.remove("linked-highlight");
+    });
+    return input;
+  }
+
+  function renderQuickWorkspace(data = collectData()) {
+    if (!quickFieldsGrid) return;
+    const scenario = selectedScenario();
+    if (scenarioHint) scenarioHint.textContent = scenario.hint;
+    quickFieldsGrid.innerHTML = "";
+    const paths = uniquePaths(scenario.quickPaths);
+    if (quickWorkspaceSummary) {
+      quickWorkspaceSummary.textContent = `${scenario.title}: ${paths.length} быстрых полей.`;
+    }
+    paths.forEach((path) => {
+      const meta = fieldMeta(path);
+      if (!meta) return;
+      const item = document.createElement("div");
+      item.className = "quick-field";
+      item.dataset.quickField = path;
+      const label = document.createElement("label");
+      label.textContent = meta.field.label;
+      const section = document.createElement("small");
+      section.textContent = meta.section.title;
+      const control = buildQuickControl(meta, data);
+      const action = document.createElement("button");
+      action.type = "button";
+      action.title = "Открыть поле в полной анкете";
+      action.textContent = "Перейти";
+      action.addEventListener("click", () => focusFieldPath(path));
+      item.append(label, section, control, action);
+      quickFieldsGrid.appendChild(item);
+    });
+    applyQuickWorkspaceVisibility();
+  }
+
+  function syncQuickWorkspace(data) {
+    quickFieldsGrid?.querySelectorAll("[data-quick-path]").forEach((input) => {
+      if (document.activeElement === input) return;
+      input.value = quickInputValue(input.dataset.quickPath, data);
+    });
+  }
+
+  function applyQuickWorkspaceVisibility() {
+    const workspace = document.querySelector(".quick-workspace");
+    workspace?.classList.toggle("is-collapsed", !quickWorkspaceExpanded);
+    if (quickWorkspaceToggle) {
+      quickWorkspaceToggle.textContent = quickWorkspaceExpanded ? "Скрыть поля" : "Показать поля";
+      quickWorkspaceToggle.setAttribute("aria-expanded", quickWorkspaceExpanded ? "true" : "false");
+    }
+  }
+
+  function toggleQuickWorkspace() {
+    quickWorkspaceExpanded = !quickWorkspaceExpanded;
+    applyQuickWorkspaceVisibility();
+  }
+
   function renderField(section, field) {
     const wrapper = document.createElement("div");
     wrapper.className = field.type === "textarea" ? "field full" : "field";
@@ -276,6 +575,10 @@
       wrapper.appendChild(hint);
       input.dataset.hasReference = "1";
     }
+    const alert = document.createElement("small");
+    alert.className = "field-alert hidden";
+    alert.dataset.alertFor = input.name;
+    wrapper.appendChild(alert);
     return wrapper;
   }
 
@@ -291,6 +594,33 @@
     hint.textContent = out
       ? `${status.state === "below" ? "Ниже референса" : "Выше референса"}: ${status.range.text}`
       : `Референс: ${status.range.text}`;
+  }
+
+  function fieldAlert(path, data) {
+    const value = numericValue(data, path);
+    const text = String(getValue(data, path) || "").toLowerCase();
+    const alerts = {
+      "PHYSICAL_EXAM.Blood_pressure_right_systolic_mmHg": () => value >= 180 ? ["critical", "Очень высокое систолическое АД: проверьте кризовый контекст."] : value > 0 && value < 90 ? ["critical", "Систолическое АД ниже 90: проверьте гемодинамику."] : null,
+      "PHYSICAL_EXAM.Blood_pressure_right_diastolic_mmHg": () => value >= 120 ? ["critical", "Диастолическое АД 120 и выше: проверьте срочность ситуации."] : null,
+      "PHYSICAL_EXAM.Heart_rate_bpm": () => value > 120 ? ["warning", "Выраженная тахикардия: сверьте ЭКГ и ритм."] : value > 0 && value < 50 ? ["warning", "Брадикардия: сверьте ритм, симптомы и терапию."] : null,
+      "PHYSICAL_EXAM.SpO2_room_air_percent": () => value > 0 && value < 92 ? ["critical", "SpO2 ниже 92%: проверьте дыхательный статус."] : null,
+      "LABS_CARDIAC_MARKERS.Troponin_ng_L": () => value > 14 ? ["warning", "Тропонин выше ориентировочного референса: важна динамика и единицы."] : null,
+      "LABS_CARDIAC_MARKERS.NT_proBNP_pg_ml": () => value > 125 ? ["warning", "NT-proBNP повышен: сопоставьте с возрастом, СКФ и симптомами."] : null,
+      "LABS_BIOCHEM.K_mmol_L": () => value >= 5.5 ? ["critical", "Калий высокий: проверьте риск аритмий и терапию."] : value > 0 && value < 3.5 ? ["warning", "Калий снижен: проверьте аритмогенный риск."] : null,
+      "ECHOCARDIOGRAPHY.LVEF_percent": () => value > 0 && value < 40 ? ["warning", "ФВ ЛЖ ниже 40%: выделите контекст ХСН и терапию."] : null,
+      "ECG_AND_BP_MONITORING.Resting_ECG_summary": () => text.includes("st") || text.includes("подъем") || text.includes("элевац") ? ["critical", "В ЭКГ-тексте есть признаки ST-изменений: проверьте ОКС-контекст."] : null
+    };
+    return alerts[path]?.() || null;
+  }
+
+  function updateFieldAlerts(data) {
+    form.querySelectorAll("[data-alert-for]").forEach((node) => {
+      const result = fieldAlert(node.dataset.alertFor, data);
+      node.classList.toggle("hidden", !result);
+      node.classList.toggle("critical", result?.[0] === "critical");
+      node.classList.toggle("warning", result?.[0] === "warning");
+      node.textContent = result?.[1] || "";
+    });
   }
 
   function sectionNumber(index) {
@@ -369,6 +699,69 @@
       button.textContent = `${sectionNumber(index)}. ${section.title}`;
       button.addEventListener("click", () => focusSection(section.key));
       sectionNav.appendChild(button);
+    });
+  }
+
+  function setupScenarioTemplates() {
+    if (!scenarioSelect) return;
+    scenarioSelect.innerHTML = "";
+    clinicalScenarios.forEach((scenario) => {
+      const option = document.createElement("option");
+      option.value = scenario.key;
+      option.textContent = scenario.title;
+      scenarioSelect.appendChild(option);
+    });
+    try {
+      selectedScenarioKey = localStorage.getItem("cvd:selected-scenario") || selectedScenarioKey;
+    } catch (_) {}
+    if (!scenarioByKey.has(selectedScenarioKey)) selectedScenarioKey = "general";
+    scenarioSelect.value = selectedScenarioKey;
+    scenarioSelect.addEventListener("change", () => {
+      selectedScenarioKey = scenarioSelect.value;
+      try { localStorage.setItem("cvd:selected-scenario", selectedScenarioKey); } catch (_) {}
+      renderQuickWorkspace(updatePreview());
+      toast(`Сценарий: ${selectedScenario().title}`);
+    });
+    renderQuickWorkspace(collectData());
+  }
+
+  function fieldSearchMatches(query) {
+    const normalized = normalizeSearchText(query);
+    if (normalized.length < 2) return [];
+    return window.CVD_SCHEMA.flatMap((section, sectionIndex) =>
+      section.fields.map((field) => {
+        const path = fieldPath(section.key, field.key);
+        return {
+          path,
+          sectionIndex,
+          section: section.title,
+          label: field.label,
+          haystack: normalizeSearchText(`${field.label} ${field.key} ${section.title} ${section.key} ${path}`)
+        };
+      })
+    ).filter((item) => item.haystack.includes(normalized)).slice(0, 8);
+  }
+
+  function renderFieldSearchResults(query) {
+    if (!fieldSearchResults) return;
+    const matches = fieldSearchMatches(query);
+    fieldSearchResults.innerHTML = "";
+    fieldSearchResults.classList.toggle("hidden", matches.length === 0);
+    matches.forEach((item) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = "field-search-result";
+      const label = document.createElement("strong");
+      label.textContent = item.label;
+      const meta = document.createElement("span");
+      meta.textContent = `${sectionNumber(item.sectionIndex)}. ${item.section}`;
+      button.append(label, meta);
+      button.addEventListener("click", () => {
+        fieldSearchInput.value = "";
+        fieldSearchResults.classList.add("hidden");
+        focusFieldPath(item.path);
+      });
+      fieldSearchResults.appendChild(button);
     });
   }
 
@@ -479,6 +872,9 @@
     updateSectionBadges(data);
     updateClinicalQuality(data);
     form.querySelectorAll('[data-has-reference="1"]').forEach(updateFieldReference);
+    updateFieldAlerts(data);
+    syncQuickWorkspace(data);
+    renderModelWorkbench(lastModelParsed, data);
     return data;
   }
 
@@ -556,16 +952,22 @@
   function updateSectionBadges(data) {
     window.CVD_SCHEMA.forEach((section) => {
       const badge = form.querySelector(`[data-section-badge="${section.key}"]`);
-      if (!badge) return;
       const {filled, total, percent} = sectionFillPercent(section, data);
-      // Пустые секции не шумят бейджами; частично заполненные показывают счётчик.
-      badge.textContent = percent === 0 ? "" : percent === 100 ? "✓" : `${filled}/${total}`;
-      badge.className = `section-fill-badge ${percent === 100 ? "ok" : percent > 0 ? "warning" : "empty"}`.trim();
+      if (badge) {
+        // Пустые секции не шумят бейджами; частично заполненные показывают счётчик.
+        badge.textContent = percent === 0 ? "" : percent === 100 ? "✓" : `${filled}/${total}`;
+        badge.className = `section-fill-badge ${percent === 100 ? "ok" : percent > 0 ? "warning" : "empty"}`.trim();
+      }
+      const nav = sectionNav?.querySelector(`[data-section-nav="${section.key}"]`);
+      if (nav) {
+        nav.classList.toggle("ok", percent === 100);
+        nav.classList.toggle("warning", percent > 0 && percent < 100);
+      }
     });
   }
 
   function missingRequiredData(data) {
-    return qualityRules.missingRequiredData(data);
+    return scenarioMissingRequiredData(data);
   }
 
   function updateClinicalQuality(data) {
@@ -616,23 +1018,29 @@
     const hasCase = Boolean(currentCaseId);
     const hasResult = Boolean(currentModelRequestId);
     const ready = missing.length === 0;
+    const scenario = selectedScenario();
     let nextAction = "Заполните ключевые поля пациента.";
-    let ctaText = "Запустить AI-анализ";
+    let ctaText = "AI-анализ";
     if (!hasCase) {
       nextAction = "Сохраните кейс, чтобы зафиксировать данные и историю действий.";
-      ctaText = "Сначала сохраните кейс";
+      ctaText = "Сохранить кейс";
     } else if (!ready) {
-      nextAction = `Дозаполните ключевые поля: ${missing.slice(0, 3).map(([, label]) => label).join(", ")}${missing.length > 3 ? "…" : ""}.`;
-      ctaText = "Заполните данные для AI";
+      nextAction = `${scenario.title}: дозаполните ${missing.slice(0, 3).map(([, label]) => label).join(", ")}${missing.length > 3 ? "…" : ""}.`;
+      ctaText = "Данные для AI";
     } else if (!hasResult) {
-      nextAction = "Кейс готов к проверке и запуску AI-анализа.";
-      ctaText = "Запустить AI-анализ";
+      nextAction = `${scenario.title}: кейс готов к проверке и запуску AI-анализа.`;
+      ctaText = "AI-анализ";
     } else {
       nextAction = "Результат готов: проверьте заключение и сохраните экспертную оценку.";
-      ctaText = "Обновить AI-анализ";
+      ctaText = "Обновить AI";
     }
     if (nextActionText) nextActionText.textContent = nextAction;
     if (diagnoseButton && !diagnoseButton.disabled) diagnoseButton.textContent = ctaText;
+    if (quickMissingButton) {
+      quickMissingButton.disabled = missing.length === 0;
+      quickMissingButton.textContent = missing.length ? `К полю (${missing.length})` : "Заполнено";
+    }
+    syncStatusBar(data);
   }
 
   function focusFieldPath(path) {
@@ -654,18 +1062,18 @@
   function updateModelFreshness(data) {
     const stale = Boolean(currentModelRequestId && lastModelDataFingerprint && qualityRules.dataFingerprint(data) !== lastModelDataFingerprint);
     if (stale) {
-      modelStatus.textContent = "данные изменены после AI";
-      modelStatus.className = "pill warning";
+      setModelStatus("данные изменены после AI", "warning");
     }
     diagnoseButton?.classList.toggle("warning", stale);
     diagnoseButton?.setAttribute("title", stale ? "Данные кейса изменились после последнего AI-анализа — рекомендуется обновить результат." : "");
+    syncStatusBar(data);
   }
 
   function renderReadiness(data) {
     if (!readinessPanel) return;
     readinessPanel.innerHTML = "";
     const missing = missingRequiredData(data);
-    const total = requiredDataPoints.length;
+    const total = scenarioRequiredDataPoints().length;
     const ready = total - missing.length;
     const percent = Math.round((ready / total) * 100);
     if (jumpMissingButton) {
@@ -817,8 +1225,71 @@
     }
   }
 
+  function taskCounts(jobs) {
+    return jobs.reduce((result, job) => {
+      const key = ["queued", "running", "success", "error"].includes(job.status) ? job.status : "other";
+      result[key] = (result[key] || 0) + 1;
+      return result;
+    }, {queued: 0, running: 0, success: 0, error: 0, other: 0});
+  }
+
+  function renderTaskSummary(jobs) {
+    if (!taskCenterSummary) return;
+    const counts = taskCounts(jobs);
+    taskCenterSummary.innerHTML = "";
+    [
+      ["В очереди", counts.queued, "warning"],
+      ["В работе", counts.running, "ok"],
+      ["Готово", counts.success, "ok"],
+      ["Ошибки", counts.error, "error"]
+    ].forEach(([label, value, kind]) => {
+      const card = document.createElement("div");
+      card.className = `task-summary-card ${kind}`.trim();
+      const strong = document.createElement("strong");
+      strong.textContent = String(value);
+      const span = document.createElement("span");
+      span.textContent = label;
+      card.append(strong, span);
+      taskCenterSummary.appendChild(card);
+    });
+  }
+
+  function renderJobNode(job, compact = false) {
+    const actionable = job.status === "success" && (
+      (job.type === "text_preparation" && job.import_id) ||
+      (job.type === "diagnosis" && job.model_request_id)
+    );
+    const node = document.createElement(actionable ? "button" : "div");
+    if (actionable) node.type = "button";
+    node.className = compact
+      ? `job-chip ${job.status === "success" ? "ok" : job.status === "error" ? "error" : "warning"}`
+      : `task-center-item ${job.status === "success" ? "ok" : job.status === "error" ? "error" : job.status === "running" ? "running" : "warning"}`;
+    const title = document.createElement("strong");
+    title.textContent = aiJobTitle(job);
+    const state = document.createElement("span");
+    state.className = compact ? "muted" : "task-center-state";
+    state.textContent = aiJobStatusText(job);
+    node.append(title, state);
+    if (!compact) {
+      const meta = document.createElement("small");
+      const created = job.created_at ? new Date(job.created_at).toLocaleString("ru-RU", {day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit"}) : "";
+      meta.textContent = [
+        job.position ? `позиция ${job.position}` : "",
+        job.estimated_wait_ms ? queueEtaText(job.estimated_wait_ms) : "",
+        created
+      ].filter(Boolean).join(" · ") || "статус обновляется";
+      const action = document.createElement("span");
+      action.className = "task-center-action";
+      action.textContent = actionable ? "Открыть" : job.status === "error" ? (job.error || "ошибка") : "ожидание";
+      node.append(meta, action);
+    }
+    if (actionable) {
+      node.addEventListener("click", () => openAiJob(job).catch((err) => toast(err.message)));
+    }
+    return node;
+  }
+
   function renderActiveJobs(payload) {
-    if (!activeJobsLine) return;
     const jobs = payload?.jobs || [];
     const recentFinishedCutoffMs = Date.now() - 30 * 60 * 1000;
     const visible = [
@@ -828,27 +1299,36 @@
         .filter((job) => new Date(job.finished_at || job.created_at || 0).getTime() >= recentFinishedCutoffMs)
         .slice(0, 1)
     ].slice(0, 5);
-    activeJobsLine.innerHTML = "";
-    activeJobsLine.classList.toggle("hidden", visible.length === 0);
-    visible.forEach((job) => {
-      const actionable = job.status === "success" && (
-        (job.type === "text_preparation" && job.import_id) ||
-        (job.type === "diagnosis" && job.model_request_id)
-      );
-      const node = document.createElement(actionable ? "button" : "span");
-      if (actionable) node.type = "button";
-      node.className = `job-chip ${job.status === "success" ? "ok" : job.status === "error" ? "error" : "warning"}`;
-      const title = document.createElement("strong");
-      title.textContent = aiJobTitle(job);
-      const state = document.createElement("span");
-      state.className = "muted";
-      state.textContent = aiJobStatusText(job);
-      node.append(title, state);
-      if (actionable) {
-        node.addEventListener("click", () => openAiJob(job).catch((err) => toast(err.message)));
+    const activeCount = jobs.filter((job) => ["queued", "running"].includes(job.status)).length;
+    const attentionCount = jobs.filter((job) => ["queued", "running", "error"].includes(job.status)).length;
+    if (taskCountBadge) taskCountBadge.textContent = String(attentionCount);
+    openTaskCenterButton?.classList.toggle("attention", attentionCount > 0);
+    if (activeJobsLine) {
+      activeJobsLine.innerHTML = "";
+      activeJobsLine.classList.toggle("hidden", visible.length === 0);
+      if (activeCount) {
+        const label = document.createElement("strong");
+        label.textContent = "AI-задачи";
+        activeJobsLine.appendChild(label);
       }
-      activeJobsLine.appendChild(node);
-    });
+      visible.forEach((job) => activeJobsLine.appendChild(renderJobNode(job, true)));
+    }
+    renderTaskSummary(jobs);
+    if (taskCenterList) {
+      taskCenterList.innerHTML = "";
+      if (!jobs.length) {
+        const empty = document.createElement("div");
+        empty.className = "record-empty";
+        const strong = document.createElement("strong");
+        strong.textContent = "Активных AI-задач нет";
+        const span = document.createElement("span");
+        span.textContent = "Здесь появятся подготовка текста, диагнозы, готовые результаты и ошибки.";
+        empty.append(strong, span);
+        taskCenterList.appendChild(empty);
+      } else {
+        jobs.slice(0, 20).forEach((job) => taskCenterList.appendChild(renderJobNode(job, false)));
+      }
+    }
   }
 
   function requestNotifyPermission() {
@@ -938,6 +1418,17 @@
     closeModalElement(modelResultModal);
   }
 
+  function openTaskCenterModal() {
+    if (!taskCenterModal) return;
+    openModalElement(taskCenterModal, document.getElementById("refreshTaskCenterButton"));
+    refreshAiJobs().catch((err) => toast(err.message));
+  }
+
+  function closeTaskCenterModal() {
+    if (!taskCenterModal) return;
+    closeModalElement(taskCenterModal);
+  }
+
   function openTab(name) {
     if (name === "model") {
       openModelResultModal();
@@ -987,8 +1478,104 @@
     lastModelSummary.classList.remove("hidden");
   }
 
+  function modelDiagnosisSummary(parsed) {
+    const cds = parsed?.CDS_OUTPUT || {};
+    const output = parsed?.MODEL_OUTPUT || {};
+    const lead = Array.isArray(cds.possible_diagnoses) ? cds.possible_diagnoses[0] : null;
+    return {
+      text: output.Final_model_diagnosis || lead?.name || cds.summary || "",
+      codes: Array.isArray(output.Model_ICD10_codes) ? output.Model_ICD10_codes : (lead?.icd10_codes || []),
+      summary: cds.summary || "",
+      redFlags: Array.isArray(cds.red_flags) ? cds.red_flags.filter(Boolean) : [],
+      missing: Array.isArray(cds.missing_data) ? cds.missing_data.filter(Boolean) : []
+    };
+  }
+
+  function renderWorkbenchDiagnosis(node, title, text, codes, emptyText) {
+    if (!node) return;
+    node.innerHTML = "";
+    const value = String(text || "").trim();
+    if (!value && (!codes || codes.length === 0)) {
+      node.textContent = emptyText;
+      return;
+    }
+    const diagnosis = document.createElement("p");
+    diagnosis.textContent = value || "Диагноз не указан";
+    node.appendChild(diagnosis);
+    if (codes?.length) {
+      const chips = document.createElement("div");
+      chips.className = "icd-chips";
+      codes.forEach((code) => {
+        const chip = document.createElement("button");
+        chip.type = "button";
+        chip.className = "icd-chip";
+        chip.textContent = code;
+        chip.title = `Скопировать ${title}: ${code}`;
+        chip.addEventListener("click", () => navigator.clipboard?.writeText(code).then(() => toast(`Код ${code} скопирован`)).catch(() => {}));
+        chips.appendChild(chip);
+      });
+      node.appendChild(chips);
+    }
+  }
+
+  function renderModelWorkbench(parsed = lastModelParsed, data = collectData()) {
+    const doctorText = getValue(data, "FINAL_DIAGNOSES.Main_cardiovascular_diagnosis_text") || "";
+    const doctorCodes = data.FINAL_DIAGNOSES?.ICD10_codes || [];
+    const ai = modelDiagnosisSummary(parsed || {});
+    renderWorkbenchDiagnosis(doctorDiagnosisWorkbench, "врача", doctorText, doctorCodes, "Итоговый диагноз врача еще не заполнен.");
+    renderWorkbenchDiagnosis(aiDiagnosisWorkbench, "AI", ai.text, ai.codes, "AI-заключение появится после анализа.");
+    const hasAi = Boolean(ai.text || ai.codes.length);
+    acceptModelDraftButton?.toggleAttribute("disabled", !hasAi);
+    copyModelDiagnosisButton?.toggleAttribute("disabled", !hasAi);
+    openModelReportButton?.toggleAttribute("disabled", !currentModelRequestId);
+    markModelIssueButton?.toggleAttribute("disabled", !currentModelRequestId);
+  }
+
+  function acceptModelDiagnosisDraft() {
+    const ai = modelDiagnosisSummary(lastModelParsed || {});
+    if (!ai.text && !ai.codes.length) {
+      toast("AI-диагноз пока отсутствует");
+      return;
+    }
+    const currentDiagnosis = String(form.elements["FINAL_DIAGNOSES.Main_cardiovascular_diagnosis_text"]?.value || "").trim();
+    const currentCodes = String(form.elements["FINAL_DIAGNOSES.ICD10_codes"]?.value || "").trim();
+    if ((currentDiagnosis || currentCodes) && !window.confirm("Заменить текущий диагноз врача черновиком AI?")) return;
+    setFieldValue("FINAL_DIAGNOSES.Main_cardiovascular_diagnosis_text", ai.text);
+    setFieldValue("FINAL_DIAGNOSES.ICD10_codes", ai.codes);
+    const data = updatePreview();
+    scheduleDraftSave(data);
+    setSaveState(currentCaseId ? `кейс #${currentCaseId} изменён` : "не сохранено", true);
+    focusFieldPath("FINAL_DIAGNOSES.Main_cardiovascular_diagnosis_text");
+    toast("AI-диагноз перенесён в черновик врача");
+  }
+
+  async function copyModelDiagnosis() {
+    const ai = modelDiagnosisSummary(lastModelParsed || {});
+    const text = [ai.text, ai.codes.length ? `МКБ-10: ${ai.codes.join("; ")}` : ""].filter(Boolean).join("\n");
+    if (!text) {
+      toast("AI-диагноз пока отсутствует");
+      return;
+    }
+    await navigator.clipboard.writeText(text);
+    toast("AI-диагноз скопирован");
+  }
+
+  function markModelIssue() {
+    if (!currentModelRequestId || !requestReviewForm) {
+      toast("Сначала откройте результат AI");
+      return;
+    }
+    requestReviewForm.classList.remove("hidden");
+    requestReviewForm.rating.value = "wrong";
+    requestReviewForm.issue_types.value = requestReviewForm.issue_types.value || "needs_correction";
+    requestReviewForm.comment.focus();
+    toast("Оценка переключена на ошибку — добавьте комментарий");
+  }
+
   function renderModelOutput(parsed, meta = {}) {
     if (!modelStructured) return;
+    lastModelParsed = parsed || null;
+    renderModelWorkbench(lastModelParsed, collectData());
     modelStructured.innerHTML = "";
     const cds = parsed?.CDS_OUTPUT;
     if (!cds || typeof cds !== "object") {
@@ -1173,13 +1760,62 @@
     return card;
   }
 
+  function guessFieldPathForEvidence(text) {
+    const value = normalizeSearchText(text);
+    const rules = [
+      [["тропонин", "troponin"], "LABS_CARDIAC_MARKERS.Troponin_ng_L"],
+      [["nt-probnp", "nt probnp", "bnp"], "LABS_CARDIAC_MARKERS.NT_proBNP_pg_ml"],
+      [["фв", "lvef", "фракц"], "ECHOCARDIOGRAPHY.LVEF_percent"],
+      [["эхо", "экокг"], "ECHOCARDIOGRAPHY.LVEF_percent"],
+      [["экг", "st ", "st-", "ритм"], "ECG_AND_BP_MONITORING.Resting_ECG_summary"],
+      [["холтер"], "ECG_AND_BP_MONITORING.Holter_ECG_summary"],
+      [["смад"], "ECG_AND_BP_MONITORING.ABPM_summary"],
+      [["ад", "давлен"], "PHYSICAL_EXAM.Blood_pressure_right_systolic_mmHg"],
+      [["чсс", "пульс", "тахик", "брадик"], "PHYSICAL_EXAM.Heart_rate_bpm"],
+      [["spo2", "сатурац"], "PHYSICAL_EXAM.SpO2_room_air_percent"],
+      [["жалоб", "боль", "одыш", "отек"], "COMPLAINTS.Main_complaint"],
+      [["креатинин"], "LABS_BIOCHEM.Creatinine_umol_L"],
+      [["скф", "egfr"], "LABS_BIOCHEM.eGFR_ml_min_1_73m2"],
+      [["калий", " k ", "k+"], "LABS_BIOCHEM.K_mmol_L"],
+      [["лпнп", "ldl"], "LABS_LIPIDS.LDL_mmol_L"],
+      [["мкб", "icd"], "FINAL_DIAGNOSES.ICD10_codes"],
+      [["диагноз"], "FINAL_DIAGNOSES.Main_cardiovascular_diagnosis_text"]
+    ];
+    const match = rules.find(([tokens]) => tokens.some((token) => value.includes(token)));
+    if (match) return match[1];
+    return fieldSearchMatches(value.split(" ").slice(0, 3).join(" "))[0]?.path || null;
+  }
+
+  function focusEvidenceText(text) {
+    const path = guessFieldPathForEvidence(text);
+    if (!path) {
+      toast("Не удалось сопоставить аргумент с конкретным полем");
+      return;
+    }
+    focusFieldPath(path);
+  }
+
   function renderInlineList(label, items) {
     const wrapper = document.createElement("div");
     wrapper.className = "inline-evidence";
     const title = document.createElement("span");
     title.textContent = `${label}:`;
+    const values = Array.isArray(items) ? items.filter(Boolean) : [];
     const text = document.createElement("small");
-    text.textContent = Array.isArray(items) && items.length ? items.join("; ") : "нет";
+    if (values.length) {
+      values.forEach((item, index) => {
+        const button = document.createElement("button");
+        button.type = "button";
+        button.className = "evidence-link";
+        button.textContent = item;
+        button.title = "Найти связанное поле анкеты";
+        button.addEventListener("click", () => focusEvidenceText(item));
+        text.appendChild(button);
+        if (index < values.length - 1) text.append("; ");
+      });
+    } else {
+      text.textContent = "нет";
+    }
     wrapper.append(title, text);
     return wrapper;
   }
@@ -1322,8 +1958,7 @@
   function diagnose() {
     const patientData = updatePreview();
     if (!qualityRules.hasClinicalInput(patientData)) {
-      modelStatus.textContent = "добавьте данные пациента";
-      modelStatus.className = "pill warning";
+      setModelStatus("добавьте данные пациента", "warning");
       toast("Добавьте данные пациента перед запуском AI-анализа");
       focusFieldPath("GENERAL_INFO.Patient_ID");
       return;
@@ -1338,10 +1973,11 @@
     button.disabled = true;
     currentModelRequestId = null;
     lastModelDataFingerprint = null;
+    lastModelParsed = null;
+    renderModelWorkbench(null, patientData);
     setHtmlExportAvailable(false);
     hideAiErrorCard();
-    modelStatus.textContent = "запрос выполняется";
-    modelStatus.className = "pill warning";
+    setModelStatus("запрос выполняется", "warning");
     modelPreview.textContent = "Выполняется AI-анализ...";
     modelStructured.textContent = "AI-анализ выполняется. Результат появится здесь после завершения задания.";
     requestReviewForm?.classList.add("hidden");
@@ -1352,13 +1988,13 @@
         const own = queue.user?.by_kind?.diagnosis || {};
         if (own.state === "queued") {
           const eta = own.estimated_wait_ms ? ` · ${queueEtaText(own.estimated_wait_ms)}` : "";
-          modelStatus.textContent = `в очереди · позиция ${own.position}${eta}`;
+          setModelStatus(`в очереди · позиция ${own.position}${eta}`, "warning");
           if (queueStatus) {
             queueStatus.textContent = `AI очередь: позиция ${own.position}${eta}`;
             queueStatus.className = "pill warning";
           }
         } else if (own.state === "running") {
-          modelStatus.textContent = "AI обрабатывает запрос";
+          setModelStatus("AI обрабатывает запрос", "ok");
           if (queueStatus) {
             queueStatus.textContent = "AI обрабатывает запрос";
             queueStatus.className = "pill ok";
@@ -1380,18 +2016,18 @@
       awaitedDiagnosisJobId = job.job_id;
       requestNotifyPermission();
       await refreshAiJobs();
-      modelStatus.textContent = `задание #${job.job_id} в очереди`;
+      setModelStatus(`задание #${job.job_id} в очереди`, "warning");
       while (true) {
         await wait(2000);
         const jobStatus = await api(`/api/model/diagnose/jobs/${job.job_id}`);
         refreshAiJobs().catch(() => {});
         const item = jobStatus.job || {};
         if (item.status === "queued") {
-          modelStatus.textContent = `задание #${item.id} ожидает`;
+          setModelStatus(`задание #${item.id} ожидает`, "warning");
           continue;
         }
         if (item.status === "running") {
-          modelStatus.textContent = `задание #${item.id} выполняется`;
+          setModelStatus(`задание #${item.id} выполняется`, "ok");
           continue;
         }
         response = jobStatus.result || {ok: false, error: item.error || "AI-задание завершилось без результата"};
@@ -1407,8 +2043,7 @@
       setHtmlExportAvailable(true);
       const seconds = (Number(response.duration_ms || 0) / 1000).toFixed(1);
       const waited = Number(response.queue_wait_ms || 0) > 0 ? ` · очередь ${(Number(response.queue_wait_ms) / 1000).toFixed(1)} с` : "";
-      modelStatus.textContent = `результат готов за ${seconds} с${waited}`;
-      modelStatus.className = "pill ok";
+      setModelStatus(`результат готов за ${seconds} с${waited}`, "ok");
       if (queueStatus) queueStatus.className = "pill hidden";
       updateWorkflow(patientData);
       toast("Результат AI-анализа готов");
@@ -1418,8 +2053,7 @@
         modelPreview.textContent = err.message;
         showAiErrorCard(err.message);
       }
-      modelStatus.textContent = resultWasSaved ? "результат сохранён · ошибка отображения" : "ошибка AI-анализа";
-      modelStatus.className = "pill error";
+      setModelStatus(resultWasSaved ? "результат сохранён · ошибка отображения" : "ошибка AI-анализа", "error");
       if (resultWasSaved) {
         currentModelRequestId = response.request_id;
         setHtmlExportAvailable(true);
@@ -1516,10 +2150,10 @@
     if (openModal) openTab("model");
     currentModelRequestId = item.id;
     lastModelDataFingerprint = qualityRules.dataFingerprint(collectData());
-    modelStatus.textContent = item.status === "success"
-      ? item.ai_result_stale ? "данные изменены после AI" : "ответ из истории"
-      : "ошибка из истории";
-    modelStatus.className = `pill ${item.status === "success" ? item.ai_result_stale ? "warning" : "ok" : "error"}`;
+    setModelStatus(
+      item.status === "success" ? item.ai_result_stale ? "данные изменены после AI" : "ответ из истории" : "ошибка из истории",
+      item.status === "success" ? item.ai_result_stale ? "warning" : "ok" : "error"
+    );
     modelPreview.textContent = JSON.stringify(item.parsed_output || {error: requestErrorText()}, null, 2);
     renderModelOutput(item.parsed_output || {}, item);
     showReviewForm(item.id, item.review);
@@ -1650,6 +2284,32 @@
     importSummary.appendChild(card);
   }
 
+  function renderImportDecisionPanel(counts, rows) {
+    if (!importDecisionPanel) return;
+    const reliable = rows.filter((row) => shouldAutoSelectImportRow(row)).length;
+    const conflicts = (counts.conflict || 0) + (counts["source-conflict"] || 0);
+    const unchanged = counts.same || 0;
+    importDecisionPanel.innerHTML = "";
+    [
+      ["Можно применить", reliable, "Поля с новым надежным значением уже выбраны.", "ok", selectNewImportFields],
+      ["Нужна проверка", conflicts, "Конфликты не применяются без ручного выбора.", "warning", selectConflictedImportFields],
+      ["Без изменений", unchanged, "Совпадающие поля будут пропущены.", "", clearImportSelection]
+    ].forEach(([title, value, text, kind, action]) => {
+      const card = document.createElement("button");
+      card.type = "button";
+      card.className = `import-decision-card ${kind}`.trim();
+      const strong = document.createElement("strong");
+      strong.textContent = String(value);
+      const label = document.createElement("span");
+      label.textContent = title;
+      const hint = document.createElement("small");
+      hint.textContent = text;
+      card.append(strong, label, hint);
+      card.addEventListener("click", action);
+      importDecisionPanel.appendChild(card);
+    });
+  }
+
   function openImportPreview(preview) {
     const currentData = collectData();
     const rows = (preview.mappings || []).map((mapping) => {
@@ -1674,6 +2334,8 @@
     appendImportMetric(counts.new || 0, "новых полей");
     appendImportMetric((counts.conflict || 0) + (counts["source-conflict"] || 0), "конфликтов");
     appendImportMetric((preview.warnings || []).length, "предупреждений");
+    renderImportDecisionPanel(counts, rows);
+    if (importDiffDetails) importDiffDetails.open = (counts.conflict || 0) + (counts["source-conflict"] || 0) > 0;
 
     const correctedText = String(preview.corrected_text || "").trim();
     correctedTextBlock.classList.toggle("hidden", !correctedText);
@@ -1986,8 +2648,9 @@
   function renderReviewContent(data) {
     reviewContent.innerHTML = "";
     const missing = missingRequiredData(data);
-    const ready = requiredDataPoints.length - missing.length;
-    const readinessPercent = Math.round((ready / requiredDataPoints.length) * 100);
+    const scenarioRequired = scenarioRequiredDataPoints();
+    const ready = scenarioRequired.length - missing.length;
+    const readinessPercent = Math.round((ready / scenarioRequired.length) * 100);
     const signalRows = Array.from(signalsPanel.querySelectorAll(".signal-row"));
     const signals = signalRows.map((node) => node.textContent.trim());
     const cards = [
@@ -2044,6 +2707,7 @@
   function resetModelState(clearFields = false) {
     currentModelRequestId = null;
     lastModelDataFingerprint = null;
+    lastModelParsed = null;
     setHtmlExportAvailable(false);
     hideAiErrorCard();
     updateModelTabVisibility();
@@ -2055,8 +2719,8 @@
     modelStructured.textContent = "Структурированный ответ появится после AI-анализа.";
     lastModelSummary?.classList.add("hidden");
     if (lastModelSummary) lastModelSummary.innerHTML = "";
-    modelStatus.textContent = "AI не запускался";
-    modelStatus.className = "pill";
+    renderModelWorkbench(null, collectData());
+    setModelStatus("AI не запускался");
     requestReviewForm?.classList.add("hidden");
   }
 
@@ -2109,6 +2773,13 @@
     modelResultModal?.addEventListener("click", (event) => {
       if (event.target === modelResultModal) closeModelResultModal();
     });
+    openTaskCenterButton?.addEventListener("click", openTaskCenterModal);
+    document.getElementById("closeTaskCenterModal")?.addEventListener("click", closeTaskCenterModal);
+    document.getElementById("closeTaskCenterFooter")?.addEventListener("click", closeTaskCenterModal);
+    document.getElementById("refreshTaskCenterButton")?.addEventListener("click", () => refreshAiJobs().catch((err) => toast(err.message)));
+    taskCenterModal?.addEventListener("click", (event) => {
+      if (event.target === taskCenterModal) closeTaskCenterModal();
+    });
     document.getElementById("closeReviewModal").addEventListener("click", closeReviewModal);
     document.getElementById("cancelReviewModal").addEventListener("click", closeReviewModal);
     confirmReviewButton.addEventListener("click", () => {
@@ -2136,6 +2807,7 @@
       event.preventDefault();
       if (modal === importModal) closeImportModal();
       else if (modal === structureTextModal) closeStructureTextModal();
+      else if (modal === taskCenterModal) closeTaskCenterModal();
       else if (modal === modelResultModal) closeModelResultModal();
       else if (modal === reviewModal) closeReviewModal();
       else if (modal === passwordModal) closePasswordModal();
@@ -2226,8 +2898,30 @@
 
   renderForm();
   setupTabs();
+  setupScenarioTemplates();
   setupUser();
   updateStructureTextCounter();
+  fieldSearchInput?.addEventListener("input", () => renderFieldSearchResults(fieldSearchInput.value));
+  fieldSearchInput?.addEventListener("keydown", (event) => {
+    if (event.key !== "Enter") return;
+    const first = fieldSearchMatches(fieldSearchInput.value)[0];
+    if (!first) return;
+    event.preventDefault();
+    fieldSearchInput.value = "";
+    fieldSearchResults?.classList.add("hidden");
+    focusFieldPath(first.path);
+  });
+  document.addEventListener("click", (event) => {
+    if (!fieldSearchResults || fieldSearchResults.classList.contains("hidden")) return;
+    if (event.target === fieldSearchInput || fieldSearchResults.contains(event.target)) return;
+    fieldSearchResults.classList.add("hidden");
+  });
+  quickMissingButton?.addEventListener("click", () => focusFirstMissing());
+  quickWorkspaceToggle?.addEventListener("click", toggleQuickWorkspace);
+  acceptModelDraftButton?.addEventListener("click", acceptModelDiagnosisDraft);
+  copyModelDiagnosisButton?.addEventListener("click", () => copyModelDiagnosis().catch((err) => toast(err.message)));
+  openModelReportButton?.addEventListener("click", () => viewHtmlResult());
+  markModelIssueButton?.addEventListener("click", markModelIssue);
   form.addEventListener("input", (event) => {
     if (event.target.name === "GENERAL_INFO.Height_cm" || event.target.name === "GENERAL_INFO.Weight_kg") {
       calculateBMI();

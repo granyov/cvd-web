@@ -17,6 +17,11 @@
     <symbol id="i-shield-check" viewBox="0 0 24 24"><path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/><path d="M9 12l2 2 4-4"/></symbol>
     <symbol id="i-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></symbol>
     <symbol id="i-flask" viewBox="0 0 24 24"><path d="M9 3h6M10 3v6L4.5 19a1.7 1.7 0 0 0 1.6 2.4h11.8a1.7 1.7 0 0 0 1.6-2.4L14 9V3"/></symbol>
+    <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="8"/><path d="M21 21l-4.3-4.3"/></symbol>
+    <symbol id="i-list-check" viewBox="0 0 24 24"><path d="M8 6h13M8 12h13M8 18h13M3 6l1 1 2-2M3 12l1 1 2-2M3 18l1 1 2-2"/></symbol>
+    <symbol id="i-copy" viewBox="0 0 24 24"><rect x="9" y="9" width="13" height="13" rx="2"/><rect x="2" y="2" width="13" height="13" rx="2"/></symbol>
+    <symbol id="i-check" viewBox="0 0 24 24"><path d="M20 6L9 17l-5-5"/></symbol>
+    <symbol id="i-alert" viewBox="0 0 24 24"><path d="M10.3 3.9L1.8 18a2 2 0 0 0 1.7 3h17a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/><path d="M12 9v4M12 17h.01"/></symbol>
   </svg>
   <header class="topbar">
     <div class="brand">{{app_name}} <span class="pill">{{app_version}}</span></div>
@@ -48,7 +53,7 @@
     <div class="layout">
       <section class="panel">
         <div class="panel-header">
-          <div class="case-context">
+          <div class="case-context legacy-status" aria-hidden="true">
             <span id="saveStatus" class="pill">не сохранено</span>
             <span id="modelStatus" class="pill">AI не запускался</span>
             <span id="queueStatus" class="pill hidden">очередь AI</span>
@@ -56,13 +61,13 @@
           <div class="toolbar workflow-actions" aria-label="Действия с кейсом">
             <button type="button" id="newCaseButton"><svg class="icon"><use href="#i-plus"/></svg>Новый кейс</button>
             <button type="button" id="saveCaseButton" title="Сохранить кейс (Ctrl/Cmd+S)"><svg class="icon"><use href="#i-save"/></svg>Сохранить</button>
-            <button type="button" id="diagnoseButton" class="primary">Запустить AI-анализ</button>
+            <button type="button" id="diagnoseButton" class="primary" title="Запустить AI-анализ">AI-анализ</button>
             <div class="more-menu" data-menu>
               <button type="button" id="moreActionsButton" data-menu-toggle aria-haspopup="true" aria-expanded="false">Ещё</button>
               <div class="dropdown-menu hidden" data-menu-panel>
                 <button type="button" id="importJsonButton" title="JSON пациента, FHIR Bundle, CDA/СЭМД XML или PDF из ЕМИАС.ИНФО"><svg class="icon"><use href="#i-upload"/></svg>Импорт файла…</button>
-                <button type="button" id="structureTextButton"><svg class="icon"><use href="#i-file-text"/></svg>AI-подготовка текста…</button>
-                <button type="button" id="reviewButton"><svg class="icon"><use href="#i-shield-check"/></svg>Проверка перед AI…</button>
+                <button type="button" id="structureTextButton" title="AI-подготовка текста"><svg class="icon"><use href="#i-file-text"/></svg>Подготовка текста…</button>
+                <button type="button" id="reviewButton" title="Проверка перед AI"><svg class="icon"><use href="#i-shield-check"/></svg>Проверить перед AI…</button>
                 <button type="button" id="downloadJsonButton"><svg class="icon"><use href="#i-download"/></svg>Скачать JSON</button>
                 <button type="button" id="demoCaseButton" title="Создать синтетический демо-кейс с заполненной анкетой"><svg class="icon"><use href="#i-flask"/></svg>Демо-кейс</button>
               </div>
@@ -71,11 +76,63 @@
           </div>
         </div>
         <div class="panel-body">
-          <div class="next-action-line" id="nextActionCard" role="status" aria-live="polite">
-            <strong>Далее:</strong>
-            <span id="nextActionText">Заполните ключевые поля пациента.</span>
+          <div class="workflow-cockpit" id="workflowCockpit" role="status" aria-live="polite">
+            <div class="workflow-cockpit-main">
+              <div class="workflow-status-grid">
+                <div>
+                  <span>Кейс</span>
+                  <strong id="caseStatusText">Новый кейс</strong>
+                </div>
+                <div>
+                  <span>Готовность</span>
+                  <strong id="readinessStatusText">0%</strong>
+                </div>
+                <div>
+                  <span>AI</span>
+                  <strong id="aiStatusText">не запускался</strong>
+                </div>
+              </div>
+              <div class="next-action-line" id="nextActionCard">
+                <strong>Далее:</strong>
+                <span id="nextActionText">Заполните ключевые поля пациента.</span>
+              </div>
+            </div>
+            <div class="workflow-cockpit-actions">
+              <button type="button" id="openTaskCenterButton"><svg class="icon"><use href="#i-list-check"/></svg>Задачи <span id="taskCountBadge" class="button-badge">0</span></button>
+            </div>
+            <div class="workflow-progress-track" aria-hidden="true">
+              <div id="workflowProgressBar" class="workflow-progress-bar"></div>
+            </div>
           </div>
           <div id="activeJobsLine" class="active-jobs-line hidden" aria-live="polite"></div>
+          <section class="quick-workspace is-collapsed" aria-labelledby="quickWorkspaceTitle">
+            <div class="quick-workspace-head">
+              <div>
+                <h2 id="quickWorkspaceTitle">Рабочий минимум</h2>
+                <span id="scenarioHint" class="muted">Ключевые поля для текущего клинического сценария.</span>
+              </div>
+              <div class="quick-workspace-controls">
+                <select id="scenarioSelect" aria-label="Клинический сценарий"></select>
+                <button type="button" id="quickWorkspaceToggle" aria-expanded="false" aria-controls="quickWorkspaceBody">Показать поля</button>
+              </div>
+            </div>
+            <div id="quickWorkspaceBody" class="quick-workspace-body">
+              <div class="quick-workspace-body-head">
+                <span id="quickWorkspaceSummary" class="muted">Поля скрыты. Выберите сценарий и раскройте блок при необходимости.</span>
+                <button type="button" id="quickMissingButton">К незаполненному</button>
+              </div>
+              <div id="quickFieldsGrid" class="quick-fields-grid"></div>
+            </div>
+          </section>
+          <div class="field-search-box">
+            <label for="fieldSearchInput">Поиск по анкете</label>
+            <div class="field-search-row">
+              <svg class="icon"><use href="#i-search"/></svg>
+              <input id="fieldSearchInput" type="search" autocomplete="off" placeholder="Например: тропонин, ФВ, МКБ, жалобы">
+            </div>
+            <div id="fieldSearchResults" class="field-search-results hidden"></div>
+          </div>
+          <div id="sectionNav" class="section-nav" aria-label="Разделы анкеты"></div>
           <div id="draftBanner" class="draft-banner hidden" role="status" aria-live="polite">
             <span id="draftBannerText">Найден локальный черновик.</span>
             <div class="toolbar">
@@ -100,7 +157,7 @@
               <strong>Результат анализа готов</strong>
               <span>Откройте оформленный отчёт в новой вкладке.</span>
             </div>
-            <button type="button" id="viewResultButton" class="primary">Просмотреть результат</button>
+            <button type="button" id="viewResultButton" class="primary">Открыть результат</button>
           </div>
           <form id="caseForm"></form>
         </div>
@@ -108,9 +165,9 @@
 
       <aside class="panel">
         <div class="tabs">
-          <button type="button" class="tab active" data-tab="quality">Проверка</button>
-          <button type="button" class="tab" data-tab="json">JSON</button>
-          <button type="button" class="tab hidden" id="modelTabButton" data-tab="model">Результат</button>
+          <button type="button" class="tab active" data-tab="quality">1. Проверка</button>
+          <button type="button" class="tab" data-tab="json">2. JSON</button>
+          <button type="button" class="tab hidden" id="modelTabButton" data-tab="model">3. Результат</button>
         </div>
         <div class="panel-body">
           <section id="tab-quality">
@@ -119,7 +176,7 @@
             <div class="quality-section">
               <div class="quality-heading">
                 <h3>Ключевые поля</h3>
-                <button type="button" id="jumpMissingButton" title="Перейти к первому незаполненному полю (Alt+N)">К первому незаполненному</button>
+                <button type="button" id="jumpMissingButton" title="Перейти к первому незаполненному полю (Alt+N)">К первому</button>
               </div>
               <div id="readinessPanel" class="quality-list"></div>
             </div>
@@ -152,6 +209,22 @@
       <div class="modal-body model-result-body">
         <div class="toolbar model-actions">
           <button type="button" id="exportHtmlButton" disabled>Скачать HTML</button>
+        </div>
+        <div class="model-workbench-grid">
+          <section class="model-workbench-panel">
+            <h3>Диагноз врача</h3>
+            <div id="doctorDiagnosisWorkbench" class="model-workbench-content">Заполните итоговый диагноз врача в анкете.</div>
+          </section>
+          <section class="model-workbench-panel">
+            <h3>Заключение AI</h3>
+            <div id="aiDiagnosisWorkbench" class="model-workbench-content">AI-заключение появится после анализа.</div>
+          </section>
+        </div>
+        <div class="toolbar model-decision-actions">
+          <button type="button" id="acceptModelDraftButton" title="Принять AI-диагноз в черновик врача"><svg class="icon"><use href="#i-check"/></svg>В черновик</button>
+          <button type="button" id="copyModelDiagnosisButton" title="Скопировать диагноз AI"><svg class="icon"><use href="#i-copy"/></svg>Скопировать AI</button>
+          <button type="button" id="openModelReportButton"><svg class="icon"><use href="#i-file-text"/></svg>Открыть отчёт</button>
+          <button type="button" id="markModelIssueButton"><svg class="icon"><use href="#i-alert"/></svg>Пометить ошибку</button>
         </div>
         <div id="icdSummary" class="notice">Коды МКБ-10 ещё не сравнивались.</div>
         <div id="modelStructured" class="model-output">Структурированный ответ появится после AI-анализа.</div>
@@ -204,6 +277,29 @@
     </div>
   </div>
 
+  <div id="taskCenterModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="taskCenterTitle">
+    <div class="modal-card wide task-center-card">
+      <div class="modal-header">
+        <div>
+          <h2 id="taskCenterTitle">Центр AI-задач</h2>
+          <p class="muted">Очередь, активные задания, готовые результаты и ошибки по текущему пользователю.</p>
+        </div>
+        <button type="button" id="closeTaskCenterModal" aria-label="Закрыть">×</button>
+      </div>
+      <div class="modal-body">
+        <div id="taskCenterSummary" class="task-center-summary"></div>
+        <div id="taskCenterList" class="task-center-list"></div>
+      </div>
+      <div class="modal-footer">
+        <span class="muted">Готовые задания можно открыть прямо из списка.</span>
+        <div class="toolbar">
+          <button type="button" id="refreshTaskCenterButton">Обновить</button>
+          <button type="button" id="closeTaskCenterFooter">Закрыть</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <div id="passwordModal" class="modal hidden" role="dialog" aria-modal="true" aria-labelledby="passwordModalTitle">
     <div class="modal-card">
       <div class="modal-header">
@@ -247,7 +343,7 @@
           Настройки деидентификации применяются перед отправкой.
         </div>
         <div class="toolbar">
-          <button class="primary" type="button" id="confirmReviewButton">Запустить AI-анализ</button>
+          <button class="primary" type="button" id="confirmReviewButton" title="Запустить AI-анализ">AI-анализ</button>
           <button type="button" id="cancelReviewModal">Отмена</button>
         </div>
       </div>
@@ -265,6 +361,7 @@
       </div>
       <div class="modal-body">
         <div id="importSummary" class="hero-metrics import-metrics"></div>
+        <div id="importDecisionPanel" class="import-decision-panel"></div>
         <div id="correctedTextBlock" class="corrected-text-block hidden">
           <div class="corrected-text-head">
             <strong>Исправленный текст</strong>
@@ -276,16 +373,19 @@
         <div id="importReviewSummary" class="import-review-summary"></div>
         <div class="toolbar import-toolbar">
           <button type="button" id="selectNewImportButton">Выбрать новые</button>
-          <button type="button" id="selectConflictsImportButton">Выбрать конфликты</button>
+          <button type="button" id="selectConflictsImportButton">Конфликты</button>
           <button type="button" id="clearImportSelectionButton">Снять выбор</button>
           <span id="importSelectionStatus" class="pill">выбрано: 0</span>
         </div>
-        <div id="importDiff" class="import-diff"></div>
+        <details id="importDiffDetails" class="import-diff-details">
+          <summary>Подробное сравнение полей</summary>
+          <div id="importDiff" class="import-diff"></div>
+        </details>
       </div>
       <div class="modal-footer import-actions">
         <span id="importSelectionFooter" class="muted">Проверьте выбранные поля перед применением</span>
         <div class="toolbar">
-          <button class="primary" type="button" id="applyImportButton">Применить выбранное</button>
+          <button class="primary" type="button" id="applyImportButton">Применить</button>
           <button type="button" id="cancelImportModal">Отмена</button>
         </div>
       </div>

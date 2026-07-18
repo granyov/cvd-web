@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.9.11 - 2026-07-18
+
+- Add a unified sticky case status bar with case state, readiness, AI status, next action, and AI task count.
+- Add a collapsible "Рабочий минимум" that is closed by default and exposes scenario-based quick fields only when needed.
+- Add clinical scenarios for general cardiology, IHD/ACS, heart failure, arrhythmias, hypertension, and valvular disease; readiness now includes scenario-specific fields.
+- Add field search across the full patient form, with quick navigation to matching sections and fields.
+- Add an AI task center showing queued, running, finished, and failed diagnosis/text-preparation jobs with open actions for finished jobs.
+- Turn the AI result modal into a working review document with doctor-vs-AI diagnosis panels, copy, report, draft-acceptance, and issue-marking actions.
+- Simplify import review around decisions first: apply reliable fields, review conflicts, and keep detailed diff in a collapsible section.
+- Add inline clinical warnings next to high-signal fields such as blood pressure, heart rate, SpO2, troponin, NT-proBNP, potassium, LVEF, and ECG text.
+- Add an archive action queue for cases that need attention: stale AI results, failed AI runs, incomplete cases, and unreviewed results.
+- Tighten responsive typography, button sizing, wrapping, and doctor-mode hiding of technical controls.
+- Update Umbrel metadata and image tag for `ghcr.io/granyov/cvd-web:v0.9.11`.
+
 ## v0.9.10 - 2026-07-18
 
 - Accept EMIAS PDF exports in the import flow: extract the text layer with the standard library only (FlateDecode, ToUnicode CMap for Cyrillic) and hand the text to AI preparation, where every field still needs an explicit diff confirmation.

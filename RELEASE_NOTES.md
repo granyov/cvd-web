@@ -1,20 +1,20 @@
-# CVD Web v0.9.10
+# CVD Web v0.9.11
 
-Release focused on EMIAS PDF intake, a professional result view, and a much quieter interface.
+Release focused on daily clinical usability: fewer always-open blocks, clearer next actions, visible background AI work, and tighter responsive text handling.
 
 ## Highlights
 
-- Imports PDF exports from EMIAS.INFO: the text layer is extracted with the standard library only (FlateDecode, ToUnicode CMap so Cyrillic decodes correctly) and passed to AI preparation, where every extracted field still requires an explicit diff confirmation. Scans without a text layer get an actionable message instead of an empty result.
-- Asks the model for treatment and rehabilitation drafts. These fields existed in the patient template from the start but no prompt ever requested them, so they were always empty; the prompt now returns MODEL_OUTPUT next to the CDS reasoning.
-- Keeps recommendations safe by construction: drug classes and targets only, never brand names, doses, or prescriptions, and every answer is framed as a draft for the physician.
-- Refreshes the stored prompt template on upgrade only when it still holds the previous default, so customised templates survive the update (migration 0014).
-- Presents the AI result as a clinical document: leading diagnosis first with confidence and codes, red flags as badges, ICD-10 codes as click-to-copy chips, and a doctor-vs-AI code comparison that only appears when both sides have codes.
-- Completes the loop from history: opening a case from the archive loads its latest successful result, edits mark it stale, and "Обновить анализ" re-runs the analysis in the same flow.
-- Uses "CVD Engine" in the doctor role instead of internal model names, and hides the model filter and demo case button there.
-- Declutters the workspace from eleven meta layers above the form to three: no decorative hero, no workflow strip, no sticky section navigator, no floating emoji layer; three primary actions plus an "Ещё" menu; one navigation row with a single user menu.
-- Renders numeric sections as a dense 3-4 column grid with units inside the field, so a full lab panel fits one screen, and replaces the key-field checklist with a progress bar plus the missing rows.
-- Adds inline SVG icons, tabular numerals, visible focus rings, dropdown and section transitions, and an indeterminate loading bar in the archive.
-- Updates the Umbrel package to use `ghcr.io/granyov/cvd-web:v0.9.10`.
+- Adds one sticky case status bar with the saved/unsaved case state, scenario readiness, AI status, next action, and active task count.
+- Makes "Рабочий минимум" collapsible and closed by default. It now stays out of the way until the user explicitly opens scenario-based quick fields.
+- Adds clinical scenarios for general cardiology, IHD/ACS, heart failure, arrhythmias, hypertension, and valvular disease. Each scenario extends the readiness checklist and quick fields with the data that matters for that workflow.
+- Adds search across the whole patient form, so typing terms like "тропонин", "ФВ", "МКБ", "АД", or "жалобы" jumps directly to the right field.
+- Adds a center for AI tasks with queued, running, finished, and failed jobs. Finished diagnosis and text-preparation jobs can be opened directly from the list.
+- Reworks the AI result modal into a working document: doctor-vs-AI diagnosis panels, copy, open report, accept AI diagnosis into the physician draft, and mark answer issue.
+- Simplifies import review around decisions first: reliable fields, conflicts, unchanged values, and a collapsible detailed diff.
+- Adds inline warnings next to important fields such as blood pressure, heart rate, SpO2, troponin, NT-proBNP, potassium, LVEF, and ECG text.
+- Adds an archive action queue for cases that need attention: stale AI results, failed AI runs, incomplete data, and unreviewed results.
+- Tightens font sizes, button labels, wrapping, mobile layout, and doctor-mode hiding of technical controls so labels fit without horizontal overflow.
+- Updates the Umbrel package to use `ghcr.io/granyov/cvd-web:v0.9.11`.
 
 ## Install
 
@@ -28,8 +28,8 @@ For release-archive installs:
 
 ```bash
 scripts/install_from_release.sh \
-  --url https://github.com/granyov/cvd-web/releases/download/v0.9.10/cvd-web-v0.9.10.tar.gz \
-  --sha256-url https://github.com/granyov/cvd-web/releases/download/v0.9.10/cvd-web-v0.9.10.tar.gz.sha256 \
+  --url https://github.com/granyov/cvd-web/releases/download/v0.9.11/cvd-web-v0.9.11.tar.gz \
+  --sha256-url https://github.com/granyov/cvd-web/releases/download/v0.9.11/cvd-web-v0.9.11.tar.gz.sha256 \
   -- --target local --unattended
 ```
 

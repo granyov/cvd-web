@@ -42,12 +42,23 @@
       <a class="button primary-link" href="/app">Новый кейс</a>
     </section>
 
+    <section id="actionQueuePanel" class="action-queue-panel hidden" aria-labelledby="actionQueueTitle">
+      <div class="action-queue-head">
+        <div>
+          <h2 id="actionQueueTitle">Требуют действия</h2>
+          <span class="muted">Непроверенные результаты, ошибки AI, устаревшие анализы и неполные кейсы.</span>
+        </div>
+        <button type="button" id="showAttentionCasesButton">Показать все</button>
+      </div>
+      <div id="actionQueueList" class="action-queue-list"></div>
+    </section>
+
     <section class="panel records-panel">
       <div class="records-nav" role="tablist" aria-label="Разделы архива">
         <button type="button" class="records-tab active" data-library-view="cases" role="tab">Кейсы</button>
         <button type="button" class="records-tab" data-library-view="results" role="tab">Результаты</button>
         <button type="button" class="records-tab" data-library-view="imports" role="tab">Импорты</button>
-        <button type="button" class="records-tab" data-library-view="preparations" role="tab">AI-подготовка</button>
+        <button type="button" class="records-tab" data-library-view="preparations" role="tab">Подготовка AI</button>
         <span class="records-nav-spacer"></span>
         <button type="button" id="refreshLibraryButton">Обновить</button>
       </div>
@@ -92,9 +103,9 @@
                 </div>
                 <div class="toolbar record-actions">
                   <a id="editCaseLink" class="button primary-link" href="/app">Открыть в работе</a>
-                  <button type="button" id="caseResultButton">Последний результат</button>
-                  <button type="button" id="copyCaseButton">Создать копию</button>
-                  <button type="button" id="fhirCaseButton">Скачать FHIR</button>
+                  <button type="button" id="caseResultButton" title="Открыть последний результат">Результат</button>
+                  <button type="button" id="copyCaseButton" title="Создать копию кейса">Копия</button>
+                  <button type="button" id="fhirCaseButton" title="Скачать FHIR">FHIR</button>
                   <button type="button" id="deleteCaseButton" class="danger">Удалить</button>
                 </div>
               </div>

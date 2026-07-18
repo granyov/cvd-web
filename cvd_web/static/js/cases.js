@@ -25,6 +25,9 @@
     resultsMetric: document.getElementById("resultsMetric"),
     successMetric: document.getElementById("successMetric"),
     importsMetric: document.getElementById("importsMetric"),
+    actionQueuePanel: document.getElementById("actionQueuePanel"),
+    actionQueueList: document.getElementById("actionQueueList"),
+    showAttentionCases: document.getElementById("showAttentionCasesButton"),
     caseSearch: document.getElementById("caseSearchInput"),
     caseAnalysis: document.getElementById("caseAnalysisFilter"),
     caseCount: document.getElementById("caseCount"),
@@ -209,6 +212,33 @@
     } else if (!state.cases.length) {
       clearCaseDetail();
     }
+  }
+
+  async function loadActionQueue() {
+    if (!nodes.actionQueuePanel || !nodes.actionQueueList) return;
+    const response = await api("/api/cases?analysis=attention&limit=6");
+    const items = response.cases || [];
+    nodes.actionQueuePanel.classList.toggle("hidden", items.length === 0);
+    nodes.actionQueueList.innerHTML = "";
+    items.forEach((item) => {
+      const card = document.createElement("button");
+      card.type = "button";
+      card.className = "action-queue-card";
+      const [statusText, statusKind] = caseWorkflowStatus(item);
+      const title = document.createElement("strong");
+      title.textContent = item.title || `Кейс #${item.id}`;
+      const status = pill(statusText, statusKind);
+      const meta = document.createElement("small");
+      meta.textContent = `#${item.id} · готовность ${item.quality?.readiness_percent || 0}% · ${caseStatusDescription(item)}`;
+      card.append(title, status, meta);
+      card.addEventListener("click", async () => {
+        await switchView("cases");
+        nodes.caseAnalysis.value = "attention";
+        await loadCases();
+        await selectCase(item.id);
+      });
+      nodes.actionQueueList.appendChild(card);
+    });
   }
 
   function renderCases() {
@@ -609,6 +639,7 @@
     try {
       await Promise.all([
         loadSummary(),
+        loadActionQueue(),
         state.view === "cases" ? loadCases() : state.view === "results" ? loadResults() : state.view === "imports" ? loadImports() : loadPreparations()
       ]);
     } catch (error) {
@@ -647,6 +678,11 @@
       button.addEventListener("click", () => switchView(button.dataset.libraryView).catch(handleError));
     });
     document.getElementById("refreshLibraryButton").addEventListener("click", refreshActiveView);
+    nodes.showAttentionCases?.addEventListener("click", async () => {
+      await switchView("cases");
+      nodes.caseAnalysis.value = "attention";
+      await loadCases();
+    });
     nodes.caseSearch.addEventListener("input", () => debounce("case", () => loadCases()));
     nodes.caseAnalysis.addEventListener("change", () => loadCases().catch(handleError));
     document.getElementById("clearCaseFiltersButton").addEventListener("click", () => {
@@ -718,7 +754,7 @@
   async function initialize() {
     setupActions();
     const requestedView = new URLSearchParams(window.location.search).get("view");
-    if (["cases", "results", "imports"].includes(requestedView)) {
+    if (["cases", "results", "imports", "preparations"].includes(requestedView)) {
       await switchView(requestedView);
     }
     await refreshActiveView();
