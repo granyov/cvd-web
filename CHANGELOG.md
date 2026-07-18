@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.9.12 - 2026-07-18
+
+- Start daily work from the case archive/worklist instead of opening the patient form first.
+- Add backend-computed workflow stages: new, in work, waiting for AI, needs review, done, and archive.
+- Add a shift worklist with stage counts, owners, priorities, next actions, and active AI task state.
+- Show global AI queue position across users and include launched-by user, case, and patient context in the task center.
+- Allow cancellation of queued diagnosis and text-preparation AI jobs.
+- Add user-friendly AI error messages for Cloudflare 524, cloudflared tunnel issues, timeouts, response schema/JSON failures, connection failures, and resource pressure.
+- Group recognized free-text facts by clinical category before import: anamnesis, laboratory tests, instrumental tests, objective status, treatment, and diagnosis.
+- Extend the case timeline with creation, update, and physician review events.
+- Add smoke coverage for the worklist and AI job cancellation contract.
+- Update Umbrel metadata and image tag for `ghcr.io/granyov/cvd-web:v0.9.12`.
+
 ## v0.9.11 - 2026-07-18
 
 - Add a unified sticky case status bar with case state, readiness, AI status, next action, and AI task count.
