@@ -303,7 +303,14 @@ SCHEMA_MIGRATIONS = [
     "0011_inference_jobs",
     "0012_q8_streaming_defaults",
     "0013_text_preparation_jobs",
+    "0014_prompt_v5_treatment_recommendations",
 ]
+
+# Предыдущие дефолтные шаблоны промпта. Если администратор не менял шаблон,
+# миграция подставляет актуальный; кастомные шаблоны остаются нетронутыми.
+LEGACY_PROMPT_TEMPLATE_PREFIXES = (
+    "You are a clinical decision support component working only with synthetic",
+)
 
 
 class ClosingConnection(sqlite3.Connection):
@@ -649,6 +656,17 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
             """,
             (utc_now(),),
         )
+
+    if "0014_prompt_v5_treatment_recommendations" not in applied_migration_ids:
+        row = conn.execute(
+            "SELECT value FROM app_settings WHERE key = 'active_prompt_template'"
+        ).fetchone()
+        stored_template = str(row["value"]) if row else ""
+        if stored_template.strip().startswith(LEGACY_PROMPT_TEMPLATE_PREFIXES):
+            conn.execute(
+                "UPDATE app_settings SET value = ?, updated_at = ? WHERE key = 'active_prompt_template'",
+                (USER_PROMPT_TEMPLATE, utc_now()),
+            )
 
     applied_at = utc_now()
     for migration_id in SCHEMA_MIGRATIONS:

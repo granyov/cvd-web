@@ -121,6 +121,27 @@ def _diagnoses_block(diagnoses: Any) -> str:
     return "".join(cards) or "<p class=\"muted\">Возможные диагнозы не указаны.</p>"
 
 
+def _recommendations_block(model_output: dict[str, Any]) -> str:
+    blocks = []
+    for title, key in (
+        ("Тактика ведения", "Model_treatment_recommendations"),
+        ("Реабилитация и профилактика", "Model_rehabilitation_recommendations"),
+    ):
+        value = model_output.get(key)
+        if not _is_filled(value):
+            continue
+        blocks.append(
+            f"<section class=\"result-section\"><h3>{escape(title)}</h3><p>{escape(_text(value))}</p></section>"
+        )
+    if not blocks:
+        return ""
+    return (
+        "<h2>Черновик рекомендаций</h2>"
+        "<p class=\"muted\">Ориентиры по тактике без препаратов и доз. Назначения определяет врач.</p>"
+        f"<div class=\"result-grid\">{''.join(blocks)}</div>"
+    )
+
+
 def build_html_report(
     patient_data: dict[str, Any],
     parsed_output: dict[str, Any],
@@ -128,6 +149,7 @@ def build_html_report(
 ) -> str:
     general = patient_data.get("GENERAL_INFO") if isinstance(patient_data.get("GENERAL_INFO"), dict) else {}
     cds = parsed_output.get("CDS_OUTPUT") if isinstance(parsed_output.get("CDS_OUTPUT"), dict) else {}
+    model_output = parsed_output.get("MODEL_OUTPUT") if isinstance(parsed_output.get("MODEL_OUTPUT"), dict) else {}
     generated_at = str(metadata.get("generated_at") or datetime.now(timezone.utc).replace(microsecond=0).isoformat())
     patient_name = _text(general.get("Full_name") or "Пациент не указан")
     patient_id = _text(general.get("Patient_ID") or "без ID")
@@ -187,6 +209,7 @@ def build_html_report(
       {_list_block('Что ещё собрать', cds.get('recommended_next_data'), 'Не указано.')}
       {_list_block('Ограничения', cds.get('limitations'), 'Не указаны.')}
     </div>
+    {_recommendations_block(model_output)}
     <h2>Исходные данные пациента</h2>
     <div class="patient-grid">{_patient_sections(patient_data)}</div>
     <p class="meta">{escape(' · '.join(report_details))}</p>

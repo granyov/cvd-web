@@ -21,20 +21,56 @@ SYSTEM_PROMPT = (
     "явно укажи, что модель воздерживается от заключения."
 )
 
-USER_PROMPT_TEMPLATE = """You are a clinical decision support component working only with synthetic or de-identified cardiovascular data.
-Return compact JSON matching the required response schema. All free-text values must be in Russian.
+USER_PROMPT_TEMPLATE = """You are a clinical decision support component for cardiovascular cases.
+You work ONLY with synthetic or de-identified data for educational and research purposes.
+You do NOT give real medical advice, prescriptions, or treatment instructions for real patients.
+Every answer is a draft for a physician, who makes the final clinical decision.
 
-Rules:
-- PATIENT_JSON is the only clinical source. Preserve numeric values exactly and never invent findings.
-- Provide at most 3 differential diagnoses and only ICD-10 codes you can support from the supplied data.
-- Keep summary to 4 short sentences. Keep evidence lists concise.
-- Use at most 4 supporting findings per diagnosis and at most 4 items in every other list.
-- Return field values, not source field names or JSON paths. Do not repeat the same fact.
-- red_flags contains only findings that may require urgent clinical attention, not ordinary chronic risk factors.
-- recommended_next_data contains missing data or investigations, not treatment instructions.
-- Respect symptom duration and acuity. Do not label a chronic stable presentation as acute or unstable without supplied acute features.
-- Do not list data already present in PATIENT_JSON as missing.
-- If evidence is insufficient or contradictory, set model_should_abstain=true.
+TASK:
+PATIENT_JSON below contains structured cardiovascular patient data (CVD Patient Template).
+Analyse it and return ONE JSON object with two top-level keys: CDS_OUTPUT and MODEL_OUTPUT.
+
+LANGUAGE:
+- All free-text values MUST be in professional medical Russian: concise, clear, no filler.
+- All JSON keys and enum values (low/medium/high, ICD-10 codes) stay exactly as specified, in English/Latin.
+- Do not mix Russian and English inside one sentence, except standard abbreviations (LDL, HDL, NYHA, ACE, СКФ, ФВ ЛЖ).
+
+CLINICAL RULES:
+- PATIENT_JSON is the ONLY clinical source. Preserve numeric values exactly and never invent findings.
+- Return field values, not source field names or JSON paths. Do not repeat the same fact twice.
+- Respect symptom duration and acuity: do not call a chronic stable presentation acute or unstable
+  unless acute features are explicitly present in the data.
+- Do not list data that is already present in PATIENT_JSON as missing.
+- If evidence is insufficient or contradictory, set model_should_abstain=true and say so in the Russian text.
+
+CDS_OUTPUT (reasoning for the physician):
+- summary: up to 4 short sentences with the clinical picture and its interpretation.
+- possible_diagnoses: at most 3 items, most likely first. For each item give name, icd10_codes,
+  confidence (low/medium/high) and at most 4 supporting_findings taken from the data.
+- red_flags: only findings that may require urgent clinical attention; ordinary chronic risk factors are NOT red flags.
+- missing_data: clinically important data absent from PATIENT_JSON.
+- recommended_next_data: further investigations or measurements — NOT treatment instructions.
+- limitations: what limits the reliability of this analysis.
+- Every list holds at most 4 concise items.
+
+MODEL_OUTPUT (draft conclusion for the case record):
+- Final_model_diagnosis: one concise but clinically meaningful cardiovascular diagnosis in Russian.
+  Mention the main disease, functional class or severity, and relevant comorbidities.
+  End the string with the codes in text, for example: "МКБ-10: I20.8, I10".
+- Model_ICD10_codes: array of raw ICD-10 codes for that diagnosis, uppercase Latin letters and dots,
+  for example "I20.8", "I50.2", "I10". No comments, no extra characters. Only codes supported by the data.
+  These codes must match the codes mentioned in Final_model_diagnosis.
+- Model_treatment_recommendations: high-level management directions in Russian.
+  Use drug CLASSES and goals only ("антиагрегантная терапия", "контроль АД до целевых значений",
+  "статинотерапия с целевым ЛПНП"). NEVER give specific brand names, doses, or a prescription.
+- Model_rehabilitation_recommendations: lifestyle, rehabilitation and secondary prevention in Russian
+  (физическая активность, отказ от курения, контроль массы тела, диета, наблюдение у кардиолога).
+- If a field cannot be filled from the data, return an empty string "" but keep the full structure.
+
+FORMAT:
+- The entire reply is a single valid JSON object: starts with '{' and ends with '}'.
+- No Markdown, no ```json fences, no comments, no text before or after the JSON.
+- No extra fields beyond the specified schema.
 
 Metadata:
 - prompt_version: {{PROMPT_VERSION}}
@@ -100,8 +136,28 @@ MODEL_RESPONSE_JSON_SCHEMA = {
                     "model_should_abstain",
                 ],
             },
+            "MODEL_OUTPUT": {
+                "type": "object",
+                "additionalProperties": False,
+                "properties": {
+                    "Final_model_diagnosis": {"type": "string", "maxLength": 1000},
+                    "Model_ICD10_codes": {
+                        "type": "array",
+                        "maxItems": 5,
+                        "items": {"type": "string"},
+                    },
+                    "Model_treatment_recommendations": {"type": "string", "maxLength": 1500},
+                    "Model_rehabilitation_recommendations": {"type": "string", "maxLength": 1500},
+                },
+                "required": [
+                    "Final_model_diagnosis",
+                    "Model_ICD10_codes",
+                    "Model_treatment_recommendations",
+                    "Model_rehabilitation_recommendations",
+                ],
+            },
         },
-        "required": ["CDS_OUTPUT"],
+        "required": ["CDS_OUTPUT", "MODEL_OUTPUT"],
     },
 }
 

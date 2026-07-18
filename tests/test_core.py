@@ -253,7 +253,13 @@ class CoreTests(unittest.TestCase):
                     "recommended_next_data": [],
                     "limitations": [],
                     "model_should_abstain": False,
-                }
+                },
+                "MODEL_OUTPUT": {
+                    "Final_model_diagnosis": "Диагноз <тег>",
+                    "Model_ICD10_codes": ["I10"],
+                    "Model_treatment_recommendations": "Контроль АД до целевых значений.",
+                    "Model_rehabilitation_recommendations": "Отказ от курения, аэробные нагрузки.",
+                },
             },
             {"request_id": 7, "model": "medgemma-4b-it"},
         )
@@ -261,6 +267,34 @@ class CoreTests(unittest.TestCase):
         self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", report)
         self.assertNotIn("<script>alert(1)</script>", report)
         self.assertIn("Результат &lt;опасный&gt;", report)
+        self.assertIn("Черновик рекомендаций", report)
+        self.assertIn("Тактика ведения", report)
+        self.assertIn("Контроль АД до целевых значений.", report)
+        self.assertIn("Отказ от курения", report)
+
+    def test_html_report_omits_recommendations_when_model_did_not_provide_them(self):
+        report = build_html_report(
+            {"GENERAL_INFO": {"Patient_ID": "CASE-2"}},
+            {
+                "CDS_OUTPUT": {
+                    "summary": "Сводка",
+                    "possible_diagnoses": [],
+                    "red_flags": [],
+                    "missing_data": [],
+                    "recommended_next_data": [],
+                    "limitations": [],
+                    "model_should_abstain": False,
+                },
+                "MODEL_OUTPUT": {
+                    "Final_model_diagnosis": "Диагноз",
+                    "Model_ICD10_codes": [],
+                    "Model_treatment_recommendations": "",
+                    "Model_rehabilitation_recommendations": "",
+                },
+            },
+            {"request_id": 8},
+        )
+        self.assertNotIn("Черновик рекомендаций", report)
 
     def test_lm_studio_v1_catalog_and_activation(self):
         initial = {
@@ -360,12 +394,25 @@ class CoreTests(unittest.TestCase):
         self.assertEqual(request["stream"], True)
         self.assertEqual(request["stream_options"], {"include_usage": True})
         response_schema = request["response_format"]["json_schema"]["schema"]
-        self.assertEqual(response_schema["required"], ["CDS_OUTPUT"])
+        self.assertEqual(response_schema["required"], ["CDS_OUTPUT", "MODEL_OUTPUT"])
         self.assertEqual(
             response_schema["properties"]["CDS_OUTPUT"]["properties"]["possible_diagnoses"]["maxItems"],
             3,
         )
-        self.assertNotIn("MODEL_OUTPUT", response_schema["properties"])
+        self.assertEqual(
+            response_schema["properties"]["MODEL_OUTPUT"]["required"],
+            [
+                "Final_model_diagnosis",
+                "Model_ICD10_codes",
+                "Model_treatment_recommendations",
+                "Model_rehabilitation_recommendations",
+            ],
+        )
+        prompt = request["messages"][1]["content"]
+        self.assertIn("SYNTH_1", prompt)
+        self.assertIn("Model_treatment_recommendations", prompt)
+        self.assertNotIn("{{PATIENT_JSON}}", prompt)
+        self.assertNotIn("{{PROMPT_VERSION}}", prompt)
         self.assertNotIn(
             "response_format",
             build_chat_request({}, "model", 128, structured_output=False),
@@ -393,13 +440,15 @@ class CoreTests(unittest.TestCase):
             "MODEL_OUTPUT": {
                 "Final_model_diagnosis": "Диагноз",
                 "Model_ICD10_codes": ["i10", "bad-code"],
-                "Model_treatment_recommendations": "",
-                "Model_rehabilitation_recommendations": "",
+                "Model_treatment_recommendations": "Антиагрегантная терапия, контроль АД до целевых значений.",
+                "Model_rehabilitation_recommendations": "Регулярная физическая активность, отказ от курения.",
             },
         })
         self.assertEqual(normalized["CDS_OUTPUT"]["possible_diagnoses"][0]["icd10_codes"], ["I10"])
         self.assertEqual(normalized["CDS_OUTPUT"]["possible_diagnoses"][0]["confidence"], "medium")
         self.assertEqual(normalized["MODEL_OUTPUT"]["Model_ICD10_codes"], ["I10"])
+        self.assertIn("Антиагрегантная", normalized["MODEL_OUTPUT"]["Model_treatment_recommendations"])
+        self.assertIn("физическая активность", normalized["MODEL_OUTPUT"]["Model_rehabilitation_recommendations"])
 
     def test_truncated_model_response_is_rejected_with_diagnostics(self):
         raw_response = {
@@ -1285,6 +1334,46 @@ class CoreTests(unittest.TestCase):
                 body={"current_password": "Test-admin-strong-password-2026", "new_password": "Long-enough-password-2026"},
             )
             self.assertTrue(status.startswith("200"), body)
+
+    def test_prompt_template_migration_updates_stale_default_but_keeps_custom(self):
+        from cvd_web.lmstudio import USER_PROMPT_TEMPLATE
+
+        legacy_template = (
+            "You are a clinical decision support component working only with synthetic or de-identified"
+            " cardiovascular data.\nPATIENT_JSON:\n{{PATIENT_JSON}}\n"
+        )
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "cvd.sqlite3"
+            CVDApplication(make_test_config(db_path), start_batch_worker=False)
+            with connect(db_path) as conn:
+                conn.execute("DELETE FROM schema_migrations WHERE id = '0014_prompt_v5_treatment_recommendations'")
+                conn.execute(
+                    "UPDATE app_settings SET value = ? WHERE key = 'active_prompt_template'",
+                    (legacy_template,),
+                )
+            CVDApplication(make_test_config(db_path), start_batch_worker=False)
+            with connect(db_path) as conn:
+                value = conn.execute(
+                    "SELECT value FROM app_settings WHERE key = 'active_prompt_template'"
+                ).fetchone()["value"]
+            self.assertEqual(value, USER_PROMPT_TEMPLATE)
+
+        custom_template = "Мой собственный шаблон.\n{{PATIENT_JSON}}\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "custom.sqlite3"
+            CVDApplication(make_test_config(db_path), start_batch_worker=False)
+            with connect(db_path) as conn:
+                conn.execute("DELETE FROM schema_migrations WHERE id = '0014_prompt_v5_treatment_recommendations'")
+                conn.execute(
+                    "UPDATE app_settings SET value = ? WHERE key = 'active_prompt_template'",
+                    (custom_template,),
+                )
+            CVDApplication(make_test_config(db_path), start_batch_worker=False)
+            with connect(db_path) as conn:
+                value = conn.execute(
+                    "SELECT value FROM app_settings WHERE key = 'active_prompt_template'"
+                ).fetchone()["value"]
+            self.assertEqual(value, custom_template)
 
     def test_default_admin_password_forces_change_before_other_apis(self):
         with tempfile.TemporaryDirectory() as tmp:
