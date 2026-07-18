@@ -138,6 +138,74 @@ class SmokeTests(unittest.TestCase):
             self.assertTrue(status.startswith("200"), body)
             self.assertEqual(json.loads(body.decode("utf-8"))["total"], 1)
 
+    def test_worklist_and_ai_job_cancel_contract(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = self.make_app(tmp)
+            cookie, csrf = login(app)
+            patient_data = {
+                "GENERAL_INFO": {"Patient_ID": "WL-1", "Age": 58, "Sex": "male"},
+                "COMPLAINTS": {"Main_complaint": "Одышка при нагрузке"},
+                "PHYSICAL_EXAM": {"Blood_pressure_right_systolic_mmHg": 134, "Heart_rate_bpm": 76},
+                "FINAL_DIAGNOSES": {"Main_cardiovascular_diagnosis_text": "АГ?"},
+            }
+            status, _, body = call_wsgi(
+                app,
+                "/api/cases",
+                method="POST",
+                cookie=cookie,
+                csrf=csrf,
+                body={"patient_data": patient_data},
+            )
+            self.assertTrue(status.startswith("200"), body)
+            case_id = json.loads(body.decode("utf-8"))["case_id"]
+
+            status, _, body = call_wsgi(app, "/api/worklist", cookie=cookie)
+            self.assertTrue(status.startswith("200"), body)
+            stages = {item["key"]: item for item in json.loads(body.decode("utf-8"))["stages"]}
+            self.assertGreaterEqual(stages["in_progress"]["count"], 1)
+            listed = next(item for item in stages["in_progress"]["items"] if item["id"] == case_id)
+            self.assertEqual(listed["workflow"]["bucket"], "in_progress")
+
+            status, _, body = call_wsgi(
+                app,
+                "/api/model/diagnose/jobs",
+                method="POST",
+                cookie=cookie,
+                csrf=csrf,
+                body={"case_id": case_id, "patient_data": patient_data},
+            )
+            self.assertTrue(status.startswith("201"), body)
+            job_id = json.loads(body.decode("utf-8"))["job_id"]
+
+            status, _, body = call_wsgi(app, "/api/cases?analysis=waiting_ai", cookie=cookie)
+            self.assertTrue(status.startswith("200"), body)
+            waiting = json.loads(body.decode("utf-8"))["cases"]
+            self.assertEqual([item["id"] for item in waiting], [case_id])
+            self.assertEqual(waiting[0]["workflow"]["key"], "ai_queued")
+
+            status, _, body = call_wsgi(app, "/api/ai/jobs", cookie=cookie)
+            self.assertTrue(status.startswith("200"), body)
+            jobs = json.loads(body.decode("utf-8"))["jobs"]
+            self.assertEqual(jobs[0]["id"], job_id)
+            self.assertEqual(jobs[0]["position"], 1)
+            self.assertEqual(jobs[0]["queue_ahead"], 0)
+            self.assertEqual(jobs[0]["case_id"], case_id)
+
+            status, _, body = call_wsgi(
+                app,
+                f"/api/ai/jobs/diagnosis/{job_id}/cancel",
+                method="POST",
+                cookie=cookie,
+                csrf=csrf,
+                body={},
+            )
+            self.assertTrue(status.startswith("200"), body)
+
+            status, _, body = call_wsgi(app, f"/api/model/diagnose/jobs/{job_id}", cookie=cookie)
+            self.assertTrue(status.startswith("200"), body)
+            self.assertEqual(json.loads(body.decode("utf-8"))["job"]["status"], "cancelled")
+            self.assertIn("cloudflared", app.user_friendly_ai_error("HTTP 524 from Cloudflare tunnel"))
+
     def test_admin_dashboard_and_security_audit(self):
         with tempfile.TemporaryDirectory() as tmp:
             app = self.make_app(tmp)

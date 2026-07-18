@@ -45,11 +45,12 @@
     <section id="actionQueuePanel" class="action-queue-panel hidden" aria-labelledby="actionQueueTitle">
       <div class="action-queue-head">
         <div>
-          <h2 id="actionQueueTitle">Требуют действия</h2>
-          <span class="muted">Непроверенные результаты, ошибки AI, устаревшие анализы и неполные кейсы.</span>
+          <h2 id="actionQueueTitle">Рабочий список смены</h2>
+          <span class="muted">Новые кейсы, активная очередь AI, проверка врача и завершённые случаи.</span>
         </div>
-        <button type="button" id="showAttentionCasesButton">Показать все</button>
+        <button type="button" id="showAttentionCasesButton">К проверке</button>
       </div>
+      <div id="worklistStages" class="worklist-stages" aria-label="Статусы рабочего списка"></div>
       <div id="actionQueueList" class="action-queue-list"></div>
     </section>
 
@@ -71,6 +72,11 @@
           <input id="caseSearchInput" type="search" autocomplete="off" placeholder="Название, ID пациента или номер кейса" aria-label="Поиск по кейсам">
           <select id="caseAnalysisFilter" aria-label="Фильтр кейсов по результатам">
             <option value="">Все кейсы</option>
+            <option value="new">Новые</option>
+            <option value="in_progress">В работе</option>
+            <option value="waiting_ai">Ожидают AI</option>
+            <option value="needs_review">Нужна проверка</option>
+            <option value="done">Готово</option>
             <option value="attention">Требуют внимания</option>
             <option value="ready">Готовы к AI</option>
             <option value="incomplete">Неполные данные</option>

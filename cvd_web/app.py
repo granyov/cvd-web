@@ -85,10 +85,10 @@ class CVDApplication(AuthMixin, CasesMixin, ImportExportMixin, AiMixin, AdminMix
         user = self.current_user(request)
 
         if request.path == "/":
-            return self.redirect("/app" if user else "/login")
+            return self.redirect("/cases" if user else "/login")
         if request.path == "/login" and request.method == "GET":
             if user:
-                return self.redirect("/app")
+                return self.redirect("/cases")
             return self.render("login.html", user=None, csrf_token="")
         if request.path == "/api/login" and request.method == "POST":
             self.verify_fetch_metadata(request)
@@ -126,6 +126,8 @@ class CVDApplication(AuthMixin, CasesMixin, ImportExportMixin, AiMixin, AdminMix
             return self.change_own_password(request, user)
         if request.path == "/api/cases" and request.method == "GET":
             return self.list_cases(request, user)
+        if request.path == "/api/worklist" and request.method == "GET":
+            return self.worklist(request, user)
         if request.path == "/api/cases" and request.method == "POST":
             return self.save_case(request, user)
         if request.path == "/api/cases/demo" and request.method == "POST":
@@ -142,6 +144,9 @@ class CVDApplication(AuthMixin, CasesMixin, ImportExportMixin, AiMixin, AdminMix
             return self.list_text_preparations(request, user)
         if request.path == "/api/ai/jobs" and request.method == "GET":
             return self.list_ai_jobs(user)
+        if match := re.fullmatch(r"/api/ai/jobs/(diagnosis|text_preparation)/(\d+)/cancel", request.path):
+            if request.method == "POST":
+                return self.cancel_ai_job(user, match.group(1), int(match.group(2)))
         if match := re.fullmatch(r"/api/imports/(\d+)/applied", request.path):
             if request.method == "POST":
                 return self.mark_clinical_import_applied(request, user, int(match.group(1)))
@@ -628,4 +633,3 @@ class CVDApplication(AuthMixin, CasesMixin, ImportExportMixin, AiMixin, AdminMix
             security_headers.append(("Strict-Transport-Security", "max-age=31536000; includeSubDomains"))
         full_headers = [("Content-Length", str(len(body))), *security_headers, *headers]
         return f"{status} {reason}", full_headers, body
-

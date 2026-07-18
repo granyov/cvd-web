@@ -51,7 +51,7 @@ class AuthMixin:
             audit(conn, user_id=user["id"], action="login_success", target_type="user", target_id=user["id"])
 
         headers = self.session_cookie_header(session_id)
-        return self.json_response({"ok": True, "redirect": "/app"}, headers=headers)
+        return self.json_response({"ok": True, "redirect": "/cases"}, headers=headers)
 
     def logout(self, request: Request, user: dict[str, Any]):
         with connect(self.config.db_path) as conn:
@@ -85,4 +85,3 @@ class AuthMixin:
         email_local = email.split("@", 1)[0].lower() if email else ""
         if normalized in COMMON_PASSWORDS or (email_local and normalized == email_local):
             raise HTTPError(400, "Пароль слишком предсказуемый")
-

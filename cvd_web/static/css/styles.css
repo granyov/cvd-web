@@ -394,13 +394,19 @@ body[data-theme="dark"] .notice.error-note {
   align-items: center;
 }
 
+#openTaskCenterButton {
+  flex: 0 0 auto;
+  min-width: 144px;
+  white-space: nowrap;
+  padding-inline: 9px;
+}
+
 .button-badge {
   display: inline-grid;
   place-items: center;
   min-width: 20px;
   height: 20px;
   border-radius: 999px;
-  margin-left: 6px;
   padding: 0 6px;
   background: var(--panel-2);
   color: var(--muted);
@@ -1001,6 +1007,54 @@ details.section[open] > .section-body {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
   gap: 8px;
+}
+
+.worklist-stages {
+  display: grid;
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.worklist-stage {
+  display: grid;
+  min-height: 58px;
+  align-content: center;
+  gap: 2px;
+  border-color: var(--border);
+  background: var(--field-bg);
+}
+
+.worklist-stage strong,
+.worklist-stage span {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.worklist-stage strong {
+  color: var(--accent);
+  font-size: 1.05rem;
+}
+
+.worklist-stage span {
+  color: var(--muted);
+  font-size: 0.76rem;
+}
+
+.worklist-stage.has-items {
+  border-color: color-mix(in srgb, var(--accent) 32%, var(--border));
+}
+
+.worklist-empty {
+  grid-column: 1 / -1;
+  border: 1px dashed var(--border);
+  border-radius: 7px;
+  padding: 11px 12px;
+  color: var(--muted);
+  background: var(--field-bg);
+  font-size: 0.86rem;
 }
 
 .action-queue-card {
@@ -1919,6 +1973,26 @@ button.job-chip {
   color: var(--muted);
   font-size: 0.78rem;
   font-weight: 700;
+}
+
+.task-center-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 6px;
+}
+
+.small-button {
+  min-height: 30px;
+  padding: 5px 8px;
+  font-size: 0.78rem;
+}
+
+.task-center-action.error-text {
+  max-width: min(420px, 100%);
+  overflow-wrap: anywhere;
+  color: var(--danger);
+  text-align: right;
 }
 
 .task-center-item.ok {
@@ -3574,6 +3648,106 @@ body[data-theme="dark"] .check-row.warning .check-mark {
   border-color: color-mix(in srgb, var(--warning) 42%, var(--border));
 }
 
+.import-fact-review {
+  display: grid;
+  gap: 8px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 10px;
+  background: color-mix(in srgb, var(--panel-2) 48%, var(--panel));
+}
+
+.import-fact-review-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  align-items: baseline;
+}
+
+.import-fact-review-head strong {
+  font-size: 0.92rem;
+}
+
+.import-fact-review-head span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+.import-fact-groups {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 8px;
+}
+
+.import-fact-group {
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--field-bg);
+}
+
+.import-fact-group summary {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  align-items: center;
+  min-height: 38px;
+  padding: 8px 10px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.import-fact-group summary::-webkit-details-marker {
+  display: none;
+}
+
+.import-fact-group summary span:first-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-weight: 700;
+}
+
+.import-fact-list {
+  display: grid;
+  gap: 6px;
+  border-top: 1px solid var(--border);
+  padding: 8px;
+}
+
+.import-fact-item {
+  display: grid;
+  gap: 2px;
+  min-height: 64px;
+  justify-items: start;
+  border-radius: 6px;
+  padding: 8px;
+  text-align: left;
+}
+
+.import-fact-item strong,
+.import-fact-item span,
+.import-fact-item small {
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+.import-fact-item span {
+  color: var(--text);
+  font-size: 0.82rem;
+}
+
+.import-fact-item small {
+  color: var(--muted);
+  font-size: 0.74rem;
+}
+
+.import-fact-item.conflict,
+.import-fact-item.source-conflict {
+  border-color: color-mix(in srgb, var(--warning) 42%, var(--border));
+}
+
 .import-diff-details {
   border: 1px solid var(--border);
   border-radius: var(--radius);
@@ -3756,7 +3930,8 @@ body[data-interface-mode="researcher"] .layout {
 
   .workflow-status-grid,
   .model-workbench-grid,
-  .import-decision-panel {
+  .import-decision-panel,
+  .worklist-stages {
     grid-template-columns: 1fr;
   }
 
@@ -3775,6 +3950,10 @@ body[data-interface-mode="researcher"] .layout {
 
   .task-center-summary {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .task-center-actions {
+    justify-content: flex-start;
   }
 }
 

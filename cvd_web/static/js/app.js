@@ -74,6 +74,7 @@
   const openModelReportButton = document.getElementById("openModelReportButton");
   const markModelIssueButton = document.getElementById("markModelIssueButton");
   const importDecisionPanel = document.getElementById("importDecisionPanel");
+  const importFactReview = document.getElementById("importFactReview");
   const importDiffDetails = document.getElementById("importDiffDetails");
   const minimumPasswordLength = 15;
   const maxImportBytes = 5 * 1024 * 1024;
@@ -1192,7 +1193,8 @@
   }
 
   function aiJobTitle(job) {
-    return job.type === "text_preparation" ? `Текст #${job.id}` : `Диагноз #${job.id}`;
+    if (job.type === "text_preparation") return `Текст #${job.id}`;
+    return job.case_title ? `Диагноз #${job.id}: ${job.case_title}` : `Диагноз #${job.id}`;
   }
 
   function aiJobStatusText(job) {
@@ -1206,7 +1208,7 @@
   async function openAiJob(job) {
     if (job.type === "text_preparation") {
       if (job.status !== "success") {
-        toast(job.status === "error" ? job.error || "Подготовка текста завершилась ошибкой" : "Подготовка текста ещё выполняется");
+        toast(job.status === "error" ? job.user_error || job.error || "Подготовка текста завершилась ошибкой" : "Подготовка текста ещё выполняется");
         return;
       }
       const response = await api(`/api/model/structure-text/jobs/${job.id}`);
@@ -1217,12 +1219,30 @@
     }
     if (job.type === "diagnosis") {
       if (job.status !== "success" || !job.model_request_id) {
-        toast(job.status === "error" ? job.error || "AI-анализ завершился ошибкой" : "AI-анализ ещё выполняется");
+        toast(job.status === "error" ? job.user_error || job.error || "AI-анализ завершился ошибкой" : "AI-анализ ещё выполняется");
         return;
       }
       const response = await api(`/api/requests/${job.model_request_id}`);
       openRequestResult(response.request);
     }
+  }
+
+  async function cancelAiJob(job) {
+    if (job.status !== "queued") {
+      toast("Отменить можно только задание в очереди");
+      return;
+    }
+    await api(`/api/ai/jobs/${job.type}/${job.id}/cancel`, {method: "POST", body: "{}"});
+    toast(`${aiJobTitle(job)} отменено`);
+    await refreshAiJobs();
+  }
+
+  function openJobCase(job) {
+    if (!job.case_id) {
+      toast("У задания нет сохранённого кейса");
+      return;
+    }
+    openCase(job.case_id).catch((err) => toast(err.message));
   }
 
   function taskCounts(jobs) {
@@ -1259,8 +1279,8 @@
       (job.type === "text_preparation" && job.import_id) ||
       (job.type === "diagnosis" && job.model_request_id)
     );
-    const node = document.createElement(actionable ? "button" : "div");
-    if (actionable) node.type = "button";
+    const node = document.createElement(compact && actionable ? "button" : "div");
+    if (compact && actionable) node.type = "button";
     node.className = compact
       ? `job-chip ${job.status === "success" ? "ok" : job.status === "error" ? "error" : "warning"}`
       : `task-center-item ${job.status === "success" ? "ok" : job.status === "error" ? "error" : job.status === "running" ? "running" : "warning"}`;
@@ -1273,17 +1293,56 @@
     if (!compact) {
       const meta = document.createElement("small");
       const created = job.created_at ? new Date(job.created_at).toLocaleString("ru-RU", {day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit"}) : "";
+      const owner = job.created_by?.name || job.created_by?.email || "";
       meta.textContent = [
         job.position ? `позиция ${job.position}` : "",
+        job.queue_ahead ? `перед ним ${job.queue_ahead}` : "",
         job.estimated_wait_ms ? queueEtaText(job.estimated_wait_ms) : "",
+        owner ? `запустил: ${owner}` : "",
+        job.patient_id ? `ID ${job.patient_id}` : "",
         created
       ].filter(Boolean).join(" · ") || "статус обновляется";
-      const action = document.createElement("span");
-      action.className = "task-center-action";
-      action.textContent = actionable ? "Открыть" : job.status === "error" ? (job.error || "ошибка") : "ожидание";
-      node.append(meta, action);
+      const actionRow = document.createElement("div");
+      actionRow.className = "task-center-actions";
+      if (actionable) {
+        const openButton = document.createElement("button");
+        openButton.type = "button";
+        openButton.className = "small-button";
+        openButton.textContent = "Открыть";
+        openButton.addEventListener("click", () => openAiJob(job).catch((err) => toast(err.message)));
+        actionRow.appendChild(openButton);
+      }
+      if (job.case_id) {
+        const caseButton = document.createElement("button");
+        caseButton.type = "button";
+        caseButton.className = "small-button";
+        caseButton.textContent = "Кейс";
+        caseButton.addEventListener("click", () => openJobCase(job));
+        actionRow.appendChild(caseButton);
+      }
+      if (job.status === "queued") {
+        const cancelButton = document.createElement("button");
+        cancelButton.type = "button";
+        cancelButton.className = "small-button danger";
+        cancelButton.textContent = "Отменить";
+        cancelButton.addEventListener("click", () => cancelAiJob(job).catch((err) => toast(err.message)));
+        actionRow.appendChild(cancelButton);
+      }
+      if (job.status === "error") {
+        const errorText = document.createElement("span");
+        errorText.className = "task-center-action error-text";
+        errorText.textContent = job.user_error || job.error || "ошибка";
+        actionRow.appendChild(errorText);
+      }
+      if (!actionRow.childNodes.length) {
+        const waiting = document.createElement("span");
+        waiting.className = "task-center-action";
+        waiting.textContent = job.status === "running" ? "идёт обработка" : "ожидание";
+        actionRow.appendChild(waiting);
+      }
+      node.append(meta, actionRow);
     }
-    if (actionable) {
+    if (compact && actionable) {
       node.addEventListener("click", () => openAiJob(job).catch((err) => toast(err.message)));
     }
     return node;
@@ -2310,6 +2369,91 @@
     });
   }
 
+  function importFactGroup(path) {
+    const [sectionKey] = String(path || "").split(".");
+    const group = sectionGroupByKey.get(sectionKey);
+    if (!group) return {key: "other", title: "Прочие данные"};
+    if (group.key === "anamnesis") return {key: "anamnesis", title: "Анамнез"};
+    if (group.key === "laboratory") return {key: "laboratory", title: "Лабораторные методы"};
+    if (group.key === "instrumental") return {key: "instrumental", title: "Инструментальные методы"};
+    if (group.key === "objective") return {key: "objective", title: "Объективный статус"};
+    return {key: group.key, title: group.title};
+  }
+
+  function renderImportFactReview(rows) {
+    if (!importFactReview) return;
+    importFactReview.innerHTML = "";
+    const groups = new Map();
+    rows.forEach((row) => {
+      const group = importFactGroup(row.mapping.path);
+      const bucket = groups.get(group.key) || {title: group.title, rows: []};
+      bucket.rows.push(row);
+      groups.set(group.key, bucket);
+    });
+    if (!groups.size) {
+      importFactReview.classList.add("hidden");
+      return;
+    }
+    importFactReview.classList.remove("hidden");
+    const header = document.createElement("div");
+    header.className = "import-fact-review-head";
+    const title = document.createElement("strong");
+    title.textContent = "Проверка извлечённых фактов";
+    const hint = document.createElement("span");
+    hint.textContent = "Поля не попадут в карту, пока вы не выберете их и не нажмёте «Применить».";
+    header.append(title, hint);
+    importFactReview.appendChild(header);
+
+    const list = document.createElement("div");
+    list.className = "import-fact-groups";
+    groups.forEach((group) => {
+      const section = document.createElement("details");
+      section.className = "import-fact-group";
+      section.open = group.rows.some((row) => ["conflict", "source-conflict"].includes(row.state));
+      const summary = document.createElement("summary");
+      const summaryTitle = document.createElement("span");
+      summaryTitle.textContent = group.title;
+      const selected = group.rows.filter((row) => shouldAutoSelectImportRow(row)).length;
+      summary.append(summaryTitle, pill(`${selected}/${group.rows.length}`, selected ? "ok" : "warning"));
+      section.appendChild(summary);
+      const body = document.createElement("div");
+      body.className = "import-fact-list";
+      group.rows.slice(0, 8).forEach((row) => {
+        const meta = importFieldMeta(row.mapping.path);
+        const item = document.createElement("button");
+        item.type = "button";
+        item.className = `import-fact-item ${row.state}`.trim();
+        const label = document.createElement("strong");
+        label.textContent = meta.label;
+        const value = document.createElement("span");
+        value.textContent = importValueText(row.mapping.value);
+        const state = document.createElement("small");
+        const stateLabels = {
+          new: "новое значение",
+          conflict: "конфликт с текущим",
+          "source-conflict": "несколько значений",
+          same: "без изменений"
+        };
+        state.textContent = stateLabels[row.state] || "проверить";
+        item.append(label, value, state);
+        item.addEventListener("click", () => {
+          if (importDiffDetails) importDiffDetails.open = true;
+          row.checkbox?.focus();
+        });
+        body.appendChild(item);
+      });
+      if (group.rows.length > 8) {
+        const more = document.createElement("small");
+        more.className = "muted";
+        more.textContent = `Ещё полей: ${group.rows.length - 8}. Полный список в подробном сравнении.`;
+        body.appendChild(more);
+      }
+      section.appendChild(body);
+      list.appendChild(section);
+    });
+    importFactReview.appendChild(list);
+  }
+
   function openImportPreview(preview) {
     const currentData = collectData();
     const rows = (preview.mappings || []).map((mapping) => {
@@ -2335,6 +2479,7 @@
     appendImportMetric((counts.conflict || 0) + (counts["source-conflict"] || 0), "конфликтов");
     appendImportMetric((preview.warnings || []).length, "предупреждений");
     renderImportDecisionPanel(counts, rows);
+    renderImportFactReview(rows);
     if (importDiffDetails) importDiffDetails.open = (counts.conflict || 0) + (counts["source-conflict"] || 0) > 0;
 
     const correctedText = String(preview.corrected_text || "").trim();
@@ -2491,6 +2636,7 @@
     correctedTextBlock.classList.add("hidden");
     correctedTextContent.textContent = "";
     pendingImport = null;
+    importFactReview?.classList.add("hidden");
   }
 
   function openStructureTextModal() {
