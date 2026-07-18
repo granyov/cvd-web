@@ -471,26 +471,41 @@ body[data-theme="dark"] .notice.error-note {
 
 .quick-workspace-head {
   display: flex;
-  justify-content: space-between;
-  gap: 12px;
+  flex-wrap: wrap;
+  gap: 8px 12px;
   align-items: center;
 }
 
 .quick-workspace h2 {
-  margin: 0 0 2px;
-  font-size: 0.98rem;
+  margin: 0;
+  font-size: 0.95rem;
 }
 
-.quick-workspace-controls {
-  display: flex;
-  flex: 0 0 auto;
-  gap: 8px;
-  align-items: center;
+.quick-profile-label {
+  margin: 0 0 0 4px;
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 500;
 }
 
-.quick-workspace-controls select {
-  min-width: 220px;
+.quick-workspace-head select {
+  width: auto;
+  min-width: 210px;
   max-width: 300px;
+}
+
+.quick-profile-badge {
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--accent) 12%, var(--field-bg));
+  color: var(--accent);
+  font-size: 0.76rem;
+  font-weight: 600;
+  cursor: help;
+}
+
+.quick-workspace-head #quickWorkspaceToggle {
+  margin-left: auto;
 }
 
 .quick-workspace-body {
@@ -797,6 +812,17 @@ body[data-theme="dark"] .notice.error-note {
 
 .icd-chip:hover {
   background: color-mix(in srgb, var(--accent) 16%, var(--field-bg));
+}
+
+/* «Все кейсы» — итог, а не стадия: отделён и приглушён */
+.worklist-stage.is-total {
+  margin-left: auto;
+  border-style: dashed;
+  background: none;
+}
+
+.worklist-stage.is-total strong {
+  color: var(--muted);
 }
 
 /* Черновик рекомендаций */
@@ -3899,6 +3925,8 @@ body[data-interface-mode="doctor"] #downloadJsonButton,
 body[data-interface-mode="doctor"] #downloadFhirButton,
 body[data-interface-mode="doctor"] .technical-response,
 body[data-interface-mode="doctor"] #demoCaseButton,
+/* Ответ модели врач читает в окне результата, а не редактирует как поле анкеты. */
+body[data-interface-mode="doctor"] #section-MODEL_OUTPUT,
 body[data-interface-mode="doctor"] #admin-logs-section,
 body[data-interface-mode="doctor"] #admin-settings-section {
   display: none !important;

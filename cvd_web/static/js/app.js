@@ -19,7 +19,6 @@
   const taskCenterModal = document.getElementById("taskCenterModal");
   const taskCenterSummary = document.getElementById("taskCenterSummary");
   const taskCenterList = document.getElementById("taskCenterList");
-  const sectionNav = document.getElementById("sectionNav");
   const icdSummary = document.getElementById("icdSummary");
   const patientSnapshot = document.getElementById("patientSnapshot");
   const readinessPanel = document.getElementById("readinessPanel");
@@ -462,11 +461,21 @@
   function renderQuickWorkspace(data = collectData()) {
     if (!quickFieldsGrid) return;
     const scenario = selectedScenario();
-    if (scenarioHint) scenarioHint.textContent = scenario.hint;
     quickFieldsGrid.innerHTML = "";
     const paths = uniquePaths(scenario.quickPaths);
+    // Профиль может добавлять обязательные поля — врач должен видеть, почему меняется готовность.
+    const extraRequired = scenario.requiredPaths.length;
+    if (scenarioHint) {
+      scenarioHint.textContent = extraRequired ? `+${extraRequired} к обязательным` : "";
+      scenarioHint.title = extraRequired
+        ? `${scenario.hint} Добавлено в обязательные: ${scenario.requiredPaths.map(([, label]) => label).join(", ")}.`
+        : scenario.hint;
+      scenarioHint.classList.toggle("hidden", !extraRequired);
+    }
     if (quickWorkspaceSummary) {
-      quickWorkspaceSummary.textContent = `${scenario.title}: ${paths.length} быстрых полей.`;
+      quickWorkspaceSummary.textContent = extraRequired
+        ? `${paths.length} полей · обязательные профиля: ${scenario.requiredPaths.map(([, label]) => label).join(", ")}`
+        : `${paths.length} полей для первичного анализа`;
     }
     paths.forEach((path) => {
       const meta = fieldMeta(path);
@@ -685,21 +694,6 @@
       details.appendChild(summary);
       details.appendChild(body);
       form.appendChild(details);
-    });
-    renderSectionNav();
-  }
-
-  function renderSectionNav() {
-    if (!sectionNav) return;
-    sectionNav.innerHTML = "";
-    window.CVD_SCHEMA.forEach((section, index) => {
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "section-nav-item";
-      button.dataset.sectionNav = section.key;
-      button.textContent = `${sectionNumber(index)}. ${section.title}`;
-      button.addEventListener("click", () => focusSection(section.key));
-      sectionNav.appendChild(button);
     });
   }
 
@@ -958,11 +952,6 @@
         // Пустые секции не шумят бейджами; частично заполненные показывают счётчик.
         badge.textContent = percent === 0 ? "" : percent === 100 ? "✓" : `${filled}/${total}`;
         badge.className = `section-fill-badge ${percent === 100 ? "ok" : percent > 0 ? "warning" : "empty"}`.trim();
-      }
-      const nav = sectionNav?.querySelector(`[data-section-nav="${section.key}"]`);
-      if (nav) {
-        nav.classList.toggle("ok", percent === 100);
-        nav.classList.toggle("warning", percent > 0 && percent < 100);
       }
     });
   }

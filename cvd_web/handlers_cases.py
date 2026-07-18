@@ -276,7 +276,8 @@ class CasesMixin:
             ("waiting_ai", "Ожидают AI"),
             ("needs_review", "Нужна проверка"),
             ("done", "Готово"),
-            ("archive", "Архив"),
+            # Не стадия, а итог: показывается отдельно, чтобы счётчики стадий не читались как сумма.
+            ("archive", "Все кейсы"),
         ]
         stages = []
         for key, label in stages_config:

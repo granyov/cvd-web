@@ -107,18 +107,15 @@
           <div id="activeJobsLine" class="active-jobs-line hidden" aria-live="polite"></div>
           <section class="quick-workspace is-collapsed" aria-labelledby="quickWorkspaceTitle">
             <div class="quick-workspace-head">
-              <div>
-                <h2 id="quickWorkspaceTitle">Рабочий минимум</h2>
-                <span id="scenarioHint" class="muted">Ключевые поля для текущего клинического сценария.</span>
-              </div>
-              <div class="quick-workspace-controls">
-                <select id="scenarioSelect" aria-label="Клинический сценарий"></select>
-                <button type="button" id="quickWorkspaceToggle" aria-expanded="false" aria-controls="quickWorkspaceBody">Показать поля</button>
-              </div>
+              <h2 id="quickWorkspaceTitle">Быстрый ввод</h2>
+              <label class="quick-profile-label" for="scenarioSelect">Профиль случая</label>
+              <select id="scenarioSelect" aria-label="Профиль случая"></select>
+              <span id="scenarioHint" class="quick-profile-badge"></span>
+              <button type="button" id="quickWorkspaceToggle" aria-expanded="false" aria-controls="quickWorkspaceBody">Показать поля</button>
             </div>
             <div id="quickWorkspaceBody" class="quick-workspace-body">
               <div class="quick-workspace-body-head">
-                <span id="quickWorkspaceSummary" class="muted">Поля скрыты. Выберите сценарий и раскройте блок при необходимости.</span>
+                <span id="quickWorkspaceSummary" class="muted"></span>
                 <button type="button" id="quickMissingButton">К незаполненному</button>
               </div>
               <div id="quickFieldsGrid" class="quick-fields-grid"></div>
@@ -132,7 +129,6 @@
             </div>
             <div id="fieldSearchResults" class="field-search-results hidden"></div>
           </div>
-          <div id="sectionNav" class="section-nav" aria-label="Разделы анкеты"></div>
           <div id="draftBanner" class="draft-banner hidden" role="status" aria-live="polite">
             <span id="draftBannerText">Найден локальный черновик.</span>
             <div class="toolbar">
@@ -165,9 +161,9 @@
 
       <aside class="panel">
         <div class="tabs">
-          <button type="button" class="tab active" data-tab="quality">1. Проверка</button>
-          <button type="button" class="tab" data-tab="json">2. JSON</button>
-          <button type="button" class="tab hidden" id="modelTabButton" data-tab="model">3. Результат</button>
+          <button type="button" class="tab active" data-tab="quality">Проверка</button>
+          <button type="button" class="tab" data-tab="json">JSON</button>
+          <button type="button" class="tab hidden" id="modelTabButton" data-tab="model">Результат</button>
         </div>
         <div class="panel-body">
           <section id="tab-quality">

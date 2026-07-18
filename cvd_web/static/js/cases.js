@@ -263,7 +263,7 @@
     stages.forEach((stage) => {
       const button = document.createElement("button");
       button.type = "button";
-      button.className = `worklist-stage ${stage.count ? "has-items" : ""}`.trim();
+      button.className = `worklist-stage ${stage.count ? "has-items" : ""} ${stage.key === "archive" ? "is-total" : ""}`.trim();
       button.dataset.stage = stage.key;
       const count = document.createElement("strong");
       count.textContent = String(stage.count || 0);
