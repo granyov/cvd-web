@@ -1,19 +1,20 @@
-# CVD Web v0.9.12
+# CVD Web v0.9.13
 
-Release focused on daily case triage: the system now starts from a shift worklist, keeps AI work visible across browser sessions, and makes recognized text import easier to review clinically.
+Release focused on the printable conclusion and on clearing defects found while walking the cardiologist's daily path through the interface.
 
 ## Highlights
 
-- Starts authenticated users on the case archive, which now acts as the daily worklist.
-- Adds backend-computed workflow stages for new cases, cases in work, AI waiting, review-needed, completed, and archive views.
-- Adds a shift worklist with per-stage counts and next actions on case cards.
-- Shows case owner, active AI task state, and review state in case lists and details.
-- Shows global AI queue position across users, including who launched a task and which case/patient it belongs to.
-- Allows queued diagnosis and text-preparation AI jobs to be cancelled before execution.
-- Adds clearer model-facing errors for Cloudflare 524, cloudflared tunnel issues, timeouts, JSON/schema parse failures, connection failures, and resource pressure.
-- Groups recognized free-text facts by clinical workflow before import: anamnesis, lab tests, instrumental tests, objective status, treatment, and diagnosis.
-- Adds timeline events for creation, updates, and physician review.
-- Updates the Umbrel package to use `ghcr.io/granyov/cvd-web:v0.9.12`.
+- Rebuilds the HTML export as a clinical conclusion: the physician's own diagnosis and the AI draft open the document side by side with their ICD-10 codes, so agreement and divergence are visible at a glance.
+- Adds a signature block (physician, signature, date) and orders the document the way a doctor reads it: conclusion, recommendations, signature, disclaimer, then the AI reasoning.
+- Moves patient data into an appendix that starts on its own page and can be switched off before printing, so the conclusion fits a single sheet.
+- Prepares print output for A4: page margins, a running header with patient name and ID on every page, blocks that do not break across pages, hidden interface controls, and a "Печать / Сохранить PDF" action that maps onto the browser's Save-as-PDF.
+- Renders report dates as "18 июля 2026, 22:52" instead of ISO timestamps and shows case number, age, and sex in the header.
+- Drops the broken right-panel tab numbering, which showed "1. Проверка" and "3. Результат" with no second tab because the JSON tab is hidden for doctors.
+- Removes the sticky section strip that had returned as a fourth copy of the section list with 3081px of horizontal scroll inside an 828px column.
+- Hides the technical "Ответ модели" form section in the doctor role, where the AI answer belongs to the result window instead of being editable as captured data.
+- Renames the worklist total to "Все кейсы" and separates it, so stage counters no longer read as a sum of eight cases when there are four.
+- Renames "Рабочий минимум" to "Быстрый ввод" with "Профиль случая", collapses it into a single line, and explains readiness changes with a "+N к обязательным" badge.
+- Updates the Umbrel package to use `ghcr.io/granyov/cvd-web:v0.9.13`.
 
 ## Install
 
@@ -27,8 +28,8 @@ For release-archive installs:
 
 ```bash
 scripts/install_from_release.sh \
-  --url https://github.com/granyov/cvd-web/releases/download/v0.9.12/cvd-web-v0.9.12.tar.gz \
-  --sha256-url https://github.com/granyov/cvd-web/releases/download/v0.9.12/cvd-web-v0.9.12.tar.gz.sha256 \
+  --url https://github.com/granyov/cvd-web/releases/download/v0.9.13/cvd-web-v0.9.13.tar.gz \
+  --sha256-url https://github.com/granyov/cvd-web/releases/download/v0.9.13/cvd-web-v0.9.13.tar.gz.sha256 \
   -- --target local --unattended
 ```
 

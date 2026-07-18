@@ -1,5 +1,18 @@
 # Changelog
 
+## v0.9.13 - 2026-07-18
+
+- Rebuild the HTML export as a printable clinical conclusion: the physician's diagnosis and the AI draft open the document side by side with their ICD-10 codes, followed by the AI summary, recommendation draft, and a signature block.
+- Move patient data into an appendix that starts on its own page and can be switched off before printing, so the conclusion fits a single sheet.
+- Set up print output for A4: page margins, a running header with patient name and ID on every page, blocks that do not break across pages, hidden interface controls, and a "Печать / Сохранить PDF" action.
+- Render report dates as "18 июля 2026, 22:52" instead of ISO timestamps, and show case number, age, and sex in the report header.
+- Drop the broken tab numbering in the right panel ("1. Проверка" and "3. Результат" with no second tab in the doctor role).
+- Remove the sticky section strip that returned as a fourth copy of the section list with 3081px of horizontal scroll.
+- Hide the technical "Ответ модели" form section in the doctor role, where the AI answer belongs to the result window rather than to editable case fields.
+- Rename the worklist total chip to "Все кейсы" and separate it visually, so stage counters no longer read as a sum.
+- Rename "Рабочий минимум" to "Быстрый ввод" with "Профиль случая", collapse it into one line, and show a "+N к обязательным" badge explaining readiness changes after switching profile.
+- Update Umbrel metadata and image tag for `ghcr.io/granyov/cvd-web:v0.9.13`.
+
 ## v0.9.12 - 2026-07-18
 
 - Start daily work from the case archive/worklist instead of opening the patient form first.
