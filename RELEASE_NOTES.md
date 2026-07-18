@@ -1,20 +1,20 @@
-# CVD Web v0.9.9
+# CVD Web v0.9.10
 
-Release focused on everyday clinician UX and product hardening.
+Release focused on EMIAS PDF intake, a professional result view, and a much quieter interface.
 
 ## Highlights
 
-- Forces administrators signing in with a default password to set a new one before any other action; unattended installs with strong passwords are unaffected.
-- Protects unsaved patient-form data: beforeunload warning, synchronous local draft flush, and an unsaved-changes indicator on the save button.
-- Adds a recent-cases strip to the workspace for one-click resume of unfinished work.
-- Notifies about finished background AI jobs with a toast, a tab-title badge, and a desktop notification when the tab is hidden.
-- Shows adult reference ranges next to 30+ numeric fields and highlights out-of-range values while typing.
-- Replaces raw AI failures with an actionable error card: cause, what to do next, and a retry button.
-- Adds Ctrl/Cmd+S to save the case and Alt+N to jump to the first missing key field.
-- Adds a one-click synthetic demo case for product evaluation, plus call-to-action empty states in the archive and admin dashboard.
-- Fixes tablet layouts: no horizontal overflow at 768px on the workspace, archive, and admin pages.
-- Splits the 4400-line `app.py` into domain handler mixins with a shared HTTP core (no behavior change) and adds WSGI-level smoke tests for the key user journeys.
-- Updates the Umbrel package to use `ghcr.io/granyov/cvd-web:v0.9.9`.
+- Imports PDF exports from EMIAS.INFO: the text layer is extracted with the standard library only (FlateDecode, ToUnicode CMap so Cyrillic decodes correctly) and passed to AI preparation, where every extracted field still requires an explicit diff confirmation. Scans without a text layer get an actionable message instead of an empty result.
+- Asks the model for treatment and rehabilitation drafts. These fields existed in the patient template from the start but no prompt ever requested them, so they were always empty; the prompt now returns MODEL_OUTPUT next to the CDS reasoning.
+- Keeps recommendations safe by construction: drug classes and targets only, never brand names, doses, or prescriptions, and every answer is framed as a draft for the physician.
+- Refreshes the stored prompt template on upgrade only when it still holds the previous default, so customised templates survive the update (migration 0014).
+- Presents the AI result as a clinical document: leading diagnosis first with confidence and codes, red flags as badges, ICD-10 codes as click-to-copy chips, and a doctor-vs-AI code comparison that only appears when both sides have codes.
+- Completes the loop from history: opening a case from the archive loads its latest successful result, edits mark it stale, and "Обновить анализ" re-runs the analysis in the same flow.
+- Uses "CVD Engine" in the doctor role instead of internal model names, and hides the model filter and demo case button there.
+- Declutters the workspace from eleven meta layers above the form to three: no decorative hero, no workflow strip, no sticky section navigator, no floating emoji layer; three primary actions plus an "Ещё" menu; one navigation row with a single user menu.
+- Renders numeric sections as a dense 3-4 column grid with units inside the field, so a full lab panel fits one screen, and replaces the key-field checklist with a progress bar plus the missing rows.
+- Adds inline SVG icons, tabular numerals, visible focus rings, dropdown and section transitions, and an indeterminate loading bar in the archive.
+- Updates the Umbrel package to use `ghcr.io/granyov/cvd-web:v0.9.10`.
 
 ## Install
 
@@ -28,8 +28,8 @@ For release-archive installs:
 
 ```bash
 scripts/install_from_release.sh \
-  --url https://github.com/granyov/cvd-web/releases/download/v0.9.9/cvd-web-v0.9.9.tar.gz \
-  --sha256-url https://github.com/granyov/cvd-web/releases/download/v0.9.9/cvd-web-v0.9.9.tar.gz.sha256 \
+  --url https://github.com/granyov/cvd-web/releases/download/v0.9.10/cvd-web-v0.9.10.tar.gz \
+  --sha256-url https://github.com/granyov/cvd-web/releases/download/v0.9.10/cvd-web-v0.9.10.tar.gz.sha256 \
   -- --target local --unattended
 ```
 
@@ -37,5 +37,6 @@ scripts/install_from_release.sh \
 
 - Not a medical device and not clinically validated.
 - Use only synthetic or deidentified data.
+- PDF intake reads the text layer only; scanned documents need OCR before import.
 - The SQLite worker and in-process inference queue support one backend process.
 - Production deployments must add HTTPS and should use external queue/rate-limit adapters before strict production readiness.

@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.9.10 - 2026-07-18
+
+- Accept EMIAS PDF exports in the import flow: extract the text layer with the standard library only (FlateDecode, ToUnicode CMap for Cyrillic) and hand the text to AI preparation, where every field still needs an explicit diff confirmation.
+- Return a helpful message instead of an empty result when a PDF has no text layer (scan).
+- Ask the model for treatment and rehabilitation drafts: the prompt now requests MODEL_OUTPUT next to CDS_OUTPUT, so the recommendation fields that existed in the template are finally filled.
+- Restrict recommendation wording to drug classes and targets — never brand names, doses, or prescriptions — and require ICD-10 codes in the array to match the diagnosis text.
+- Refresh the stored prompt template on upgrade only when it still holds the previous default, leaving customised templates untouched (migration 0014).
+- Show the recommendation draft in the result modal and the printable report behind an explicit disclaimer.
+- Rework the AI result into a clinical document: leading diagnosis first, red flags as badges, ICD-10 codes as click-to-copy chips, and a meaningful doctor-vs-AI code comparison.
+- Load the latest successful result when a case is opened from the archive, so editing and re-running the analysis is one continuous flow; add an "Обновить анализ" action to the result modal.
+- Present the engine as "CVD Engine" in the doctor role and hide model names, the model filter, and the demo case button there.
+- Declutter the workspace: no decorative hero, no workflow strip, no sticky section navigator, no floating emoji layer; case status moved into the panel header and secondary actions into an "Ещё" menu.
+- Collapse per-page navigation into one row with a single user menu holding interface mode, theme, password change, and logout.
+- Render numeric sections as a dense 3-4 column grid with units inside the field, and replace the key-field checklist with a progress bar plus missing rows only.
+- Add inline SVG icons, tabular numerals, visible focus rings, dropdown/section transitions, and an indeterminate loading bar in the archive.
+- Update Umbrel metadata and image tag for `ghcr.io/granyov/cvd-web:v0.9.10`.
+
 ## v0.9.9 - 2026-07-17
 
 - Force administrators who sign in with a default password to set a new one before using any other part of the application.

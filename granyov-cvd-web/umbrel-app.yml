@@ -4,7 +4,7 @@ name: CVD Web
 tagline: Cardiovascular case workspace with local LLM review
 icon: https://raw.githubusercontent.com/granyov/cvd-web/main/granyov-cvd-web/icon.svg
 category: ai
-version: "0.9.9"
+version: "0.9.10"
 port: 8080
 description: >-
   CVD Web is a controlled cardiovascular case workspace for structuring patient
@@ -22,9 +22,9 @@ repo: https://github.com/granyov/cvd-web
 support: https://github.com/granyov/cvd-web/issues
 gallery: []
 releaseNotes: >-
-  Enforces changing default admin passwords on first login, protects unsaved
-  form data, adds recent-case quick resume, reference-range hints, background
-  AI completion notifications, a synthetic demo case, and tablet layout fixes.
+  Imports EMIAS PDF exports into the AI preparation flow, adds treatment and
+  rehabilitation drafts from the model, reworks the AI result into a clinical
+  document with re-run from history, and declutters the whole interface.
 dependencies: []
 path: ""
 defaultUsername: "admin@umbrel.local"
