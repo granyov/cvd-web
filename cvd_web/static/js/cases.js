@@ -27,6 +27,7 @@
     importsMetric: document.getElementById("importsMetric"),
     actionQueuePanel: document.getElementById("actionQueuePanel"),
     actionQueueList: document.getElementById("actionQueueList"),
+    worklistStages: document.getElementById("worklistStages"),
     showAttentionCases: document.getElementById("showAttentionCasesButton"),
     caseSearch: document.getElementById("caseSearchInput"),
     caseAnalysis: document.getElementById("caseAnalysisFilter"),
@@ -150,6 +151,8 @@
   }
 
   function caseWorkflowStatus(item) {
+    const workflow = item.workflow || {};
+    if (workflow.label) return [workflow.label, workflow.kind || ""];
     const quality = item.quality || {};
     if (item.ai_result_stale) return ["Данные изменены после AI", "warning"];
     if (item.latest_request_status === "error") return ["AI завершился ошибкой", "error"];
@@ -162,6 +165,8 @@
   }
 
   function caseStatusDescription(item) {
+    const workflow = item.workflow || {};
+    if (workflow.next_action) return workflow.next_action;
     const quality = item.quality || {};
     if (item.ai_result_stale) return "данные кейса изменились после последнего AI-результата";
     if (item.latest_request_status === "error") return "последний запуск требует внимания";
@@ -216,10 +221,21 @@
 
   async function loadActionQueue() {
     if (!nodes.actionQueuePanel || !nodes.actionQueueList) return;
-    const response = await api("/api/cases?analysis=attention&limit=6");
-    const items = response.cases || [];
-    nodes.actionQueuePanel.classList.toggle("hidden", items.length === 0);
+    const response = await api("/api/worklist?limit=4");
+    const stages = response.stages || [];
+    const attentionStage = stages.find((stage) => stage.key === "needs_review") || {items: [], count: 0};
+    const waitingStage = stages.find((stage) => stage.key === "waiting_ai") || {items: [], count: 0};
+    const items = [...(attentionStage.items || []), ...(waitingStage.items || [])].slice(0, 6);
+    nodes.actionQueuePanel.classList.toggle("hidden", response.total === 0);
+    renderWorklistStages(stages);
     nodes.actionQueueList.innerHTML = "";
+    if (!items.length) {
+      const empty = document.createElement("div");
+      empty.className = "worklist-empty";
+      empty.textContent = "Сейчас нет кейсов, которые ждут AI или проверки врача.";
+      nodes.actionQueueList.appendChild(empty);
+      return;
+    }
     items.forEach((item) => {
       const card = document.createElement("button");
       card.type = "button";
@@ -238,6 +254,28 @@
         await selectCase(item.id);
       });
       nodes.actionQueueList.appendChild(card);
+    });
+  }
+
+  function renderWorklistStages(stages) {
+    if (!nodes.worklistStages) return;
+    nodes.worklistStages.innerHTML = "";
+    stages.forEach((stage) => {
+      const button = document.createElement("button");
+      button.type = "button";
+      button.className = `worklist-stage ${stage.count ? "has-items" : ""}`.trim();
+      button.dataset.stage = stage.key;
+      const count = document.createElement("strong");
+      count.textContent = String(stage.count || 0);
+      const label = document.createElement("span");
+      label.textContent = stage.label;
+      button.append(count, label);
+      button.addEventListener("click", async () => {
+        await switchView("cases");
+        nodes.caseAnalysis.value = stage.key === "archive" ? "" : stage.key;
+        await loadCases();
+      });
+      nodes.worklistStages.appendChild(button);
     });
   }
 
@@ -303,7 +341,16 @@
       patient.textContent = item.patient_id ? `ID пациента: ${item.patient_id}` : "ID пациента не указан";
       const meta = document.createElement("small");
       const quality = item.quality || {};
-      meta.textContent = `Кейс #${item.id} · готовность ${quality.readiness_percent || 0}% · сигналов ${(quality.signals || []).length} · ${item.analysis_count || 0} анализов · ${caseStatusDescription(item)} · ${formatDateTime(item.updated_at)}`;
+      const owner = item.owner?.name || item.owner?.email || "";
+      meta.textContent = [
+        `Кейс #${item.id}`,
+        owner ? `ответственный: ${owner}` : "",
+        `готовность ${quality.readiness_percent || 0}%`,
+        `сигналов ${(quality.signals || []).length}`,
+        `${item.analysis_count || 0} анализов`,
+        caseStatusDescription(item),
+        formatDateTime(item.updated_at)
+      ].filter(Boolean).join(" · ");
       button.append(head, patient, meta);
       button.addEventListener("click", () => selectCase(item.id).catch(handleError));
       nodes.casesList.appendChild(button);
@@ -346,8 +393,9 @@
     nodes.detailMeta.append(
       pill(`Кейс #${caseItem.id}`),
       pill(caseItem.patient_id ? `ID ${caseItem.patient_id}` : "без ID", caseItem.patient_id ? "ok" : "warning"),
-      pill(...caseWorkflowStatus(listItem || {analysis_count: results.length, latest_result_id: state.latestResultId, latest_request_status: results[0]?.status, quality: caseItem.quality || {}})),
-      pill(caseStatusDescription(listItem || {analysis_count: results.length, latest_result_id: state.latestResultId, latest_request_status: results[0]?.status, quality: caseItem.quality || {}})),
+      pill(...caseWorkflowStatus(listItem || caseItem || {analysis_count: results.length, latest_result_id: state.latestResultId, latest_request_status: results[0]?.status, quality: caseItem.quality || {}})),
+      pill(caseStatusDescription(listItem || caseItem || {analysis_count: results.length, latest_result_id: state.latestResultId, latest_request_status: results[0]?.status, quality: caseItem.quality || {}})),
+      pill(caseItem.owner?.name || caseItem.owner?.email ? `ответственный: ${caseItem.owner?.name || caseItem.owner?.email}` : "ответственный не указан"),
       pill(`${listItem?.analysis_count || results.length} анализов`)
     );
     nodes.editCase.href = `/app?case=${caseItem.id}`;
@@ -419,11 +467,19 @@
   }
 
   function renderCaseTimeline(caseItem, results, imports) {
-    const events = [{when: caseItem.updated_at, kind: "case", text: "Кейс обновлён"}];
+    const events = [
+      {when: caseItem.created_at, kind: "case", text: "Кейс создан"},
+      {when: caseItem.updated_at, kind: "case", text: "Кейс обновлён"}
+    ];
     results.forEach((item) => events.push({
       when: item.created_at,
       kind: item.status,
       text: `AI-анализ #${item.id}: ${item.status === "success" ? "результат готов" : "ошибка"}`
+    }));
+    results.filter((item) => item.review).forEach((item) => events.push({
+      when: item.review?.updated_at || item.created_at,
+      kind: "case",
+      text: `Врачебная оценка результата #${item.id}: ${reviewLabel(item.review?.rating)}`
     }));
     imports.forEach((item) => events.push({
       when: item.applied_at || item.created_at,

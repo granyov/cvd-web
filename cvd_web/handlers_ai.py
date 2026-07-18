@@ -26,6 +26,28 @@ class AiMixin:
         self.configure_inference_queue(settings)
         return self.json_response({"queue": self.inference_queue.snapshot(user_id=user["id"])})
 
+    def user_friendly_ai_error(self, message: str | None) -> str:
+        text = str(message or "").strip()
+        lowered = text.lower()
+        if not text:
+            return "AI-задание завершилось без результата. Повторите запрос или сообщите администратору."
+        if "524" in lowered or "cloudflare" in lowered:
+            return (
+                "Модель не успела вернуть полный ответ через cloudflared tunnel. "
+                "Результат можно повторить; администратору стоит увеличить таймауты и проверить потоковый ответ."
+            )
+        if "timeout" in lowered or "timed out" in lowered or "не ответ" in lowered:
+            return "Модель отвечает слишком долго. Задание можно повторить позже или перенести в менее загруженное окно."
+        if "json" in lowered or "schema" in lowered or "структур" in lowered or "parse" in lowered:
+            return "Ответ модели не удалось привести к ожидаемой структуре. Данные сохранены, запрос можно повторить."
+        if "connection" in lowered or "connect" in lowered or "unreachable" in lowered or "refused" in lowered:
+            return "AI-сервис сейчас недоступен. Проверьте tunnel/LM Studio и повторите запрос."
+        if "memory" in lowered or "ресурс" in lowered or "insufficient" in lowered:
+            return "Модели не хватило ресурсов. Нужна меньшая модель, другой quant или разгрузка LM Studio."
+        if "очеред" in lowered or "queue" in lowered:
+            return "Очередь AI сейчас занята. Дождитесь выполнения предыдущих заданий."
+        return text[:600]
+
     def model_metrics(self, response_payload: dict[str, Any] | None, duration_ms: int) -> dict[str, Any]:
         raw = response_payload.get("raw", {}) if isinstance(response_payload, dict) else {}
         usage = raw.get("usage", {}) if isinstance(raw, dict) else {}
@@ -248,6 +270,7 @@ class AiMixin:
             "response": response_payload,
             "parsed": parsed_output,
             "error": getter("error"),
+            "user_error": self.user_friendly_ai_error(getter("error")),
             "duration_ms": getter("duration_ms") or 0,
             "queue_wait_ms": getter("queue_wait_ms") or 0,
             "prompt_tokens": getter("prompt_tokens") or 0,
@@ -286,6 +309,7 @@ class AiMixin:
                 "case_id": job["case_id"],
                 "model_request_id": job["model_request_id"],
                 "error": job["error"],
+                "user_error": self.user_friendly_ai_error(job["error"]),
                 "created_at": job["created_at"],
                 "started_at": job["started_at"],
                 "finished_at": job["finished_at"],
@@ -545,6 +569,7 @@ class AiMixin:
             "data_preparation_request_id": getter("data_preparation_request_id"),
             "import_id": getter("import_id"),
             "error": getter("error"),
+            "user_error": self.user_friendly_ai_error(getter("error")),
             "input_sha256": getter("input_sha256"),
             "text_preview": text_preview,
             "created_at": getter("created_at"),
@@ -635,19 +660,27 @@ class AiMixin:
                 """
                 SELECT type, id, status, created_at, started_at, finished_at, error,
                        case_id, model_request_id, input_sha256, data_preparation_request_id,
-                       import_id, request_json, result_json
+                       import_id, request_json, result_json, case_title, patient_id,
+                       created_by_user_id, created_by_email, created_by_name
                 FROM (
-                  SELECT 'diagnosis' AS type, id, status, created_at, started_at, finished_at, error,
-                         case_id, model_request_id, NULL AS input_sha256, NULL AS data_preparation_request_id,
-                         NULL AS import_id, request_json, NULL AS result_json
-                  FROM inference_jobs
-                  WHERE user_id = ?
+                  SELECT 'diagnosis' AS type, j.id, j.status, j.created_at, j.started_at, j.finished_at, j.error,
+                         j.case_id, j.model_request_id, NULL AS input_sha256, NULL AS data_preparation_request_id,
+                         NULL AS import_id, j.request_json, NULL AS result_json,
+                         c.title AS case_title, c.patient_id,
+                         u.id AS created_by_user_id, u.email AS created_by_email, u.full_name AS created_by_name
+                  FROM inference_jobs j
+                  JOIN users u ON u.id = j.user_id
+                  LEFT JOIN cases c ON c.id = j.case_id AND c.user_id = j.user_id
+                  WHERE j.user_id = ? OR ? = 'admin'
                   UNION ALL
-                  SELECT 'text_preparation' AS type, id, status, created_at, started_at, finished_at, error,
-                         NULL AS case_id, NULL AS model_request_id, input_sha256, data_preparation_request_id,
-                         import_id, request_json, result_json
-                  FROM text_preparation_jobs
-                  WHERE user_id = ?
+                  SELECT 'text_preparation' AS type, j.id, j.status, j.created_at, j.started_at, j.finished_at, j.error,
+                         NULL AS case_id, NULL AS model_request_id, j.input_sha256, j.data_preparation_request_id,
+                         j.import_id, j.request_json, j.result_json,
+                         NULL AS case_title, NULL AS patient_id,
+                         u.id AS created_by_user_id, u.email AS created_by_email, u.full_name AS created_by_name
+                  FROM text_preparation_jobs j
+                  JOIN users u ON u.id = j.user_id
+                  WHERE j.user_id = ? OR ? = 'admin'
                 )
                 WHERE status IN ('queued', 'running', 'success', 'error')
                 ORDER BY
@@ -658,19 +691,18 @@ class AiMixin:
                   id
                 LIMIT 20
                 """,
-                (user["id"], user["id"]),
+                (user["id"], user["role"], user["id"], user["role"]),
             ).fetchall()
             queued_order = conn.execute(
                 """
                 SELECT type, id
                 FROM (
-                  SELECT 'diagnosis' AS type, id, created_at FROM inference_jobs WHERE user_id = ? AND status = 'queued'
+                  SELECT 'diagnosis' AS type, id, created_at FROM inference_jobs WHERE status = 'queued'
                   UNION ALL
-                  SELECT 'text_preparation' AS type, id, created_at FROM text_preparation_jobs WHERE user_id = ? AND status = 'queued'
+                  SELECT 'text_preparation' AS type, id, created_at FROM text_preparation_jobs WHERE status = 'queued'
                 )
                 ORDER BY created_at, type, id
                 """,
-                (user["id"], user["id"]),
             ).fetchall()
         positions = {(row["type"], row["id"]): index + 1 for index, row in enumerate(queued_order)}
         jobs: list[dict[str, Any]] = []
@@ -684,16 +716,32 @@ class AiMixin:
                 "started_at": item["started_at"],
                 "finished_at": item["finished_at"],
                 "error": item["error"],
+                "user_error": self.user_friendly_ai_error(item["error"]),
                 "position": positions.get((item["type"], item["id"]), 0),
+                "queue_ahead": max(0, positions.get((item["type"], item["id"]), 0) - 1),
+                "created_by": {
+                    "id": item.get("created_by_user_id"),
+                    "email": item.get("created_by_email") or "",
+                    "name": item.get("created_by_name") or "",
+                },
             }
             if item["type"] == "diagnosis":
                 job.update({
                     "case_id": item["case_id"],
                     "model_request_id": item["model_request_id"],
+                    "case_title": item.get("case_title") or "",
+                    "patient_id": item.get("patient_id") or "",
                 })
             else:
                 job.update(self.text_preparation_job_payload(item, include_result=False))
                 job["type"] = "text_preparation"
+                job["created_by"] = {
+                    "id": item.get("created_by_user_id"),
+                    "email": item.get("created_by_email") or "",
+                    "name": item.get("created_by_name") or "",
+                }
+                job["position"] = positions.get((item["type"], item["id"]), 0)
+                job["queue_ahead"] = max(0, job["position"] - 1)
             jobs.append(job)
         active_jobs = [item for item in jobs if item["status"] in {"queued", "running"}]
         return self.json_response({
@@ -703,6 +751,60 @@ class AiMixin:
             "queued_count": sum(1 for item in active_jobs if item["status"] == "queued"),
             "running_count": sum(1 for item in active_jobs if item["status"] == "running"),
         })
+
+    def cancel_ai_job(self, user: dict[str, Any], job_type: str, job_id: int):
+        job_map = {
+            "diagnosis": ("inference_jobs", "inference_job_cancel"),
+            "text_preparation": ("text_preparation_jobs", "text_preparation_job_cancel"),
+        }
+        if job_type not in job_map:
+            raise HTTPError(404, "AI-задание не найдено")
+        table, action = job_map[job_type]
+        now = utc_now()
+        with connect(self.config.db_path) as conn:
+            row = conn.execute(
+                f"SELECT id, user_id, status, request_json FROM {table} WHERE id = ? AND (user_id = ? OR ? = 'admin')",
+                (job_id, user["id"], user["role"]),
+            ).fetchone()
+            if not row:
+                raise HTTPError(404, "AI-задание не найдено")
+            if row["status"] != "queued":
+                if row["status"] == "running":
+                    raise HTTPError(409, "Задание уже выполняется. Дождитесь результата или ошибки.")
+                raise HTTPError(409, "Это AI-задание уже завершено.")
+            request_json = row["request_json"]
+            if table == "text_preparation_jobs":
+                try:
+                    source_text = str(json.loads(request_json or "{}").get("text") or "")
+                    request_json = json.dumps({"text_preview": source_text[:120]}, ensure_ascii=False)
+                except (TypeError, json.JSONDecodeError):
+                    pass
+                conn.execute(
+                    f"""
+                    UPDATE {table}
+                    SET status = 'cancelled', error = NULL, request_json = ?, finished_at = ?
+                    WHERE id = ? AND status = 'queued'
+                    """,
+                    (request_json, now, job_id),
+                )
+            else:
+                conn.execute(
+                    f"""
+                    UPDATE {table}
+                    SET status = 'cancelled', error = NULL, finished_at = ?
+                    WHERE id = ? AND status = 'queued'
+                    """,
+                    (now, job_id),
+                )
+            audit(
+                conn,
+                user_id=user["id"],
+                action=action,
+                target_type=job_type,
+                target_id=job_id,
+                details={"cancelled_by": user["email"]},
+            )
+        return self.json_response({"ok": True, "status": "cancelled"})
 
     def execute_model_request(
         self,
@@ -909,7 +1011,8 @@ class AiMixin:
                        r.input_patient_data_json, c.title AS case_title, c.patient_id, c.data_json AS case_data_json,
                        rv.rating AS review_rating, rv.issue_types_json AS review_issue_types_json,
                        rv.comment AS review_comment, rv.corrected_diagnosis AS review_corrected_diagnosis,
-                       rv.corrected_icd10_json AS review_corrected_icd10_json
+                       rv.corrected_icd10_json AS review_corrected_icd10_json,
+                       rv.created_at AS review_created_at, rv.updated_at AS review_updated_at
                 FROM model_requests r
                 LEFT JOIN cases c ON c.id = r.case_id AND c.user_id = r.user_id
                 LEFT JOIN model_request_reviews rv
@@ -990,7 +1093,8 @@ class AiMixin:
                        r.input_patient_data_json, c.title AS case_title, c.patient_id, c.data_json AS case_data_json,
                        rv.rating AS review_rating, rv.issue_types_json AS review_issue_types_json,
                        rv.comment AS review_comment, rv.corrected_diagnosis AS review_corrected_diagnosis,
-                       rv.corrected_icd10_json AS review_corrected_icd10_json
+                       rv.corrected_icd10_json AS review_corrected_icd10_json,
+                       rv.created_at AS review_created_at, rv.updated_at AS review_updated_at
                 FROM model_requests r
                 LEFT JOIN cases c ON c.id = r.case_id AND c.user_id = r.user_id
                 LEFT JOIN model_request_reviews rv
@@ -1025,12 +1129,16 @@ class AiMixin:
             review_comment = item.pop("review_comment")
             review_corrected_diagnosis = item.pop("review_corrected_diagnosis")
             review_corrected_icd10_json = item.pop("review_corrected_icd10_json")
+            review_created_at = item.pop("review_created_at")
+            review_updated_at = item.pop("review_updated_at")
             item["review"] = {
                 "rating": review_rating,
                 "issue_types": json.loads(review_issue_types_json) if review_issue_types_json else [],
                 "comment": review_comment,
                 "corrected_diagnosis": review_corrected_diagnosis,
                 "corrected_icd10": json.loads(review_corrected_icd10_json) if review_corrected_icd10_json else [],
+                "created_at": review_created_at,
+                "updated_at": review_updated_at,
             } if review_rating else None
         return items
 
@@ -1256,4 +1364,3 @@ class AiMixin:
                 },
             )
         return True
-
