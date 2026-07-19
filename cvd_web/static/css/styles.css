@@ -2014,11 +2014,22 @@ button.job-chip {
   font-size: 0.78rem;
 }
 
-.task-center-action.error-text {
-  max-width: min(420px, 100%);
-  overflow-wrap: anywhere;
+.task-center-error {
+  grid-column: 1 / -1;
+  margin: 6px 0 0;
+  padding: 8px 10px;
+  border-radius: 6px;
+  border-left: 3px solid var(--danger);
+  background: color-mix(in srgb, var(--danger) 7%, var(--field-bg));
   color: var(--danger);
-  text-align: right;
+  font-size: 0.82rem;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+
+.task-center-item strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .task-center-item.ok {

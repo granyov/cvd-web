@@ -27,26 +27,41 @@ class AiMixin:
         return self.json_response({"queue": self.inference_queue.snapshot(user_id=user["id"])})
 
     def user_friendly_ai_error(self, message: str | None) -> str:
+        """Техническая ошибка -> действие для врача.
+
+        Порядок проверок важен: LM Studio часто возвращает в теле ошибки эхо
+        исходного запроса, поэтому специфичные признаки (контекст, ресурсы,
+        сеть) проверяются до общих упоминаний JSON и схемы.
+        """
         text = str(message or "").strip()
-        lowered = text.lower()
+        # Эхо тела запроса не должно влиять на классификацию и попадать в UI.
+        head = re.split(r"Request body|\"messages\"|PATIENT_JSON", text, maxsplit=1)[0]
+        lowered = head.lower()
         if not text:
             return "AI-задание завершилось без результата. Повторите запрос или сообщите администратору."
+        context_markers = ("context the overflows", "context length", "context window", "too many tokens", "maximum context", "context_length_exceeded")
+        if any(marker in lowered for marker in context_markers) or ("token" in lowered and "not enough" in lowered):
+            return (
+                "Случай слишком большой для текущей модели: данные не помещаются в её контекст. "
+                "Повтор не поможет — сократите объёмные текстовые поля (анамнез, описания исследований) "
+                "или попросите администратора увеличить контекст модели."
+            )
         if "524" in lowered or "cloudflare" in lowered:
             return (
-                "Модель не успела вернуть полный ответ через cloudflared tunnel. "
-                "Результат можно повторить; администратору стоит увеличить таймауты и проверить потоковый ответ."
+                "Сервис CVD Engine не успел вернуть ответ через защищённый канал. "
+                "Повторите запрос; если повторяется — сообщите администратору."
             )
         if "timeout" in lowered or "timed out" in lowered or "не ответ" in lowered:
-            return "Модель отвечает слишком долго. Задание можно повторить позже или перенести в менее загруженное окно."
-        if "json" in lowered or "schema" in lowered or "структур" in lowered or "parse" in lowered:
-            return "Ответ модели не удалось привести к ожидаемой структуре. Данные сохранены, запрос можно повторить."
-        if "connection" in lowered or "connect" in lowered or "unreachable" in lowered or "refused" in lowered:
-            return "AI-сервис сейчас недоступен. Проверьте tunnel/LM Studio и повторите запрос."
+            return "Модель отвечает слишком долго. Повторите позже или в менее загруженное время."
         if "memory" in lowered or "ресурс" in lowered or "insufficient" in lowered:
-            return "Модели не хватило ресурсов. Нужна меньшая модель, другой quant или разгрузка LM Studio."
+            return "Сервису CVD Engine не хватило ресурсов для этой модели. Сообщите администратору."
+        if "connection" in lowered or "connect" in lowered or "unreachable" in lowered or "refused" in lowered:
+            return "Сервис CVD Engine сейчас недоступен. Повторите запрос через минуту; если не помогает — сообщите администратору."
         if "очеред" in lowered or "queue" in lowered:
             return "Очередь AI сейчас занята. Дождитесь выполнения предыдущих заданий."
-        return text[:600]
+        if "json" in lowered or "schema" in lowered or "структур" in lowered or "parse" in lowered:
+            return "Ответ модели не удалось привести к ожидаемой структуре. Данные сохранены, запрос можно повторить."
+        return head.strip()[:300] or "AI-задание завершилось ошибкой. Повторите запрос или сообщите администратору."
 
     def model_metrics(self, response_payload: dict[str, Any] | None, duration_ms: int) -> dict[str, Any]:
         raw = response_payload.get("raw", {}) if isinstance(response_payload, dict) else {}

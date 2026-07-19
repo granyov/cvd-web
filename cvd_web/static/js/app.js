@@ -1317,12 +1317,6 @@
         cancelButton.addEventListener("click", () => cancelAiJob(job).catch((err) => toast(err.message)));
         actionRow.appendChild(cancelButton);
       }
-      if (job.status === "error") {
-        const errorText = document.createElement("span");
-        errorText.className = "task-center-action error-text";
-        errorText.textContent = job.user_error || job.error || "ошибка";
-        actionRow.appendChild(errorText);
-      }
       if (!actionRow.childNodes.length) {
         const waiting = document.createElement("span");
         waiting.className = "task-center-action";
@@ -1330,6 +1324,13 @@
         actionRow.appendChild(waiting);
       }
       node.append(meta, actionRow);
+      // Текст ошибки — отдельной строкой во всю ширину, иначе он сжимает заголовок задачи.
+      if (job.status === "error") {
+        const errorText = document.createElement("p");
+        errorText.className = "task-center-error";
+        errorText.textContent = job.user_error || job.error || "Задание завершилось ошибкой.";
+        node.appendChild(errorText);
+      }
     }
     if (compact && actionable) {
       node.addEventListener("click", () => openAiJob(job).catch((err) => toast(err.message)));
@@ -1925,9 +1926,28 @@
 
   function setHtmlExportAvailable(available, {showBanner = true} = {}) {
     if (exportHtmlButton) exportHtmlButton.disabled = !available;
+    const copyButton = document.getElementById("copyMisTextButton");
+    if (copyButton) copyButton.disabled = !available;
     // Баннер — только для свежего результата; при загрузке из истории достаточно карточки и вкладки.
     resultReadyBanner?.classList.toggle("hidden", !(available && showBanner));
     if (viewResultButton) viewResultButton.disabled = !available;
+  }
+
+  async function copyMisText() {
+    if (!currentModelRequestId) {
+      toast("Сначала получите успешный результат AI-анализа");
+      return;
+    }
+    const response = await api(`/api/reports/${currentModelRequestId}/mis-text`);
+    const text = String(response.text || "");
+    try {
+      await navigator.clipboard.writeText(text);
+      toast("Заключение скопировано — вставьте в протокол МИС");
+    } catch (_) {
+      // Clipboard API недоступен (не-HTTPS контекст) — показываем текст для ручного копирования.
+      const fallback = window.prompt("Скопируйте текст для МИС (Ctrl/Cmd+C):", text);
+      if (fallback !== null) toast("Текст готов к вставке в МИС");
+    }
   }
 
   function viewHtmlResult(requestId = currentModelRequestId) {
@@ -2129,6 +2149,9 @@
 
   function aiErrorAdviceText(message) {
     const text = String(message || "").toLowerCase();
+    if (text.includes("контекст") || text.includes("context") || text.includes("слишком большой")) {
+      return "Повторный запуск не поможет: данные кейса не помещаются в контекст модели. Сократите объёмные текстовые поля — анамнез, описания ЭКГ и исследований — или попросите администратора увеличить контекст модели.";
+    }
     if (text.includes("недоступ") || text.includes("connection") || text.includes("unreachable")) {
       return "Сервис CVD Engine сейчас недоступен. Повторите попытку через минуту; если ошибка повторяется — сообщите администратору.";
     }
@@ -2146,6 +2169,14 @@
     if (!card) return;
     document.getElementById("aiErrorText").textContent = message || "Неизвестная ошибка";
     document.getElementById("aiErrorAdvice").textContent = aiErrorAdviceText(message);
+    // При переполнении контекста повтор бессмыслен: сначала нужно сократить данные.
+    const lowered = String(message || "").toLowerCase();
+    const retryUseless = lowered.includes("контекст") || lowered.includes("context") || lowered.includes("слишком большой");
+    const retryButton = document.getElementById("retryDiagnoseButton");
+    if (retryButton) {
+      retryButton.classList.toggle("hidden", retryUseless);
+      retryButton.disabled = retryUseless;
+    }
     card.classList.remove("hidden");
     card.scrollIntoView({behavior: "smooth", block: "nearest"});
   }
@@ -3104,6 +3135,7 @@
   });
   document.getElementById("downloadJsonButton").addEventListener("click", downloadJson);
   exportHtmlButton?.addEventListener("click", () => exportHtmlReport().catch((err) => toast(err.message)));
+  document.getElementById("copyMisTextButton")?.addEventListener("click", () => copyMisText().catch((err) => toast(err.message)));
   viewResultButton?.addEventListener("click", () => viewHtmlResult());
   document.getElementById("importJsonButton").addEventListener("click", (event) => {
     event.currentTarget.classList.remove("attention");
