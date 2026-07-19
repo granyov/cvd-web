@@ -40,7 +40,128 @@ OBSERVATION_MAP = {
 }
 
 
-def build_fhir_bundle(patient_data: dict[str, Any], *, case_id: int | None, case_title: str) -> dict[str, Any]:
+def _icd10_concept(code: str) -> dict[str, Any]:
+    return {"system": ICD10_SYSTEM, "code": str(code).strip()}
+
+
+def _conclusion_resources(
+    parsed_output: dict[str, Any],
+    metadata: dict[str, Any],
+    *,
+    patient_ref: str,
+    now: str,
+) -> list[dict[str, Any]]:
+    """Ресурсы заключения: диагноз врача, черновик AI и отчёт для МИС."""
+    cds = parsed_output.get("CDS_OUTPUT") if isinstance(parsed_output.get("CDS_OUTPUT"), dict) else {}
+    model_output = parsed_output.get("MODEL_OUTPUT") if isinstance(parsed_output.get("MODEL_OUTPUT"), dict) else {}
+    resources: list[dict[str, Any]] = []
+
+    doctor_name = str(metadata.get("doctor_name") or "").strip()
+    organization = str(metadata.get("organization_name") or "").strip()
+    performers: list[dict[str, Any]] = []
+    if doctor_name:
+        resources.append({
+            "resourceType": "Practitioner",
+            "id": "cvd-practitioner",
+            "name": [{"use": "official", "text": doctor_name}],
+        })
+        performers.append({"reference": "Practitioner/cvd-practitioner", "display": doctor_name})
+    if organization:
+        resources.append({
+            "resourceType": "Organization",
+            "id": "cvd-organization",
+            "name": organization,
+        })
+        performers.append({"reference": "Organization/cvd-organization", "display": organization})
+
+    ai_diagnosis = str(model_output.get("Final_model_diagnosis") or cds.get("summary") or "").strip()
+    ai_codes = [code for code in (model_output.get("Model_ICD10_codes") or []) if str(code).strip()]
+    abstained = bool(cds.get("model_should_abstain"))
+
+    report: dict[str, Any] = {
+        "resourceType": "DiagnosticReport",
+        "id": "cvd-ai-report",
+        "status": "preliminary" if abstained else "final",
+        "category": [{
+            "coding": [{
+                "system": "http://terminology.hl7.org/CodeSystem/v2-0074",
+                "code": "OTH",
+                "display": "Clinical decision support draft",
+            }],
+            "text": "Черновик системы поддержки принятия решений",
+        }],
+        "code": {"text": "Кардиологическое заключение (черновик AI)"},
+        "subject": {"reference": patient_ref},
+        "effectiveDateTime": now,
+        "issued": now,
+        "conclusion": ai_diagnosis or "AI воздержался от заключения: данных недостаточно.",
+    }
+    if performers:
+        report["performer"] = performers
+    if ai_codes:
+        report["conclusionCode"] = [{
+            "coding": [_icd10_concept(code) for code in ai_codes],
+            "text": ai_diagnosis or "Черновик AI",
+        }]
+    resources.append(report)
+
+    diagnoses = cds.get("possible_diagnoses") if isinstance(cds.get("possible_diagnoses"), list) else []
+    red_flags = [str(flag) for flag in (cds.get("red_flags") or []) if str(flag).strip()]
+    impression: dict[str, Any] = {
+        "resourceType": "ClinicalImpression",
+        "id": "cvd-ai-impression",
+        "status": "completed",
+        "description": "Черновик клинического рассуждения CVD Engine. Требует проверки врачом.",
+        "subject": {"reference": patient_ref},
+        "date": now,
+        "summary": str(cds.get("summary") or "").strip() or "Сводка не сформирована.",
+    }
+    findings = []
+    for item in diagnoses:
+        if not isinstance(item, dict):
+            continue
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        codes = [code for code in (item.get("icd10_codes") or []) if str(code).strip()]
+        finding: dict[str, Any] = {"itemCodeableConcept": {"text": name}}
+        if codes:
+            finding["itemCodeableConcept"]["coding"] = [_icd10_concept(code) for code in codes]
+        supporting = [str(value) for value in (item.get("supporting_findings") or []) if str(value).strip()]
+        if supporting:
+            finding["basis"] = "; ".join(supporting)
+        findings.append(finding)
+    if findings:
+        impression["finding"] = findings
+    if red_flags:
+        impression["note"] = [{"text": "Red flags: " + "; ".join(red_flags)}]
+    resources.append(impression)
+
+    treatment = str(model_output.get("Model_treatment_recommendations") or "").strip()
+    rehabilitation = str(model_output.get("Model_rehabilitation_recommendations") or "").strip()
+    if treatment or rehabilitation:
+        resources.append({
+            "resourceType": "CarePlan",
+            "id": "cvd-ai-careplan",
+            "status": "draft",
+            "intent": "proposal",
+            "title": "Черновик рекомендаций (требует утверждения врачом)",
+            "subject": {"reference": patient_ref},
+            "created": now,
+            "description": " ".join(part for part in (treatment, rehabilitation) if part),
+        })
+
+    return resources
+
+
+def build_fhir_bundle(
+    patient_data: dict[str, Any],
+    *,
+    case_id: int | None,
+    case_title: str,
+    parsed_output: dict[str, Any] | None = None,
+    metadata: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     now = utc_now()
     patient_ref = "Patient/cvd-patient"
     entries: list[dict[str, Any]] = []
@@ -85,8 +206,13 @@ def build_fhir_bundle(patient_data: dict[str, Any], *, case_id: int | None, case
     if main_diagnosis or icd_codes:
         condition = {
             "resourceType": "Condition",
+            "id": "cvd-doctor-diagnosis",
             "clinicalStatus": {
                 "coding": [{"system": "http://terminology.hl7.org/CodeSystem/condition-clinical", "code": "active"}]
+            },
+            # Диагноз врача — подтверждённый, в отличие от черновика AI в ClinicalImpression.
+            "verificationStatus": {
+                "coding": [{"system": "http://terminology.hl7.org/CodeSystem/condition-ver-status", "code": "confirmed"}]
             },
             "subject": {"reference": patient_ref},
             "code": {
@@ -108,17 +234,40 @@ def build_fhir_bundle(patient_data: dict[str, Any], *, case_id: int | None, case
             "effectiveDateTime": now,
         }))
 
-    entries.append(entry({
+    conclusion_sections: list[dict[str, Any]] = []
+    if parsed_output:
+        for resource in _conclusion_resources(parsed_output, metadata or {}, patient_ref=patient_ref, now=now):
+            entries.append(entry(resource))
+        conclusion_sections = [
+            {
+                "title": "Заключение (черновик AI)",
+                "entry": [{"reference": "DiagnosticReport/cvd-ai-report"}],
+            },
+            {
+                "title": "Клиническое рассуждение AI",
+                "entry": [{"reference": "ClinicalImpression/cvd-ai-impression"}],
+            },
+        ]
+
+    composition: dict[str, Any] = {
         "resourceType": "Composition",
+        "id": "cvd-composition",
         "status": "final",
-        "type": {"text": "CVD structured case"},
+        "type": {"text": "Кардиологический случай CVD"},
         "subject": {"reference": patient_ref},
         "date": now,
         "title": case_title,
         "section": [
-            {"title": "CVD case data", "text": {"status": "generated", "div": "<div>CVD structured case export</div>"}}
+            {
+                "title": "Структурированные данные случая",
+                "text": {"status": "generated", "div": "<div>Структурированная CVD-анкета</div>"},
+            },
+            *conclusion_sections,
         ],
-    }))
+    }
+    if (metadata or {}).get("doctor_name"):
+        composition["author"] = [{"reference": "Practitioner/cvd-practitioner"}]
+    entries.append(entry(composition))
 
     return {
         "resourceType": "Bundle",

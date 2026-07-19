@@ -464,11 +464,39 @@ class CasesMixin:
                 "SELECT id, title, data_json FROM cases WHERE id = ? AND (user_id = ? OR ? = 'admin')",
                 (case_id, user["id"], user["role"]),
             ).fetchone()
+            # Последний успешный результат едет в выгрузку вместе с данными случая.
+            result_row = conn.execute(
+                """
+                SELECT parsed_output_json
+                FROM model_requests
+                WHERE case_id = ? AND status = 'success' AND parsed_output_json IS NOT NULL
+                  AND (user_id = ? OR ? = 'admin')
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """,
+                (case_id, user["id"], user["role"]),
+            ).fetchone()
         case = row_to_dict(row)
         if not case:
             raise HTTPError(404, "Кейс не найден")
         patient_data = json.loads(case["data_json"])
-        bundle = build_fhir_bundle(patient_data, case_id=case_id, case_title=case["title"])
+        parsed_output = None
+        if result_row and result_row["parsed_output_json"]:
+            try:
+                parsed_output = json.loads(result_row["parsed_output_json"])
+            except json.JSONDecodeError:
+                parsed_output = None
+        settings = self.load_settings()
+        bundle = build_fhir_bundle(
+            patient_data,
+            case_id=case_id,
+            case_title=case["title"],
+            parsed_output=parsed_output,
+            metadata={
+                "doctor_name": user.get("full_name") or "",
+                "organization_name": settings.get("organization_name", ""),
+            },
+        )
         return self.json_response(bundle, headers=[("Content-Disposition", f'attachment; filename="cvd_case_{case_id}_fhir.json"')])
 
     def delete_case(self, user: dict[str, Any], case_id: int):

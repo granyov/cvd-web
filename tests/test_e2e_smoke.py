@@ -11,6 +11,8 @@ import unittest
 from pathlib import Path
 
 from cvd_web.app import CVDApplication
+from cvd_web.auth import utc_now
+from cvd_web.db import connect
 
 from test_core import call_wsgi, make_test_config
 
@@ -204,7 +206,130 @@ class SmokeTests(unittest.TestCase):
             status, _, body = call_wsgi(app, f"/api/model/diagnose/jobs/{job_id}", cookie=cookie)
             self.assertTrue(status.startswith("200"), body)
             self.assertEqual(json.loads(body.decode("utf-8"))["job"]["status"], "cancelled")
-            self.assertIn("cloudflared", app.user_friendly_ai_error("HTTP 524 from Cloudflare tunnel"))
+            self.assertIn("защищённый канал", app.user_friendly_ai_error("HTTP 524 from Cloudflare tunnel"))
+
+    def test_ai_error_messages_are_actionable_for_the_doctor(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = self.make_app(tmp)
+
+            # LM Studio возвращает эхо запроса вместе с ошибкой контекста: раньше это
+            # классифицировалось как «ответ не удалось структурировать» и врач повторял запрос впустую.
+            overflow = (
+                'LM Studio HTTP 400: {"error":"Trying to keep the first 10847 tokens when context the '
+                'overflows. However, the model is loaded with context length of only 4096 tokens, which '
+                'is not enough. Try to load the model with a larger context length, or provide a shorter '
+                'input. Request body was: {\\"model\\":\\"medgemma\\",\\"messages\\":[{\\"role\\":\\"user\\"}]}"}'
+            )
+            message = app.user_friendly_ai_error(overflow)
+            self.assertIn("не помещаются в её контекст", message)
+            self.assertIn("Повтор не поможет", message)
+            self.assertNotIn("структур", message)
+            self.assertNotIn("messages", message)
+            self.assertLessEqual(len(message), 400)
+
+            # Технические имена сервисов не должны утекать врачу.
+            for raw in (
+                "LM Studio недоступен: [Errno 61] Connection refused",
+                "LM Studio не смогла загрузить модель: insufficient system resources",
+            ):
+                friendly = app.user_friendly_ai_error(raw)
+                self.assertNotIn("LM Studio", friendly)
+                self.assertIn("CVD Engine", friendly)
+
+            # Неизвестная ошибка не вываливает сырой ответ модели целиком.
+            noisy = "Something exploded. Request body was: " + ("x" * 5000)
+            self.assertLessEqual(len(app.user_friendly_ai_error(noisy)), 300)
+
+    def test_mis_export_carries_the_conclusion_to_the_hospital_system(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = self.make_app(tmp)
+            cookie, csrf = login(app)
+
+            status, _, body = call_wsgi(app, "/api/cases/demo", method="POST", cookie=cookie, csrf=csrf, body={})
+            self.assertTrue(status.startswith("201"), body)
+            case_id = json.loads(body.decode("utf-8"))["case_id"]
+
+            parsed_output = {
+                "CDS_OUTPUT": {
+                    "summary": "Стабильная стенокардия напряжения.",
+                    "possible_diagnoses": [
+                        {
+                            "name": "ИБС: стабильная стенокардия II ФК",
+                            "icd10_codes": ["I20.8"],
+                            "confidence": "high",
+                            "supporting_findings": ["типичная боль", "положительный тредмил-тест"],
+                        }
+                    ],
+                    "red_flags": ["ЛПНП выше целевого"],
+                    "missing_data": ["динамика тропонина"],
+                    "recommended_next_data": [],
+                    "limitations": [],
+                    "model_should_abstain": False,
+                },
+                "MODEL_OUTPUT": {
+                    "Final_model_diagnosis": "ИБС: стабильная стенокардия напряжения II ФК",
+                    "Model_ICD10_codes": ["I20.8", "I10"],
+                    "Model_treatment_recommendations": "Антиагрегантная терапия, контроль АД.",
+                    "Model_rehabilitation_recommendations": "Отказ от курения, аэробные нагрузки.",
+                },
+            }
+            with connect(Path(tmp) / "cvd.sqlite3") as conn:
+                cur = conn.execute(
+                    """
+                    INSERT INTO model_requests
+                      (user_id, case_id, status, api_url, model, request_json, parsed_output_json, created_at)
+                    VALUES (1, ?, 'success', 'demo://local', 'demo', '{}', ?, ?)
+                    """,
+                    (case_id, json.dumps(parsed_output, ensure_ascii=False), utc_now()),
+                )
+                request_id = cur.lastrowid
+
+            # A: текст для вставки в протокол МИС.
+            status, _, body = call_wsgi(app, f"/api/reports/{request_id}/mis-text", cookie=cookie)
+            self.assertTrue(status.startswith("200"), body)
+            text = json.loads(body.decode("utf-8"))["text"]
+            self.assertIn("ДИАГНОЗ ВРАЧА:", text)
+            self.assertIn("ИБС: стабильная стенокардия напряжения II ФК", text)
+            self.assertIn("ЧЕРНОВИК AI:", text)
+            self.assertIn("МКБ-10: I20.8, I10", text)
+            self.assertIn("Антиагрегантная терапия", text)
+            self.assertIn("Требует проверки врачом", text)
+
+            # C: FHIR-выгрузка теперь несёт заключение, а не только анкету.
+            status, _, body = call_wsgi(app, f"/api/cases/{case_id}/fhir", cookie=cookie)
+            self.assertTrue(status.startswith("200"), body)
+            bundle = json.loads(body.decode("utf-8"))
+            resources = {item["resource"]["resourceType"]: item["resource"] for item in bundle["entry"]}
+            self.assertIn("DiagnosticReport", resources)
+            self.assertIn("ClinicalImpression", resources)
+            self.assertIn("CarePlan", resources)
+            report = resources["DiagnosticReport"]
+            self.assertEqual(report["status"], "final")
+            self.assertIn("стенокардия", report["conclusion"])
+            codes = [coding["code"] for coding in report["conclusionCode"][0]["coding"]]
+            self.assertEqual(codes, ["I20.8", "I10"])
+            self.assertEqual(report["conclusionCode"][0]["coding"][0]["system"], "http://hl7.org/fhir/sid/icd-10")
+            # Диагноз врача остаётся подтверждённым Condition, черновик AI — отдельно.
+            self.assertEqual(
+                resources["Condition"]["verificationStatus"]["coding"][0]["code"], "confirmed"
+            )
+            self.assertEqual(resources["CarePlan"]["intent"], "proposal")
+
+    def test_fhir_export_without_result_stays_backward_compatible(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = self.make_app(tmp)
+            cookie, csrf = login(app)
+            status, _, body = call_wsgi(app, "/api/cases/demo", method="POST", cookie=cookie, csrf=csrf, body={})
+            case_id = json.loads(body.decode("utf-8"))["case_id"]
+
+            status, _, body = call_wsgi(app, f"/api/cases/{case_id}/fhir", cookie=cookie)
+            self.assertTrue(status.startswith("200"), body)
+            bundle = json.loads(body.decode("utf-8"))
+            types = {item["resource"]["resourceType"] for item in bundle["entry"]}
+            self.assertEqual(bundle["resourceType"], "Bundle")
+            self.assertIn("Patient", types)
+            self.assertIn("Composition", types)
+            self.assertNotIn("DiagnosticReport", types)
 
     def test_admin_dashboard_and_security_audit(self):
         with tempfile.TemporaryDirectory() as tmp:

@@ -10,7 +10,7 @@ from .auth import utc_now
 from .db import audit, connect, rows_to_dicts
 from .integration_import import KNOWN_PATHS, parse_clinical_import
 from .pdf_text import PDFTextError, extract_pdf_text
-from .reporting import build_html_report
+from .reporting import build_html_report, build_mis_text
 from .web_core import HTTPError, Request
 
 
@@ -253,6 +253,50 @@ class ImportExportMixin:
                 ("Cache-Control", "no-store"),
             ],
         )
+
+    def export_mis_text(self, user: dict[str, Any], request_id: int):
+        """Текст заключения для переноса в поле протокола МИС."""
+        settings = self.load_settings()
+        with connect(self.config.db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT r.id, r.case_id, r.status, r.parsed_output_json, r.created_at,
+                       c.data_json AS case_data_json
+                FROM model_requests r
+                LEFT JOIN cases c ON c.id = r.case_id AND c.user_id = r.user_id
+                WHERE r.id = ? AND (r.user_id = ? OR ? = 'admin')
+                """,
+                (request_id, user["id"], user["role"]),
+            ).fetchone()
+            if not row:
+                raise HTTPError(404, "Результат анализа не найден")
+            if row["status"] != "success" or not row["parsed_output_json"]:
+                raise HTTPError(409, "Для выгрузки нужен успешный результат анализа")
+            try:
+                parsed_output = json.loads(row["parsed_output_json"])
+                patient_data = json.loads(row["case_data_json"] or "{}")
+            except (json.JSONDecodeError, TypeError) as exc:
+                raise HTTPError(409, "Сохранённые данные результата повреждены") from exc
+
+            text = build_mis_text(
+                patient_data,
+                parsed_output,
+                {
+                    "generated_at": utc_now(),
+                    "request_id": row["id"],
+                    "doctor_name": user.get("full_name") or "",
+                    "organization_name": settings.get("organization_name", ""),
+                },
+            )
+            audit(
+                conn,
+                user_id=user["id"],
+                action="mis_text_export",
+                target_type="model_request",
+                target_id=request_id,
+                details={"case_id": row["case_id"], "chars": len(text)},
+            )
+        return self.json_response({"ok": True, "text": text})
 
     def view_html_report(self, user: dict[str, Any], request_id: int):
         html = self.build_request_report(

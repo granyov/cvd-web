@@ -160,6 +160,88 @@ def _recommendations_block(model_output: dict[str, Any]) -> str:
     )
 
 
+def build_mis_text(
+    patient_data: dict[str, Any],
+    parsed_output: dict[str, Any],
+    metadata: dict[str, Any],
+) -> str:
+    """Готовый текстовый блок для вставки в поле протокола МИС (ЕМИАС и др.).
+
+    Врач переносит заключение между системами копированием, поэтому текст
+    должен читаться как протокол, а не как выгрузка данных.
+    """
+    general = patient_data.get("GENERAL_INFO") if isinstance(patient_data.get("GENERAL_INFO"), dict) else {}
+    final = patient_data.get("FINAL_DIAGNOSES") if isinstance(patient_data.get("FINAL_DIAGNOSES"), dict) else {}
+    cds = parsed_output.get("CDS_OUTPUT") if isinstance(parsed_output.get("CDS_OUTPUT"), dict) else {}
+    model_output = parsed_output.get("MODEL_OUTPUT") if isinstance(parsed_output.get("MODEL_OUTPUT"), dict) else {}
+
+    sex_map = {"male": "муж.", "female": "жен.", "other": "иное", "unknown": "пол не указан"}
+    patient_parts = [
+        _text(general.get("Full_name") or "").strip(),
+        f"{_text(general.get('Age'))} лет" if _is_filled(general.get("Age")) else "",
+        sex_map.get(str(general.get("Sex") or ""), ""),
+        f"ID случая: {_text(general.get('Patient_ID'))}" if _is_filled(general.get("Patient_ID")) else "",
+    ]
+
+    lines: list[str] = ["ЗАКЛЮЧЕНИЕ (черновик системы поддержки принятия решений)"]
+    patient_line = ", ".join(part for part in patient_parts if part)
+    if patient_line:
+        lines.append(f"Пациент: {patient_line}")
+    lines.append("")
+
+    doctor_diagnosis = _text(final.get("Main_cardiovascular_diagnosis_text") or "").strip()
+    doctor_codes = [str(code) for code in (final.get("ICD10_codes") or []) if str(code).strip()]
+    lines.append("ДИАГНОЗ ВРАЧА:")
+    lines.append(doctor_diagnosis or "не заполнен")
+    if doctor_codes:
+        lines.append(f"МКБ-10: {', '.join(doctor_codes)}")
+    lines.append("")
+
+    ai_diagnosis = _text(model_output.get("Final_model_diagnosis") or "").strip()
+    ai_codes = [str(code) for code in (model_output.get("Model_ICD10_codes") or []) if str(code).strip()]
+    lines.append("ЧЕРНОВИК AI:")
+    if cds.get("model_should_abstain"):
+        lines.append("AI воздержался от заключения: данных недостаточно.")
+    else:
+        lines.append(ai_diagnosis or "заключение не сформировано")
+        if ai_codes:
+            lines.append(f"МКБ-10: {', '.join(ai_codes)}")
+    lines.append("")
+
+    summary = _text(cds.get("summary") or "").strip()
+    if summary:
+        lines.extend(["ОБОСНОВАНИЕ:", summary])
+    red_flags = [str(flag) for flag in (cds.get("red_flags") or []) if str(flag).strip()]
+    if red_flags:
+        lines.append("Red flags: " + "; ".join(red_flags))
+    missing = [str(item) for item in (cds.get("missing_data") or []) if str(item).strip()]
+    if missing:
+        lines.append("Не хватает данных: " + "; ".join(missing))
+    if summary or red_flags or missing:
+        lines.append("")
+
+    treatment = _text(model_output.get("Model_treatment_recommendations") or "").strip()
+    rehabilitation = _text(model_output.get("Model_rehabilitation_recommendations") or "").strip()
+    if treatment or rehabilitation:
+        lines.append("РЕКОМЕНДАЦИИ (ориентиры; назначения определяет врач):")
+        if treatment:
+            lines.append(f"Тактика: {treatment}")
+        if rehabilitation:
+            lines.append(f"Реабилитация и профилактика: {rehabilitation}")
+        lines.append("")
+
+    footer_parts = [
+        _human_datetime(metadata.get("generated_at")),
+        f"отчёт №{_text(metadata.get('request_id'))}" if _is_filled(metadata.get("request_id")) else "",
+        _text(metadata.get("doctor_name") or "").strip(),
+    ]
+    footer = " · ".join(part for part in footer_parts if part)
+    if footer:
+        lines.append(footer)
+    lines.append("Черновик CVD Engine. Требует проверки врачом, не является самостоятельным медицинским заключением.")
+    return "\n".join(lines).strip()
+
+
 def _codes_html(codes: Any) -> str:
     items = codes if isinstance(codes, list) else []
     chips = "".join(f"<span class=\"code\">{escape(_text(code))}</span>" for code in items if _is_filled(code))

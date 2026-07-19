@@ -180,6 +180,9 @@ class CVDApplication(AuthMixin, CasesMixin, ImportExportMixin, AiMixin, AdminMix
             return self.inference_status(user)
         if request.path == "/api/reports/html" and request.method == "POST":
             return self.export_html_report(request, user)
+        if match := re.fullmatch(r"/api/reports/(\d+)/mis-text", request.path):
+            if request.method == "GET":
+                return self.export_mis_text(user, int(match.group(1)))
         if request.path == "/api/requests" and request.method == "GET":
             return self.list_requests(request, user)
         if match := re.fullmatch(r"/api/requests/(\d+)", request.path):
