@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.9.14 - 2026-07-19
+
+- Classify context-overflow failures correctly: LM Studio echoes the request body in its error payload, so the message matched the "json" branch and told the doctor the answer could not be structured and the request could be repeated, which never worked.
+- Return an actionable message instead: the case does not fit the model context, repeating will not help, shorten long free-text fields or raise the model context; the retry button hides for this failure class.
+- Fix the task centre layout, where a long error text in the actions column squeezed the job title into a syllable-per-line column with the status badge overlapping it; the message now spans its own row.
+- Stop leaking "LM Studio" into doctor-facing errors and cap the raw fallback message at 300 characters.
+- Add "Копировать для МИС": a ready protocol block with the physician's diagnosis, the AI draft, ICD-10 codes, reasoning, recommendations and disclaimer, exposed via `GET /api/reports/{id}/mis-text` and recorded in the audit log.
+- Extend the FHIR R4 export with the conclusion: DiagnosticReport with conclusionCode in `http://hl7.org/fhir/sid/icd-10` (preliminary when the model abstained), ClinicalImpression with reasoning and red flags, CarePlan with status=draft and intent=proposal, Practitioner and Organization performers, and a Composition with real sections.
+- Mark the physician's diagnosis as a Condition with verificationStatus=confirmed so a receiving system can tell it from the AI draft.
+- Keep exports of cases without a result unchanged, covered by a backward-compatibility test.
+- Update Umbrel metadata and image tag for `ghcr.io/granyov/cvd-web:v0.9.14`.
+
 ## v0.9.13 - 2026-07-18
 
 - Rebuild the HTML export as a printable clinical conclusion: the physician's diagnosis and the AI draft open the document side by side with their ICD-10 codes, followed by the AI summary, recommendation draft, and a signature block.

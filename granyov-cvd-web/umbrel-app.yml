@@ -4,7 +4,7 @@ name: CVD Web
 tagline: Cardiovascular case workspace with local LLM review
 icon: https://raw.githubusercontent.com/granyov/cvd-web/main/granyov-cvd-web/icon.svg
 category: ai
-version: "0.9.13"
+version: "0.9.14"
 port: 8080
 description: >-
   CVD Web is a controlled cardiovascular case workspace for structuring patient
@@ -22,9 +22,10 @@ repo: https://github.com/granyov/cvd-web
 support: https://github.com/granyov/cvd-web/issues
 gallery: []
 releaseNotes: >-
-  Rebuilds the HTML export as a printable clinical conclusion with doctor and AI
-  diagnoses side by side, a signature block, an optional patient-data appendix
-  and A4 print setup, and clears workspace defects found on the daily path.
+  Adds a clipboard-ready protocol block for hospital systems, extends the FHIR
+  export with the AI conclusion, ICD-10 conclusion codes and recommendation
+  drafts, and fixes the misleading error shown when a case exceeds the model
+  context.
 dependencies: []
 path: ""
 defaultUsername: "admin@umbrel.local"
