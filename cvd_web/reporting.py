@@ -5,6 +5,9 @@ from datetime import datetime, timezone
 from html import escape
 from typing import Any
 
+from .field_labels import SCHEMA_FIELD_LABELS
+from .reference_ranges import reference_status
+
 
 SECTION_LABELS = {
     "GENERAL_INFO": "Общие сведения",
@@ -28,6 +31,7 @@ SECTION_LABELS = {
     "FINAL_DIAGNOSES": "Рабочие диагнозы врача",
 }
 
+# Подписи для печати: развёрнутые там, где экранная форма обходится сокращением.
 FIELD_LABELS = {
     "Patient_ID": "ID случая",
     "Full_name": "ФИО пациента",
@@ -97,24 +101,61 @@ def _text(value: Any) -> str:
 
 
 def _field_label(key: str) -> str:
-    return FIELD_LABELS.get(key, key.replace("_", " "))
+    if key in FIELD_LABELS:
+        return FIELD_LABELS[key]
+    return SCHEMA_FIELD_LABELS.get(key, key.replace("_", " "))
+
+
+def _plural(count: int, one: str, few: str, many: str) -> str:
+    """Русское склонение: "1 поле", "2 поля", "5 полей"."""
+    tail_100 = count % 100
+    tail_10 = count % 10
+    if 11 <= tail_100 <= 14:
+        word = many
+    elif tail_10 == 1:
+        word = one
+    elif 2 <= tail_10 <= 4:
+        word = few
+    else:
+        word = many
+    return f"{count} {word}"
 
 
 def _patient_sections(patient_data: dict[str, Any]) -> str:
+    """Приложение с исходными данными.
+
+    Числовые показатели печатаются с референсом: на бумаге нельзя навести курсор,
+    а без нормы значение вроде «Гемоглобин 121» ничего не говорит. Отклонения
+    помечаются, чтобы работал режим печати «только отклонения».
+    """
     blocks = []
     for section_key, section in patient_data.items():
         if section_key == "MODEL_OUTPUT" or not isinstance(section, dict):
             continue
         rows = []
+        abnormal_in_section = 0
         for key, value in section.items():
             if not _is_filled(value):
                 continue
+            status = reference_status(f"{section_key}.{key}", value)
+            abnormal = bool(status and status["abnormal"])
+            if abnormal:
+                abnormal_in_section += 1
+            reference_html = (
+                f"<span class=\"reference\">норма {escape(status['text'])}</span>" if status else ""
+            )
             rows.append(
-                f"<dt>{escape(_field_label(key))}</dt><dd>{escape(_text(value))}</dd>"
+                f"<div class=\"data-row{' abnormal' if abnormal else ''}\" data-abnormal=\"{'1' if abnormal else '0'}\">"
+                f"<dt>{escape(_field_label(key))}</dt>"
+                f"<dd>{escape(_text(value))}{reference_html}</dd>"
+                "</div>"
             )
         if rows:
             title = escape(SECTION_LABELS.get(section_key, section_key.replace("_", " ")))
-            blocks.append(f"<section class=\"data-section\"><h3>{title}</h3><dl>{''.join(rows)}</dl></section>")
+            blocks.append(
+                f"<section class=\"data-section\" data-abnormal-count=\"{abnormal_in_section}\">"
+                f"<h3>{title}</h3><dl>{''.join(rows)}</dl></section>"
+            )
     return "".join(blocks) or "<p class=\"muted\">Заполненные данные пациента отсутствуют.</p>"
 
 
@@ -293,6 +334,91 @@ def _conclusion_block(patient_data: dict[str, Any], cds: dict[str, Any], model_o
     )
 
 
+def _stale_banner(metadata: dict[str, Any]) -> str:
+    """Печатный документ обязан сообщать, что данные менялись после анализа.
+
+    На экране предупреждение живёт секунду, распечатанный лист - годами.
+    """
+    if not metadata.get("ai_result_stale"):
+        return ""
+    changes = metadata.get("ai_result_changes")
+    changed = [item for item in changes if isinstance(item, dict)] if isinstance(changes, list) else []
+    labels = "; ".join(_field_label(_text(item.get("label") or item.get("path"))) for item in changed[:8])
+    detail = f" Изменены поля: {labels}." if labels else ""
+    more = f" И ещё {_plural(len(changed) - 8, 'поле', 'поля', 'полей')}." if len(changed) > 8 else ""
+    count = f" ({_plural(len(changed), 'поле', 'поля', 'полей')})" if changed else ""
+    return (
+        "<section class=\"stale-banner\">"
+        "<strong>Внимание: заключение относится к прежней версии данных.</strong>"
+        f"<span>После анализа случай редактировали{escape(count)}."
+        f"{escape(detail)}{escape(more)} Перед использованием обновите анализ.</span>"
+        "</section>"
+    )
+
+
+REVIEW_RATING_LABELS = {
+    "useful": "полезно",
+    "partial": "частично полезно",
+    "wrong": "неверно",
+    "unsafe": "небезопасно",
+}
+
+REVIEW_ISSUE_LABELS = {
+    "wrong_icd": "неверный код МКБ-10",
+    "wrong_diagnosis": "неверный диагноз",
+    "missed_red_flag": "пропущен red flag",
+    "missed_diagnosis": "пропущен диагноз",
+    "hallucination": "выдуманные данные",
+    "unsafe_recommendation": "небезопасная рекомендация",
+    "incomplete": "неполный ответ",
+    "formatting": "проблемы с форматом ответа",
+}
+
+
+def _review_block(metadata: dict[str, Any]) -> str:
+    """Экспертная оценка врача - то, что превращает черновик AI в проверенный документ."""
+    review = metadata.get("review")
+    if not isinstance(review, dict) or not review.get("rating"):
+        return (
+            "<section class=\"review-block pending\">"
+            "<h3>Экспертная оценка врача</h3>"
+            "<p class=\"muted\">Оценка ответа AI не сохранена: заключение остаётся непроверенным черновиком.</p>"
+            "</section>"
+        )
+    rating = str(review.get("rating"))
+    label = REVIEW_RATING_LABELS.get(rating, rating)
+    rows = [f"<p><strong>Вердикт врача:</strong> {escape(label)}</p>"]
+    corrected = _text(review.get("corrected_diagnosis") or "").strip()
+    if corrected:
+        rows.append(f"<p><strong>Корректный диагноз:</strong> {escape(corrected)}</p>")
+    codes = review.get("corrected_icd10")
+    if isinstance(codes, list) and codes:
+        rows.append(f"<p><strong>Корректные МКБ-10:</strong> {escape('; '.join(str(code) for code in codes))}</p>")
+    issues = review.get("issue_types")
+    if isinstance(issues, list) and issues:
+        readable = "; ".join(REVIEW_ISSUE_LABELS.get(str(item), str(item)) for item in issues)
+        rows.append(f"<p><strong>Отмеченные проблемы:</strong> {escape(readable)}</p>")
+    comment = _text(review.get("comment") or "").strip()
+    if comment:
+        rows.append(f"<p><strong>Комментарий:</strong> {escape(comment)}</p>")
+    unsafe = rating in {"wrong", "unsafe"}
+    return (
+        f"<section class=\"review-block{' rejected' if unsafe else ' accepted'}\">"
+        "<h3>Экспертная оценка врача</h3>"
+        + "".join(rows)
+        + "</section>"
+    )
+
+
+def _red_flags_block(cds: dict[str, Any]) -> str:
+    """Red flags печатаем отдельным блоком: на бумаге безопасность должна доминировать."""
+    flags = [str(flag) for flag in (cds.get("red_flags") or []) if str(flag).strip()]
+    if not flags:
+        return ""
+    items = "".join(f"<li>{escape(flag)}</li>" for flag in flags)
+    return f"<section class=\"red-flags\"><h3>Red flags</h3><ul>{items}</ul></section>"
+
+
 def _signature_block(metadata: dict[str, Any]) -> str:
     doctor = _text(metadata.get("doctor_name") or "")
     doctor_line = escape(doctor) if doctor else "&nbsp;"
@@ -341,6 +467,16 @@ def build_html_report(
         f"Длительность анализа: {duration_ms / 1000:.1f} с",
         f"Сформировано: {generated_human}",
     ]
+    # Трассируемость: по этой строке разбирают инцидент и воспроизводят анализ.
+    # Идентификатор модели сюда не попадает: печатный документ для врача говорит
+    # от имени системы, а модель под номером анализа хранится в архиве.
+    trace_details = [
+        part for part in (
+            f"{app_name} {_text(metadata.get('app_version') or '')}".strip(),
+            f"prompt: {_text(metadata.get('prompt_version'))}" if _is_filled(metadata.get("prompt_version")) else "",
+            f"схема ответа: {_text(metadata.get('output_schema_version'))}" if _is_filled(metadata.get("output_schema_version")) else "",
+        ) if part
+    ]
     running_id = " · ".join(part for part in (patient_name, f"ID {patient_id}" if patient_id else "") if part)
 
     return f"""<!doctype html>
@@ -381,6 +517,23 @@ def build_html_report(
     .sig-line {{ margin-top:20px; padding-top:5px; border-top:1px solid var(--ink); font-weight:600; min-height:24px; }}
     .appendix-title {{ display:flex; align-items:baseline; justify-content:space-between; gap:16px; }}
     .running-head {{ display:none; }}
+    .stale-banner {{ display:grid; gap:4px; margin:16px 0; padding:13px 15px; border:2px solid var(--danger); border-radius:4px; background:#fff4f4; break-inside:avoid; }}
+    .stale-banner strong {{ color:var(--danger); }}
+    .red-flags {{ margin:14px 0; padding:13px 16px; border:1px solid var(--danger); border-left:5px solid var(--danger); background:#fff6f6; break-inside:avoid; }}
+    .red-flags h3 {{ color:var(--danger); text-transform:uppercase; letter-spacing:.04em; font-size:12px; }}
+    .red-flags ul {{ margin:0; padding-left:20px; font-weight:600; }}
+    .review-block {{ margin-top:20px; padding:14px 16px; border:1px solid var(--line); border-left:4px solid var(--accent); break-inside:avoid; }}
+    .review-block.rejected {{ border-left-color:var(--danger); background:#fff6f6; }}
+    .review-block.pending {{ border-left-color:var(--muted); background:var(--soft); }}
+    .review-block h3 {{ color:var(--muted); font-size:12px; text-transform:uppercase; letter-spacing:.04em; }}
+    .review-block p {{ margin:3px 0; }}
+    .data-row {{ display:contents; }}
+    .data-row.abnormal dd {{ font-weight:700; }}
+    .data-row.abnormal dt::after {{ content:" ▲"; color:var(--danger); font-size:11px; }}
+    .reference {{ display:block; color:var(--muted); font-size:11px; }}
+    .meta.trace {{ margin-top:4px; font-size:11px; }}
+    body.appendix-abnormal .data-row[data-abnormal="0"],
+    body.appendix-abnormal .data-section[data-abnormal-count="0"] {{ display:none; }}
     @media (max-width:700px) {{ .page {{ width:100%; margin:0; padding:20px; border:0; }} header {{ align-items:flex-start; }} .result-grid,.patient-grid,.conclusion,.signature {{ grid-template-columns:1fr; }} dl {{ grid-template-columns:1fr; gap:2px; }} dd {{ margin-bottom:7px; }} }}
     @media print {{
       @page {{ size:A4; margin:16mm 14mm 18mm; }}
@@ -390,7 +543,8 @@ def build_html_report(
       h2 {{ break-after:avoid; font-size:13pt; }} h1 {{ font-size:18pt; }}
       .conclusion, .signature, .diagnosis, .result-section, .data-section, .summary {{ break-inside:avoid; }}
       .appendix {{ break-before:page; }}
-      body.hide-appendix .appendix {{ display:none; }}
+      body.appendix-off .appendix {{ display:none; }}
+      .stale-banner, .red-flags, .review-block {{ break-inside:avoid; }}
       .running-head {{ display:block; position:fixed; top:-11mm; left:0; right:0; color:var(--muted); font-size:8pt; border-bottom:1px solid var(--line); padding-bottom:2mm; }}
       a {{ color:inherit; text-decoration:none; }}
     }}
@@ -407,34 +561,55 @@ def build_html_report(
       </div>
       <div class="toolbar no-print">
         <button class="print-button" type="button" onclick="window.print()">Печать / Сохранить PDF</button>
-        <label class="print-toggle"><input id="appendixToggle" type="checkbox" checked> Печатать исходные данные</label>
+        <label class="print-toggle">Исходные данные:
+          <select id="appendixMode">
+            <option value="off" selected>не печатать</option>
+            <option value="abnormal">только отклонения</option>
+            <option value="full">полностью</option>
+          </select>
+        </label>
       </div>
     </header>
     <div class="patient-line"><strong>{escape(patient_name)}</strong><span>{escape(patient_facts)}</span></div>
+    {_stale_banner(metadata)}
     <h2>Заключение</h2>
     {_conclusion_block(patient_data, cds, model_output)}
+    {_red_flags_block(cds)}
     <section class="summary{' abstain' if abstained else ''}"><h3>{'AI не сформировал заключение' if abstained else 'Клиническая сводка AI'}</h3><p>{escape(summary)}</p></section>
     {_recommendations_block(model_output)}
+    {_review_block(metadata)}
     {_signature_block(metadata)}
     <div class="warning">Черновик системы поддержки принятия решений. Требует проверки врачом и не является самостоятельным медицинским заключением.</div>
     <h2>Обоснование AI</h2>
     <div class="diagnoses">{_diagnoses_block(cds.get('possible_diagnoses'))}</div>
     <div class="result-grid">
-      {_list_block('Red flags', cds.get('red_flags'), 'Не указаны.')}
       {_list_block('Недостающие данные', cds.get('missing_data'), 'Не указаны.')}
       {_list_block('Что ещё собрать', cds.get('recommended_next_data'), 'Не указано.')}
       {_list_block('Ограничения', cds.get('limitations'), 'Не указаны.')}
     </div>
     <section class="appendix">
-      <div class="appendix-title"><h2>Приложение: исходные данные пациента</h2></div>
+      <div class="appendix-title"><h2>Приложение: исходные данные пациента</h2><span class="muted no-print" id="appendixHint"></span></div>
       <div class="patient-grid">{_patient_sections(patient_data)}</div>
     </section>
     <p class="meta">{escape(' · '.join(report_details))}</p>
+    <p class="meta trace">{escape(' · '.join(trace_details))}</p>
   </main>
   <script>
-    document.getElementById("appendixToggle")?.addEventListener("change", (event) => {{
-      document.body.classList.toggle("hide-appendix", !event.target.checked);
-    }});
+    const appendixMode = document.getElementById("appendixMode");
+    const appendixHint = document.getElementById("appendixHint");
+    const abnormalRows = document.querySelectorAll('.data-row[data-abnormal="1"]').length;
+    function applyAppendixMode() {{
+      const mode = appendixMode ? appendixMode.value : "off";
+      document.body.classList.toggle("appendix-off", mode === "off");
+      document.body.classList.toggle("appendix-abnormal", mode === "abnormal");
+      if (appendixHint) {{
+        appendixHint.textContent = mode === "abnormal"
+          ? `отклонений: ${{abnormalRows}}`
+          : mode === "off" ? "в печать не пойдёт" : "";
+      }}
+    }}
+    appendixMode?.addEventListener("change", applyAppendixMode);
+    applyAppendixMode();
   </script>
 </body>
 </html>"""

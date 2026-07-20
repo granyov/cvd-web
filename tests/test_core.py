@@ -322,7 +322,7 @@ class CoreTests(unittest.TestCase):
         self.assertIn("Подпись", report)
         self.assertIn("running-head", report)
         self.assertIn("@page", report)
-        self.assertIn("hide-appendix", report)
+        self.assertIn("appendix-off", report)
         # Исходные данные — приложением, с новой страницы.
         self.assertIn("Приложение: исходные данные пациента", report)
         self.assertIn("break-before:page", report)
@@ -412,6 +412,123 @@ class CoreTests(unittest.TestCase):
             {"request_id": 8},
         )
         self.assertNotIn("Черновик рекомендаций", report)
+
+    def _minimal_output(self, **cds: object) -> dict:
+        base = {
+            "summary": "Сводка",
+            "possible_diagnoses": [],
+            "red_flags": [],
+            "missing_data": [],
+            "recommended_next_data": [],
+            "limitations": [],
+            "model_should_abstain": False,
+        }
+        base.update(cds)
+        return {
+            "CDS_OUTPUT": base,
+            "MODEL_OUTPUT": {
+                "Final_model_diagnosis": "Диагноз",
+                "Model_ICD10_codes": [],
+                "Model_treatment_recommendations": "",
+                "Model_rehabilitation_recommendations": "",
+            },
+        }
+
+    def test_html_report_warns_when_case_changed_after_analysis(self):
+        report = build_html_report(
+            {"GENERAL_INFO": {"Patient_ID": "CASE-3"}},
+            self._minimal_output(),
+            {
+                "request_id": 21,
+                "ai_result_stale": True,
+                "ai_result_changes": [
+                    {"path": "PHYSICAL_EXAM.Heart_rate_bpm", "label": "Heart_rate_bpm", "kind": "changed"},
+                    {"path": "LABS_LIPIDS.LDL_mmol_L", "label": "LDL_mmol_L", "kind": "changed"},
+                ],
+            },
+        )
+        self.assertIn("заключение относится к прежней версии данных", report)
+        self.assertIn("2 поля", report)
+        self.assertIn("ЧСС", report)
+        self.assertIn("ЛПНП", report)
+
+    def test_html_report_omits_stale_banner_for_current_data(self):
+        report = build_html_report(
+            {"GENERAL_INFO": {"Patient_ID": "CASE-4"}},
+            self._minimal_output(),
+            {"request_id": 22, "ai_result_stale": False, "ai_result_changes": []},
+        )
+        self.assertNotIn("прежней версии данных", report)
+
+    def test_html_report_prints_review_with_russian_issue_labels(self):
+        report = build_html_report(
+            {"GENERAL_INFO": {"Patient_ID": "CASE-5"}},
+            self._minimal_output(),
+            {
+                "request_id": 23,
+                "review": {
+                    "rating": "partial",
+                    "issue_types": ["missed_red_flag"],
+                    "comment": "Уточнить стадию ХБП.",
+                    "corrected_diagnosis": "ИБС, стенокардия II ФК",
+                    "corrected_icd10": ["I20.8"],
+                },
+            },
+        )
+        self.assertIn("Экспертная оценка врача", report)
+        self.assertIn("частично полезно", report)
+        self.assertIn("пропущен red flag", report)
+        self.assertNotIn("missed_red_flag", report)
+
+    def test_html_report_marks_unreviewed_result_as_draft(self):
+        report = build_html_report(
+            {"GENERAL_INFO": {"Patient_ID": "CASE-6"}},
+            self._minimal_output(),
+            {"request_id": 24},
+        )
+        self.assertIn("review-block pending", report)
+        self.assertIn("остаётся непроверенным черновиком", report)
+
+    def test_html_report_prints_red_flags_as_separate_block(self):
+        report = build_html_report(
+            {"GENERAL_INFO": {"Patient_ID": "CASE-7"}},
+            self._minimal_output(red_flags=["Депрессия ST на нагрузке"]),
+            {"request_id": 25},
+        )
+        self.assertIn("<section class=\"red-flags\">", report)
+        self.assertIn("Депрессия ST на нагрузке", report)
+
+    def test_html_report_appendix_shows_reference_and_marks_deviations(self):
+        report = build_html_report(
+            {
+                "GENERAL_INFO": {"Patient_ID": "CASE-8"},
+                "LABS_LIPIDS": {"LDL_mmol_L": 4.8, "HDL_mmol_L": 1.4},
+            },
+            self._minimal_output(),
+            {"request_id": 26},
+        )
+        self.assertIn("норма ≤ 3.0 ммоль/л", report)
+        self.assertIn("data-abnormal=\"1\"", report)
+        # ЛПВП 1.4 в норме - строка не должна попасть в режим «только отклонения».
+        self.assertIn("data-abnormal=\"0\"", report)
+        self.assertIn("id=\"appendixMode\"", report)
+
+    def test_html_report_footer_carries_traceability(self):
+        report = build_html_report(
+            {"GENERAL_INFO": {"Patient_ID": "CASE-9"}},
+            self._minimal_output(),
+            {
+                "request_id": 27,
+                "app_version": "0.9.17",
+                "model": "medgemma-27b-text-it",
+                "prompt_version": "cvd-cds-prompt-v5",
+                "output_schema_version": "cvd-cds-output-v4",
+            },
+        )
+        for token in ("0.9.17", "cvd-cds-prompt-v5", "cvd-cds-output-v4"):
+            self.assertIn(token, report)
+        # Печатный документ говорит от имени системы: имя модели остаётся в архиве.
+        self.assertNotIn("medgemma-27b-text-it", report)
 
     def test_lm_studio_v1_catalog_and_activation(self):
         initial = {

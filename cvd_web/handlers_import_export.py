@@ -10,7 +10,9 @@ from .auth import utc_now
 from .db import audit, connect, rows_to_dicts
 from .integration_import import KNOWN_PATHS, parse_clinical_import
 from .pdf_text import PDFTextError, extract_pdf_text
+from .quality import patient_data_changes, patient_data_hash
 from .reporting import build_html_report, build_mis_text
+from .versions import APP_VERSION
 from .web_core import HTTPError, Request
 
 
@@ -330,12 +332,19 @@ class ImportExportMixin:
                 """
                 SELECT r.id, r.user_id, r.case_id, r.status, r.parsed_output_json,
                        r.deidentified_input_json, r.duration_ms, r.created_at,
-                       c.data_json AS case_data_json
+                       r.model, r.prompt_version, r.output_schema_version,
+                       r.input_data_hash, r.input_patient_data_json,
+                       c.data_json AS case_data_json,
+                       rv.rating AS review_rating, rv.issue_types_json AS review_issue_types_json,
+                       rv.comment AS review_comment, rv.corrected_diagnosis AS review_corrected_diagnosis,
+                       rv.corrected_icd10_json AS review_corrected_icd10_json
                 FROM model_requests r
                 LEFT JOIN cases c ON c.id = r.case_id AND c.user_id = r.user_id
+                LEFT JOIN model_request_reviews rv
+                  ON rv.model_request_id = r.id AND rv.reviewer_user_id = ?
                 WHERE r.id = ? AND (r.user_id = ? OR ? = 'admin')
                 """,
-                (request_id, user["id"], user["role"]),
+                (user["id"], request_id, user["id"], user["role"]),
             ).fetchone()
             if not row:
                 raise HTTPError(404, "Результат анализа не найден")
@@ -354,17 +363,46 @@ class ImportExportMixin:
             except (json.JSONDecodeError, TypeError, AttributeError) as exc:
                 raise HTTPError(409, "Сохранённые данные результата повреждены") from exc
 
+            # Печатный документ обязан показать, что случай правили после анализа.
+            stale = False
+            changes: list[dict[str, Any]] = []
+            if row["case_data_json"] and row["input_data_hash"]:
+                try:
+                    current_case = json.loads(row["case_data_json"])
+                    stale = patient_data_hash(current_case) != row["input_data_hash"]
+                    if stale and row["input_patient_data_json"]:
+                        changes = patient_data_changes(json.loads(row["input_patient_data_json"]), current_case)
+                except (json.JSONDecodeError, TypeError):
+                    stale = True
+
+            review = None
+            if row["review_rating"]:
+                review = {
+                    "rating": row["review_rating"],
+                    "issue_types": json.loads(row["review_issue_types_json"]) if row["review_issue_types_json"] else [],
+                    "comment": row["review_comment"],
+                    "corrected_diagnosis": row["review_corrected_diagnosis"],
+                    "corrected_icd10": json.loads(row["review_corrected_icd10_json"]) if row["review_corrected_icd10_json"] else [],
+                }
+
             html = build_html_report(
                 patient_data,
                 parsed_output,
                 {
                     "app_name": settings.get("app_name", "CVD Web"),
+                    "app_version": APP_VERSION,
                     "organization_name": settings.get("organization_name", ""),
                     "generated_at": utc_now(),
                     "request_id": row["id"],
                     "case_id": row["case_id"],
                     "duration_ms": row["duration_ms"],
                     "doctor_name": user.get("full_name") or "",
+                    "model": row["model"],
+                    "prompt_version": row["prompt_version"],
+                    "output_schema_version": row["output_schema_version"],
+                    "ai_result_stale": stale,
+                    "ai_result_changes": changes,
+                    "review": review,
                 },
             )
             audit(
