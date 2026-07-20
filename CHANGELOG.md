@@ -1,5 +1,16 @@
 # Changelog
 
+## v0.9.15 - 2026-07-20
+
+- Raise the structuring ceiling from 14 to 30 facts per chunk: a real EMIAS consultation protocol silently lost NT-proBNP, creatinine, eGFR, potassium, haemoglobin, SpO2, respiratory rate and the whole medication list, because they sat after the cut-off at the end of the note.
+- Ask the model explicitly for laboratory values and current therapy at the end of a note, and to warn when facts do not fit; the same protocol now yields 27 fields instead of 14.
+- Refuse to accept an abstention as a diagnosis: when the model abstains, "Принять в черновик" is disabled with an explanation and the placeholder ICD-10 codes are hidden, so a non-diagnosis cannot be written into the physician's conclusion with one click.
+- Remove the duplicated diagnosis from the result window, where it appeared three times: in the comparison panel, as the "МКБ-10: ..." tail inside the text, and as a separate leading-diagnosis block with different wording.
+- Strip the trailing ICD-10 list wherever codes are already rendered as chips or a separate line, in the UI, the printable report and the MIS text.
+- Collapse the result actions from six buttons across two rows into one row with an overflow menu, and drop metric tiles that repeat the lists below.
+- Fix the ICD-10 comparison disappearing when a result was opened from history: it read codes from a form field that only a fresh run fills.
+- Update Umbrel metadata and image tag for `ghcr.io/granyov/cvd-web:v0.9.15`.
+
 ## v0.9.14 - 2026-07-19
 
 - Classify context-overflow failures correctly: LM Studio echoes the request body in its error payload, so the message matched the "json" branch and told the doctor the answer could not be structured and the request could be repeated, which never worked.

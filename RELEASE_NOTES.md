@@ -1,19 +1,18 @@
-# CVD Web v0.9.14
+# CVD Web v0.9.15
 
-Release focused on getting the conclusion out of the system and into a hospital record, and on telling the doctor the truth when an analysis fails.
+Release built from running the whole clinician path against a live MedGemma endpoint instead of mocks. Two of the findings were data-loss and safety defects that no synthetic test had surfaced.
 
 ## Highlights
 
-- Adds "Копировать для МИС": a ready protocol block on the clipboard with the physician's diagnosis and ICD-10 codes, the AI draft with its own codes, the reasoning with red flags and missing data, the recommendation draft, and the disclaimer. Doctors move text between systems by copying, so this works today without any integration.
-- Extends the FHIR R4 export so it carries the conclusion instead of only the questionnaire: DiagnosticReport with the AI conclusion and conclusionCode in `http://hl7.org/fhir/sid/icd-10`, ClinicalImpression with the reasoning, findings and red flags, CarePlan with `status=draft` and `intent=proposal` for recommendations, and Practitioner and Organization as performers.
-- Marks the physician's own diagnosis as a Condition with `verificationStatus=confirmed`, so a receiving system can distinguish a confirmed diagnosis from an AI draft; the report is `preliminary` when the model abstained.
-- Fixes the misleading error a doctor saw when a case exceeded the model context. LM Studio echoes the request body inside its error, so the failure matched the "json" branch and reported that the answer could not be structured and the request could be repeated — repeating always failed. The message now says the case does not fit the model context, that repeating will not help, and what to do; the retry button hides for this class of failure.
-- Repairs the task centre layout, where the long error text consumed the actions column and squeezed job titles into a syllable-per-line column with the status badge overlapping the text.
-- Stops leaking "LM Studio" into doctor-facing messages and caps raw fallback errors at 300 characters.
+- Fixes silent data loss in text structuring. A real EMIAS consultation protocol returned exactly fourteen fields, and everything after them was dropped: NT-proBNP, creatinine, eGFR, potassium, haemoglobin, SpO2, respiratory rate and all five medications sat at the end of the note. The ceiling is now thirty facts per chunk, the prompt asks explicitly for laboratory values and current therapy at the end of a note, and the same protocol yields 27 fields.
+- Refuses to accept an abstention as a diagnosis. When the model abstains it still fills a placeholder conclusion and ICD-10 codes; the result window used to offer "Принять в черновик" as the primary action next to those codes, so one click could write a non-diagnosis into the physician's own conclusion. Abstentions now disable the action with an explanation and hide the codes.
+- Removes the diagnosis triplication found on live output: the comparison panel, the "МКБ-10: ..." tail the prompt asks the model to append, and a separate leading-diagnosis block with different wording. The trailing code list is stripped wherever codes already render as chips or a separate line, in the UI, the printable report and the MIS text.
+- Collapses the result actions from six buttons across two rows into one row with an overflow menu, and drops the metric tiles that repeated the lists below.
+- Restores the ICD-10 comparison when a result is opened from history: it previously read codes from a form field that only a fresh run fills.
 
-## Not included
+## Verified against a live model
 
-A СЭМД CDA R2 export is deliberately absent: it requires the medical organisation and practitioner OIDs from the current РЭМД/НСИ registry. Those numbers must come from the clinic's own registration rather than be invented in code.
+MedGemma 27B (q4_k_s) over an OpenAI-compatible endpoint: full case analysis (48 s, 3464+1126 tokens, 23.5 tok/s), prompt v5 filling both the CDS reasoning and the treatment/rehabilitation drafts, protocol structuring, abstention on thin data, queued-job cancellation, and a two-case batch run.
 
 ## Install
 
@@ -27,8 +26,8 @@ For release-archive installs:
 
 ```bash
 scripts/install_from_release.sh \
-  --url https://github.com/granyov/cvd-web/releases/download/v0.9.14/cvd-web-v0.9.14.tar.gz \
-  --sha256-url https://github.com/granyov/cvd-web/releases/download/v0.9.14/cvd-web-v0.9.14.tar.gz.sha256 \
+  --url https://github.com/granyov/cvd-web/releases/download/v0.9.15/cvd-web-v0.9.15.tar.gz \
+  --sha256-url https://github.com/granyov/cvd-web/releases/download/v0.9.15/cvd-web-v0.9.15.tar.gz.sha256 \
   -- --target local --unattended
 ```
 
