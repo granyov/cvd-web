@@ -883,17 +883,18 @@
     [
       ["Эталонов", summary.gold_cases],
       ["Оценено", summary.evaluated],
-      ["Средний score", `${summary.avg_score_percent || 0}%`],
-      ["МКБ-10 hit", summary.icd10_hits || 0],
-      ["Red flags match", summary.red_flag_matches || 0],
-      ["Missing data match", summary.missing_data_matches || 0],
-      ["Abstain match", summary.abstain_matches || 0],
-      ["Gate", summary.release_gate_ok ? "PASS" : "BLOCKED"],
-      ["Threshold", `${summary.min_score_percent || 80}%`]
+      ["Средний балл", `${summary.avg_score_percent || 0}%`],
+      ["Худший кейс", `${summary.worst_score_percent || 0}%`],
+      ["Совпало МКБ-10", summary.icd10_hits || 0],
+      ["Совпало red flags", summary.red_flag_matches || 0],
+      ["Совпало недостающих данных", summary.missing_data_matches || 0],
+      ["Совпало отказов", summary.abstain_matches || 0],
+      ["Допуск", summary.release_gate_ok ? "пройден" : "заблокирован"],
+      ["Порог допуска", `${summary.score_threshold_percent ?? summary.min_score_percent ?? 80}%`]
     ].forEach(([label, value]) => {
       const node = pill(`${label}: ${value}`);
-      if (label === "Средний score" && Number(summary.avg_score_percent || 0) < Number(summary.min_score_percent || 80) && Number(summary.evaluated || 0) > 0) node.classList.add("warning");
-      if (label === "Gate") node.classList.add(summary.release_gate_ok ? "ok" : "warning");
+      if (label === "Средний балл" && Number(summary.avg_score_percent || 0) < Number(summary.score_threshold_percent ?? summary.min_score_percent ?? 80) && Number(summary.evaluated || 0) > 0) node.classList.add("warning");
+      if (label === "Допуск") node.classList.add(summary.release_gate_ok ? "ok" : "warning");
       goldSetSummary.appendChild(node);
     });
     const goldCases = response.gold_cases || [];

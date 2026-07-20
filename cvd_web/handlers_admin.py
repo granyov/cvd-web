@@ -997,6 +997,12 @@ class AdminMixin:
             for item in models
             if item["state"] == "loaded"
         ]
+        # Запоминаем реальный контекст загруженной модели: по нему проверяем объём
+        # случая до отправки, чтобы врач не ждал минуту ради ошибки переполнения.
+        loaded_context = selected.get("loaded_context_length") if selected else None
+        if loaded_context:
+            with connect(self.config.db_path) as conn:
+                update_app_settings(conn, {"lm_studio_context_tokens": str(int(loaded_context))})
         return self.json_response({
             "ok": bool(selected and selected["state"] == "loaded"),
             "api_url": api_url,
@@ -1387,7 +1393,13 @@ class AdminMixin:
             "gold_cases": len(items),
             "evaluated": len(evaluated),
             "avg_score_percent": avg_score,
+            # min_score_percent исторически хранит порог допуска, а не минимальный балл:
+            # оставлен для совместимости со старыми записями прогонов.
             "min_score_percent": min_score_percent,
+            "score_threshold_percent": min_score_percent,
+            "worst_score_percent": (
+                min(item["evaluation"]["score_percent"] for item in evaluated) if evaluated else 0
+            ),
             "release_gate_ok": not gate_reasons,
             "release_gate_reasons": gate_reasons,
             "severity_counts": severity_counts,

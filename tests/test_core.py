@@ -1492,6 +1492,43 @@ class CoreTests(unittest.TestCase):
                 ).fetchone()["value"]
             self.assertEqual(value, custom_template)
 
+    def test_prompt_version_follows_the_migrated_template(self):
+        # Миграция 0014 обновляла шаблон, но не версию: реальные анализы на промпте v5
+        # сохранялись с меткой v4, и дашборд качества сравнивал версии по ложной метке.
+        from cvd_web.lmstudio import USER_PROMPT_TEMPLATE
+        from cvd_web.versions import MODEL_PROMPT_VERSION
+
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "cvd.sqlite3"
+            CVDApplication(make_test_config(db_path), start_batch_worker=False)
+            with connect(db_path) as conn:
+                conn.execute("DELETE FROM schema_migrations WHERE id = '0015_active_prompt_version_follows_template'")
+                conn.execute("UPDATE app_settings SET value = 'cvd-cds-prompt-v4' WHERE key = 'active_prompt_version'")
+                conn.execute(
+                    "UPDATE app_settings SET value = ? WHERE key = 'active_prompt_template'",
+                    (USER_PROMPT_TEMPLATE,),
+                )
+            CVDApplication(make_test_config(db_path), start_batch_worker=False)
+            with connect(db_path) as conn:
+                version = conn.execute(
+                    "SELECT value FROM app_settings WHERE key = 'active_prompt_version'"
+                ).fetchone()["value"]
+            self.assertEqual(version, MODEL_PROMPT_VERSION)
+
+        # Кастомную версию администратора не трогаем.
+        with tempfile.TemporaryDirectory() as tmp:
+            db_path = Path(tmp) / "custom.sqlite3"
+            CVDApplication(make_test_config(db_path), start_batch_worker=False)
+            with connect(db_path) as conn:
+                conn.execute("DELETE FROM schema_migrations WHERE id = '0015_active_prompt_version_follows_template'")
+                conn.execute("UPDATE app_settings SET value = 'clinic-prompt-2026' WHERE key = 'active_prompt_version'")
+            CVDApplication(make_test_config(db_path), start_batch_worker=False)
+            with connect(db_path) as conn:
+                version = conn.execute(
+                    "SELECT value FROM app_settings WHERE key = 'active_prompt_version'"
+                ).fetchone()["value"]
+            self.assertEqual(version, "clinic-prompt-2026")
+
     def test_default_admin_password_forces_change_before_other_apis(self):
         with tempfile.TemporaryDirectory() as tmp:
             config = make_test_config(Path(tmp) / "cvd.sqlite3")
