@@ -11,6 +11,7 @@ from cvd_web.auth import hash_password, utc_now
 from cvd_web.db import connect
 from cvd_web.lmstudio import LMStudioError
 from cvd_web.text_structuring import (
+    MAX_MAPPINGS_PER_CHUNK,
     TEXT_STRUCTURING_SCHEMA,
     build_structuring_request,
     call_text_structuring,
@@ -24,12 +25,17 @@ from test_core import call_wsgi, make_test_config
 class OperationsTests(unittest.TestCase):
     def test_text_structuring_schema_is_bounded(self):
         schema = TEXT_STRUCTURING_SCHEMA["schema"]
-        self.assertEqual(schema["properties"]["mappings"]["maxItems"], 14)
+        # Потолок должен вмещать типовой протокол: при 14 молча терялись лабораторные
+        # показатели и список терапии, которые идут в конце записи.
+        self.assertEqual(schema["properties"]["mappings"]["maxItems"], MAX_MAPPINGS_PER_CHUNK)
+        self.assertGreaterEqual(MAX_MAPPINGS_PER_CHUNK, 25)
         self.assertEqual(schema["properties"]["corrected_text"]["maxLength"], 600)
         request = build_structuring_request("Бисопролол 5 мг утром", model="test", max_tokens=1536)
         prompt = request["messages"][1]["content"]
         self.assertIn("CURRENT_MEDICATIONS.Beta_blockers [text]", prompt)
         self.assertIn("не заменяй препарат на yes/no", prompt)
+        self.assertIn("включая лабораторные показатели и текущую терапию", prompt)
+        self.assertIn(f"Максимум {MAX_MAPPINGS_PER_CHUNK} mappings", prompt)
 
     def test_text_structuring_chunks_and_merges_results(self):
         source = "Первое предложение с данными. Второе предложение с данными. Третье предложение."

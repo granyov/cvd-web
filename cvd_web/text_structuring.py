@@ -16,6 +16,9 @@ TEXT_MAX_INPUT_CHARS = 10000
 TEXT_MAX_MODEL_CALLS = 12
 TEXT_MAX_MODEL_DURATION_MS = 60 * 60 * 1000
 TEXT_MAX_OUTPUT_TOKENS = 4096
+# Типовой протокол осмотра содержит 25-40 извлекаемых фактов: при меньшем потолке
+# молча терялись лабораторные показатели и список терапии, шедшие в конце текста.
+MAX_MAPPINGS_PER_CHUNK = 30
 AI_EXCLUDED_FIELDS = {"Patient_ID", "Full_name", "Sex"}
 FIELD_SPECS = {
     f"{section.key}.{field.key}": (section.key, field)
@@ -84,7 +87,7 @@ TEXT_STRUCTURING_SCHEMA = {
         "properties": {
             "mappings": {
                 "type": "array",
-                "maxItems": 14,
+                "maxItems": MAX_MAPPINGS_PER_CHUNK,
                 "items": {
                     "type": "object",
                     "additionalProperties": False,
@@ -132,7 +135,9 @@ def build_structuring_request(text: str, *, model: str, max_tokens: int) -> dict
 - path может быть только из списка ALLOWED_PATHS.
 - corrected_text должен быть компактной исправленной медицинской заметкой до 600 символов.
 - В corrected_text включай только клинически значимые факты из исходного текста, без рассуждений и рекомендаций.
-- Верни не более 14 наиболее информативных mappings. Не копируй названия полей в evidence.
+- Извлекай ВСЕ факты, подходящие под ALLOWED_PATHS, включая лабораторные показатели и текущую терапию в конце записи.
+- Максимум {MAX_MAPPINGS_PER_CHUNK} mappings. Если фактов больше, добавь в warnings строку о том, какие данные не поместились.
+- Не копируй названия полей в evidence.
 
 ALLOWED_PATHS:
 {allowed_paths}
