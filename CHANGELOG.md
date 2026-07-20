@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.9.17 - 2026-07-20
+
+- Warn on the printed conclusion when the case was edited after the analysis, naming the changed fields: on screen that warning lives a second, on paper the document lives for years.
+- Print the reviewing doctor's verdict, corrected diagnosis, ICD-10 codes and comment; when no review exists, say plainly that the conclusion is an unreviewed draft instead of leaving the reader to guess.
+- Give red flags their own block instead of one tile among equals, so safety dominates on paper the way it does on screen.
+- Print reference ranges next to every numeric value and mark deviations: on paper nobody can hover a field, and "Hb 121" says nothing without the range.
+- Replace the appendix on/off checkbox with three modes - do not print, deviations only, full. On a real case "deviations only" prints 10 rows instead of 110.
+- Add a traceability line with the application, prompt and output schema versions, for reconstructing how a document was produced. The model identifier stays out of the document: the product speaks to the doctor as CVD Engine and the model is kept in the archive under the analysis number.
+- Print Russian field labels throughout the appendix. Python knew 25 of the 117 labels the input form uses, so the printout carried rows like "LDL mmol L".
+- Add `tests/test_js_parity.py`: reference ranges and field labels are duplicated between Python and the frontend, and a drift would show one thing on screen and another on the printout for the same laboratory value.
+- Update Umbrel metadata and image tag for `ghcr.io/granyov/cvd-web:v0.9.17`.
+
 ## v0.9.16 - 2026-07-20
 
 - Record the real context length of the loaded model during the admin health check, and refuse an oversized case in milliseconds instead of letting the doctor wait about forty seconds for the model to fail.

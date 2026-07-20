@@ -1,18 +1,21 @@
-# CVD Web v0.9.16
+# CVD Web v0.9.17
 
-Release focused on what happens when a case does not fit the model, and on making the version stamped in history match the prompt that actually ran.
+Release focused on the printed clinical conclusion: the HTML export is read on paper, hours or days after the analysis, by someone who cannot hover a value or open the archive.
 
 ## Highlights
 
-- Refuses an oversized case in milliseconds instead of after about forty seconds of queueing and generation. The admin health check records the real context length of the loaded model, and the size check runs before the job is queued.
-- Shows the case size in tokens in the review window, replacing an opaque JSON character count, with an explicit warning and a disabled confirm button when the case will not fit.
-- Re-reads the model context from LM Studio before refusing anything, so a stale stored value cannot block work after the model is reloaded with a larger context. When that check cannot be made, the job goes through and the doctor sees the genuine service error rather than an invented size limit.
-- Fixes the prompt version recorded in history. Migration 0014 replaced the stored template but left `active_prompt_version` at v4, and the setting is seeded with INSERT OR IGNORE, so every existing database saved prompt v5 runs under the v4 label. The model-quality dashboard would have compared prompt versions against fiction. Migration 0015 lifts the version only when the template is already the current default and the version is a known previous default; a clinic's own version string is untouched.
-- Repairs the Gold Set summary, which showed "Средний score 50% / Threshold 80%" with the threshold field named as if it were the worst observed score. The summary now carries the real worst case next to the threshold, and the remaining English labels in that panel are in Russian.
+- Warns when the case was edited after the analysis and names the changed fields. On screen that warning lives a second; the printed document lives for years and previously said nothing.
+- Prints the reviewing doctor's verdict, corrected diagnosis, ICD-10 codes and comment. Without a review it states plainly that the conclusion is an unreviewed draft, rather than letting a machine draft pass for a checked document.
+- Gives red flags their own block instead of one tile among equals.
+- Prints reference ranges next to every numeric value and marks deviations. On paper nobody can hover a field, and "Hb 121" says nothing without the range.
+- Replaces the appendix checkbox with three modes: do not print, deviations only, full. On a real case "deviations only" prints 10 rows instead of 110.
+- Adds a traceability line with the application, prompt and output schema versions. The model identifier is deliberately absent: the product speaks to the doctor as CVD Engine, and the model stays in the archive under the analysis number.
+- Fixes Russian field labels in the appendix. Python knew 25 of the 117 labels the input form uses, so the printout carried rows like "LDL mmol L".
+- Adds a parity test between Python and the frontend for reference ranges and field labels. The two copies drifting would show one thing on screen and another on the printout for the same laboratory value.
 
 ## Recommended model setup
 
-Load the model in LM Studio with at least **32768 tokens** of context. A typical case with history, ECG, echo and imaging descriptions takes 3-15 thousand tokens, and `lm_studio_max_tokens` is reserved on top for the answer. At 8192 tokens only about 4000 remain for data, and larger cases do not fit.
+Load the model in LM Studio with at least **32768 tokens** of context. A typical case with history, ECG, echo and imaging descriptions takes 3-15 thousand tokens, and `lm_studio_max_tokens` is reserved on top for the answer.
 
 ## Install
 
@@ -26,8 +29,8 @@ For release-archive installs:
 
 ```bash
 scripts/install_from_release.sh \
-  --url https://github.com/granyov/cvd-web/releases/download/v0.9.16/cvd-web-v0.9.16.tar.gz \
-  --sha256-url https://github.com/granyov/cvd-web/releases/download/v0.9.16/cvd-web-v0.9.16.tar.gz.sha256 \
+  --url https://github.com/granyov/cvd-web/releases/download/v0.9.17/cvd-web-v0.9.17.tar.gz \
+  --sha256-url https://github.com/granyov/cvd-web/releases/download/v0.9.17/cvd-web-v0.9.17.tar.gz.sha256 \
   -- --target local --unattended
 ```
 
@@ -36,7 +39,8 @@ scripts/install_from_release.sh \
 - Not a medical device and not clinically validated.
 - Use only synthetic or deidentified data.
 - Exported documents are drafts: they are not signed with УКЭП and are not legally valid medical records.
-- The token estimate used for the size check is approximate; only the model tokenizer knows the exact count.
+- Reference ranges in the printed appendix are indicative adult ranges; they do not replace local laboratory references or clinical judgement.
+- Printed page numbers are not available: Chrome does not support CSS `@page` margin boxes.
 - PDF intake reads the text layer only; scanned documents need OCR before import.
 - The SQLite worker and in-process inference queue support one backend process.
 - Production deployments must add HTTPS and should use external queue/rate-limit adapters before strict production readiness.
