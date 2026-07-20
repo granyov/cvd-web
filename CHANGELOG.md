@@ -1,5 +1,15 @@
 # Changelog
 
+## v0.9.16 - 2026-07-20
+
+- Record the real context length of the loaded model during the admin health check, and refuse an oversized case in milliseconds instead of letting the doctor wait about forty seconds for the model to fail.
+- Show the case size in tokens in the review window instead of a JSON character count, with an explicit warning and a disabled confirm button when the case will not fit.
+- Re-read the model context from LM Studio before any size refusal, so a stale setting cannot block work after the model is reloaded with a different context; when the check cannot be made, let the job through and surface the genuine service error.
+- Recommend loading the model with at least 32768 tokens of context and document how the size check behaves.
+- Fix the prompt version stamped on analyses: migration 0014 replaced the template but left `active_prompt_version` at v4, so runs on prompt v5 were saved under the wrong label and the model-quality dashboard would have compared versions against fiction. Migration 0015 lifts the version only when the template is the current default and the version is a known previous default.
+- Add the real worst-case score to the Gold Set summary and rename the threshold field, which previously read as a minimum observed score, and translate the remaining English labels in that panel.
+- Update Umbrel metadata and image tag for `ghcr.io/granyov/cvd-web:v0.9.16`.
+
 ## v0.9.15 - 2026-07-20
 
 - Raise the structuring ceiling from 14 to 30 facts per chunk: a real EMIAS consultation protocol silently lost NT-proBNP, creatinine, eGFR, potassium, haemoglobin, SpO2, respiratory rate and the whole medication list, because they sat after the cut-off at the end of the note.

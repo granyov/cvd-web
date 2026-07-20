@@ -1,18 +1,18 @@
-# CVD Web v0.9.15
+# CVD Web v0.9.16
 
-Release built from running the whole clinician path against a live MedGemma endpoint instead of mocks. Two of the findings were data-loss and safety defects that no synthetic test had surfaced.
+Release focused on what happens when a case does not fit the model, and on making the version stamped in history match the prompt that actually ran.
 
 ## Highlights
 
-- Fixes silent data loss in text structuring. A real EMIAS consultation protocol returned exactly fourteen fields, and everything after them was dropped: NT-proBNP, creatinine, eGFR, potassium, haemoglobin, SpO2, respiratory rate and all five medications sat at the end of the note. The ceiling is now thirty facts per chunk, the prompt asks explicitly for laboratory values and current therapy at the end of a note, and the same protocol yields 27 fields.
-- Refuses to accept an abstention as a diagnosis. When the model abstains it still fills a placeholder conclusion and ICD-10 codes; the result window used to offer "Принять в черновик" as the primary action next to those codes, so one click could write a non-diagnosis into the physician's own conclusion. Abstentions now disable the action with an explanation and hide the codes.
-- Removes the diagnosis triplication found on live output: the comparison panel, the "МКБ-10: ..." tail the prompt asks the model to append, and a separate leading-diagnosis block with different wording. The trailing code list is stripped wherever codes already render as chips or a separate line, in the UI, the printable report and the MIS text.
-- Collapses the result actions from six buttons across two rows into one row with an overflow menu, and drops the metric tiles that repeated the lists below.
-- Restores the ICD-10 comparison when a result is opened from history: it previously read codes from a form field that only a fresh run fills.
+- Refuses an oversized case in milliseconds instead of after about forty seconds of queueing and generation. The admin health check records the real context length of the loaded model, and the size check runs before the job is queued.
+- Shows the case size in tokens in the review window, replacing an opaque JSON character count, with an explicit warning and a disabled confirm button when the case will not fit.
+- Re-reads the model context from LM Studio before refusing anything, so a stale stored value cannot block work after the model is reloaded with a larger context. When that check cannot be made, the job goes through and the doctor sees the genuine service error rather than an invented size limit.
+- Fixes the prompt version recorded in history. Migration 0014 replaced the stored template but left `active_prompt_version` at v4, and the setting is seeded with INSERT OR IGNORE, so every existing database saved prompt v5 runs under the v4 label. The model-quality dashboard would have compared prompt versions against fiction. Migration 0015 lifts the version only when the template is already the current default and the version is a known previous default; a clinic's own version string is untouched.
+- Repairs the Gold Set summary, which showed "Средний score 50% / Threshold 80%" with the threshold field named as if it were the worst observed score. The summary now carries the real worst case next to the threshold, and the remaining English labels in that panel are in Russian.
 
-## Verified against a live model
+## Recommended model setup
 
-MedGemma 27B (q4_k_s) over an OpenAI-compatible endpoint: full case analysis (48 s, 3464+1126 tokens, 23.5 tok/s), prompt v5 filling both the CDS reasoning and the treatment/rehabilitation drafts, protocol structuring, abstention on thin data, queued-job cancellation, and a two-case batch run.
+Load the model in LM Studio with at least **32768 tokens** of context. A typical case with history, ECG, echo and imaging descriptions takes 3-15 thousand tokens, and `lm_studio_max_tokens` is reserved on top for the answer. At 8192 tokens only about 4000 remain for data, and larger cases do not fit.
 
 ## Install
 
@@ -26,8 +26,8 @@ For release-archive installs:
 
 ```bash
 scripts/install_from_release.sh \
-  --url https://github.com/granyov/cvd-web/releases/download/v0.9.15/cvd-web-v0.9.15.tar.gz \
-  --sha256-url https://github.com/granyov/cvd-web/releases/download/v0.9.15/cvd-web-v0.9.15.tar.gz.sha256 \
+  --url https://github.com/granyov/cvd-web/releases/download/v0.9.16/cvd-web-v0.9.16.tar.gz \
+  --sha256-url https://github.com/granyov/cvd-web/releases/download/v0.9.16/cvd-web-v0.9.16.tar.gz.sha256 \
   -- --target local --unattended
 ```
 
@@ -36,6 +36,7 @@ scripts/install_from_release.sh \
 - Not a medical device and not clinically validated.
 - Use only synthetic or deidentified data.
 - Exported documents are drafts: they are not signed with УКЭП and are not legally valid medical records.
+- The token estimate used for the size check is approximate; only the model tokenizer knows the exact count.
 - PDF intake reads the text layer only; scanned documents need OCR before import.
 - The SQLite worker and in-process inference queue support one backend process.
 - Production deployments must add HTTPS and should use external queue/rate-limit adapters before strict production readiness.

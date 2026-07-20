@@ -4,7 +4,7 @@ name: CVD Web
 tagline: Cardiovascular case workspace with local LLM review
 icon: https://raw.githubusercontent.com/granyov/cvd-web/main/granyov-cvd-web/icon.svg
 category: ai
-version: "0.9.15"
+version: "0.9.16"
 port: 8080
 description: >-
   CVD Web is a controlled cardiovascular case workspace for structuring patient
@@ -22,10 +22,9 @@ repo: https://github.com/granyov/cvd-web
 support: https://github.com/granyov/cvd-web/issues
 gallery: []
 releaseNotes: >-
-  Fixes silent loss of laboratory values and medications when structuring a
-  protocol, stops the interface offering an AI abstention as a diagnosis, and
-  removes duplicated diagnoses and codes from the result window, report and
-  MIS text.
+  Refuses oversized cases in milliseconds instead of a forty-second failure,
+  detects the loaded model context automatically, and fixes the prompt version
+  recorded in analysis history. Load the model with at least 32k context.
 dependencies: []
 path: ""
 defaultUsername: "admin@umbrel.local"
