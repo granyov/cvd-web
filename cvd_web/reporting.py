@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime, timezone
 from html import escape
 from typing import Any
@@ -64,6 +65,15 @@ MONTHS_RU = (
 
 def _is_filled(value: Any) -> bool:
     return value is not None and value != "" and value != []
+
+
+def _strip_trailing_icd(text: Any) -> str:
+    """Убирает хвост «МКБ-10: I20.8, I10» из текста диагноза.
+
+    Промпт просит модель указывать коды в конце заключения, но и отчёт, и текст
+    для МИС печатают коды отдельной строкой — без чистки они задваиваются.
+    """
+    return re.sub(r"\s*МКБ-?10\s*[::]\s*[A-ZА-Я]?\d[\d.,;\s A-Z]*\.?\s*$", "", str(text or ""), flags=re.IGNORECASE).strip()
 
 
 def _human_datetime(value: Any) -> str:
@@ -197,7 +207,7 @@ def build_mis_text(
         lines.append(f"МКБ-10: {', '.join(doctor_codes)}")
     lines.append("")
 
-    ai_diagnosis = _text(model_output.get("Final_model_diagnosis") or "").strip()
+    ai_diagnosis = _strip_trailing_icd(model_output.get("Final_model_diagnosis"))
     ai_codes = [str(code) for code in (model_output.get("Model_ICD10_codes") or []) if str(code).strip()]
     lines.append("ЧЕРНОВИК AI:")
     if cds.get("model_should_abstain"):
@@ -253,11 +263,11 @@ def _conclusion_block(patient_data: dict[str, Any], cds: dict[str, Any], model_o
     final = patient_data.get("FINAL_DIAGNOSES") if isinstance(patient_data.get("FINAL_DIAGNOSES"), dict) else {}
     doctor_diagnosis = _text(final.get("Main_cardiovascular_diagnosis_text") or "")
     doctor_codes = final.get("ICD10_codes")
-    ai_diagnosis = _text(model_output.get("Final_model_diagnosis") or "")
+    ai_diagnosis = _strip_trailing_icd(model_output.get("Final_model_diagnosis"))
     if not ai_diagnosis:
         diagnoses = cds.get("possible_diagnoses") if isinstance(cds.get("possible_diagnoses"), list) else []
         lead = diagnoses[0] if diagnoses and isinstance(diagnoses[0], dict) else {}
-        ai_diagnosis = _text(lead.get("name") or "")
+        ai_diagnosis = _strip_trailing_icd(lead.get("name"))
         ai_codes = lead.get("icd10_codes")
     else:
         ai_codes = model_output.get("Model_ICD10_codes")

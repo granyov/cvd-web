@@ -203,12 +203,6 @@
         <button type="button" id="closeModelResultModal" aria-label="Закрыть">×</button>
       </div>
       <div class="modal-body model-result-body">
-        <div class="toolbar model-actions">
-          <button type="button" id="copyMisTextButton" disabled title="Скопировать заключение для вставки в протокол МИС">
-            <svg class="icon"><use href="#i-copy"/></svg>Копировать для МИС
-          </button>
-          <button type="button" id="exportHtmlButton" disabled>Скачать HTML</button>
-        </div>
         <div class="model-workbench-grid">
           <section class="model-workbench-panel">
             <h3>Диагноз врача</h3>
@@ -220,10 +214,17 @@
           </section>
         </div>
         <div class="toolbar model-decision-actions">
-          <button type="button" id="acceptModelDraftButton" title="Принять AI-диагноз в черновик врача"><svg class="icon"><use href="#i-check"/></svg>В черновик</button>
-          <button type="button" id="copyModelDiagnosisButton" title="Скопировать диагноз AI"><svg class="icon"><use href="#i-copy"/></svg>Скопировать AI</button>
-          <button type="button" id="openModelReportButton"><svg class="icon"><use href="#i-file-text"/></svg>Открыть отчёт</button>
+          <button type="button" id="acceptModelDraftButton" class="primary" title="Принять AI-диагноз в черновик врача"><svg class="icon"><use href="#i-check"/></svg>Принять в черновик</button>
+          <button type="button" id="copyMisTextButton" disabled title="Скопировать заключение для вставки в протокол МИС"><svg class="icon"><use href="#i-copy"/></svg>Копировать для МИС</button>
+          <button type="button" id="openModelReportButton"><svg class="icon"><use href="#i-file-text"/></svg>Отчёт</button>
           <button type="button" id="markModelIssueButton"><svg class="icon"><use href="#i-alert"/></svg>Пометить ошибку</button>
+          <div class="more-menu" data-menu>
+            <button type="button" data-menu-toggle aria-haspopup="true" aria-expanded="false">Ещё</button>
+            <div class="dropdown-menu hidden" data-menu-panel>
+              <button type="button" id="copyModelDiagnosisButton">Скопировать диагноз AI</button>
+              <button type="button" id="exportHtmlButton" disabled>Скачать HTML</button>
+            </div>
+          </div>
         </div>
         <div id="icdSummary" class="notice">Коды МКБ-10 ещё не сравнивались.</div>
         <div id="modelStructured" class="model-output">Структурированный ответ появится после AI-анализа.</div>

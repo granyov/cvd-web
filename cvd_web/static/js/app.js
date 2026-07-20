@@ -842,7 +842,12 @@
 
   function updateIcdComparison(data) {
     const trueCodes = new Set(data.FINAL_DIAGNOSES?.ICD10_codes || []);
-    const modelCodes = new Set(data.MODEL_OUTPUT?.Model_ICD10_codes || []);
+    // Коды AI берём из загруженного результата: поле анкеты заполняется только после
+    // свежего запуска, а результат может быть открыт из истории.
+    const aiCodes = lastModelParsed
+      ? modelDiagnosisSummary(lastModelParsed).codes
+      : (data.MODEL_OUTPUT?.Model_ICD10_codes || []);
+    const modelCodes = new Set(aiCodes);
     if (trueCodes.size === 0 || modelCodes.size === 0) {
       // Сравнение имеет смысл только когда есть и коды врача, и коды AI.
       icdSummary.classList.add("hidden");
@@ -1527,13 +1532,21 @@
     lastModelSummary.classList.remove("hidden");
   }
 
+  function stripTrailingIcdList(text) {
+    // Модель дублирует коды в конце диагноза («… МКБ-10: I20.8, I10»), а UI рисует их чипами.
+    return String(text || "").replace(/\s*МКБ-?10\s*[::]\s*[A-ZА-Я]?\d[\d.,;\sA-Z]*\.?\s*$/iu, "").trim();
+  }
+
   function modelDiagnosisSummary(parsed) {
     const cds = parsed?.CDS_OUTPUT || {};
     const output = parsed?.MODEL_OUTPUT || {};
     const lead = Array.isArray(cds.possible_diagnoses) ? cds.possible_diagnoses[0] : null;
+    const abstained = Boolean(cds.model_should_abstain);
     return {
-      text: output.Final_model_diagnosis || lead?.name || cds.summary || "",
-      codes: Array.isArray(output.Model_ICD10_codes) ? output.Model_ICD10_codes : (lead?.icd10_codes || []),
+      abstained,
+      text: stripTrailingIcdList(output.Final_model_diagnosis || lead?.name || cds.summary || ""),
+      // При отказе модели коды не показываем: это не кодируемый диагноз.
+      codes: abstained ? [] : (Array.isArray(output.Model_ICD10_codes) ? output.Model_ICD10_codes : (lead?.icd10_codes || [])),
       summary: cds.summary || "",
       redFlags: Array.isArray(cds.red_flags) ? cds.red_flags.filter(Boolean) : [],
       missing: Array.isArray(cds.missing_data) ? cds.missing_data.filter(Boolean) : []
@@ -1574,7 +1587,15 @@
     renderWorkbenchDiagnosis(doctorDiagnosisWorkbench, "врача", doctorText, doctorCodes, "Итоговый диагноз врача еще не заполнен.");
     renderWorkbenchDiagnosis(aiDiagnosisWorkbench, "AI", ai.text, ai.codes, "AI-заключение появится после анализа.");
     const hasAi = Boolean(ai.text || ai.codes.length);
-    acceptModelDraftButton?.toggleAttribute("disabled", !hasAi);
+    // Когда модель воздержалась, принимать нечего: заключения нет, есть только запрос данных.
+    const acceptable = hasAi && !ai.abstained;
+    acceptModelDraftButton?.toggleAttribute("disabled", !acceptable);
+    acceptModelDraftButton?.classList.toggle("primary", acceptable);
+    if (acceptModelDraftButton) {
+      acceptModelDraftButton.title = ai.abstained
+        ? "AI воздержался от заключения — принимать в черновик нечего"
+        : "Принять AI-диагноз в черновик врача";
+    }
     copyModelDiagnosisButton?.toggleAttribute("disabled", !hasAi);
     openModelReportButton?.toggleAttribute("disabled", !currentModelRequestId);
     markModelIssueButton?.toggleAttribute("disabled", !currentModelRequestId);
@@ -1582,6 +1603,10 @@
 
   function acceptModelDiagnosisDraft() {
     const ai = modelDiagnosisSummary(lastModelParsed || {});
+    if (ai.abstained) {
+      toast("AI воздержался от заключения — принимать в черновик нечего");
+      return;
+    }
     if (!ai.text && !ai.codes.length) {
       toast("AI-диагноз пока отсутствует");
       return;
@@ -1637,26 +1662,12 @@
     const missing = Array.isArray(cds.missing_data) ? cds.missing_data.filter(Boolean) : [];
     const summary = document.createElement("div");
     summary.className = `model-summary-card ${cds.model_should_abstain ? "warning" : redFlags.length ? "danger" : ""}`.trim();
-    const confidenceLabels = {high: "высокая уверенность", medium: "средняя уверенность", low: "низкая уверенность"};
-    const leadDiagnosis = diagnoses[0];
+    // Сам диагноз показан выше в панели «Заключение AI» — здесь только обоснование,
+    // иначе одно и то же читается трижды.
     const eyebrow = document.createElement("span");
     eyebrow.className = "verdict-eyebrow";
-    eyebrow.textContent = cds.model_should_abstain ? "Заключение AI" : "Ведущий диагноз AI";
-    const verdictTitle = document.createElement("h3");
-    verdictTitle.className = "verdict-title";
-    verdictTitle.textContent = cds.model_should_abstain
-      ? "AI воздержался от заключения — нужна ручная оценка"
-      : leadDiagnosis?.name || cds.summary || "Диагноз не указан";
-    summary.append(eyebrow, verdictTitle);
-    if (!cds.model_should_abstain && leadDiagnosis) {
-      const verdictMeta = document.createElement("div");
-      verdictMeta.className = "verdict-meta";
-      if (confidenceLabels[leadDiagnosis.confidence]) {
-        verdictMeta.appendChild(pill(confidenceLabels[leadDiagnosis.confidence], leadDiagnosis.confidence === "high" ? "ok" : leadDiagnosis.confidence === "low" ? "warning" : ""));
-      }
-      (leadDiagnosis.icd10_codes || []).slice(0, 4).forEach((code) => verdictMeta.appendChild(pill(code)));
-      summary.appendChild(verdictMeta);
-    }
+    eyebrow.textContent = cds.model_should_abstain ? "AI воздержался от заключения" : "Клиническая сводка";
+    summary.append(eyebrow);
     const text = document.createElement("p");
     text.textContent = cds.summary || "Сводка не указана.";
     const metaItems = [
@@ -1664,11 +1675,8 @@
       ["Время анализа", durationText(meta.duration_ms)]
     ];
     if (!isDoctorMode()) metaItems.push(["Ожидание", durationText(meta.queue_wait_ms)]);
-    metaItems.push(
-      ["Диагнозов", String(diagnoses.length)],
-      ["Red flags", String(redFlags.length), redFlags.length ? "danger" : ""],
-      ["Не хватает", String(missing.length), missing.length ? "warning" : ""]
-    );
+    // Счётчики диагнозов и недостающих данных не дублируем: их списки идут ниже.
+    if (redFlags.length) metaItems.push(["Red flags", String(redFlags.length), "danger"]);
     summary.append(text, renderModelMetaGrid(metaItems));
     modelStructured.appendChild(summary);
     if (redFlags.length > 0) {

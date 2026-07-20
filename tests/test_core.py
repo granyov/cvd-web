@@ -328,6 +328,42 @@ class CoreTests(unittest.TestCase):
         self.assertIn("break-before:page", report)
         self.assertIn("Кейс №5", report)
 
+    def test_exports_do_not_duplicate_icd_codes_from_the_diagnosis_text(self):
+        # Промпт просит модель дописывать коды в конец заключения, а отчёт и текст
+        # для МИС печатают их отдельной строкой — хвост нужно срезать.
+        from cvd_web.reporting import build_mis_text
+
+        patient_data = {
+            "GENERAL_INFO": {"Patient_ID": "CVD-90"},
+            "FINAL_DIAGNOSES": {"Main_cardiovascular_diagnosis_text": "ИБС", "ICD10_codes": ["I20.8"]},
+        }
+        parsed_output = {
+            "CDS_OUTPUT": {
+                "summary": "Сводка",
+                "possible_diagnoses": [],
+                "red_flags": [],
+                "missing_data": [],
+                "recommended_next_data": [],
+                "limitations": [],
+                "model_should_abstain": False,
+            },
+            "MODEL_OUTPUT": {
+                "Final_model_diagnosis": "ИБС: стабильная стенокардия II ФК. ХБП C2. МКБ-10: I20.8, I10, N18.3",
+                "Model_ICD10_codes": ["I20.8", "I10", "N18.3"],
+                "Model_treatment_recommendations": "",
+                "Model_rehabilitation_recommendations": "",
+            },
+        }
+
+        text = build_mis_text(patient_data, parsed_output, {"request_id": 5})
+        self.assertIn("ХБП C2.", text)
+        self.assertEqual(text.count("I20.8, I10, N18.3"), 1)
+        self.assertIn("МКБ-10: I20.8, I10, N18.3", text)
+
+        report = build_html_report(patient_data, parsed_output, {"request_id": 5})
+        self.assertIn("ХБП C2.", report)
+        self.assertNotIn("МКБ-10: I20.8, I10, N18.3", report)
+
     def test_html_report_falls_back_to_leading_ai_diagnosis_and_marks_abstain(self):
         report = build_html_report(
             {"GENERAL_INFO": {"Patient_ID": "CVD-78"}},
