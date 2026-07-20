@@ -8,11 +8,13 @@ from __future__ import annotations
 import json
 import tempfile
 import unittest
+from unittest.mock import patch
 from pathlib import Path
 
 from cvd_web.app import CVDApplication
 from cvd_web.auth import utc_now
 from cvd_web.db import connect
+from cvd_web.lmstudio_models import LMStudioManagementError
 
 from test_core import call_wsgi, make_test_config
 
@@ -208,6 +210,131 @@ class SmokeTests(unittest.TestCase):
             self.assertEqual(json.loads(body.decode("utf-8"))["job"]["status"], "cancelled")
             self.assertIn("защищённый канал", app.user_friendly_ai_error("HTTP 524 from Cloudflare tunnel"))
 
+    def test_oversized_case_is_rejected_before_it_reaches_the_model(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = self.make_app(tmp)
+            cookie, csrf = login(app)
+            # Контекст обычно проставляет health-check по реальной загруженной модели.
+            with connect(Path(tmp) / "cvd.sqlite3") as conn:
+                conn.execute(
+                    "UPDATE app_settings SET value = '8192' WHERE key = 'lm_studio_context_tokens'"
+                )
+                conn.execute(
+                    "UPDATE app_settings SET value = '4096' WHERE key = 'lm_studio_max_tokens'"
+                )
+
+            filler = "детальное описание клинической картины с уточнениями и динамикой. " * 60
+            oversized = {
+                "GENERAL_INFO": {"Patient_ID": "OVERFLOW-1", "Age": 70, "Sex": "male"},
+                "COMPLAINTS": {"Main_complaint": filler[:3900], "Onset_context": filler[:3900]},
+                "PAST_EVENTS": {"Prior_MI": filler[:3900], "Other_major_diseases": filler[:3900]},
+                "ECG_AND_BP_MONITORING": {"Resting_ECG_summary": filler[:3900]},
+            }
+            # Контекст подтверждается у LM Studio: отказываем только по свежему значению.
+            confirmed_catalog = {
+                "api_version": "v1",
+                "models": [{
+                    "id": "healtheart-cvd-engine",
+                    "state": "loaded",
+                    "loaded_context_length": 8192,
+                    "max_context_length": 131072,
+                }],
+            }
+            with patch("cvd_web.handlers_ai.list_lm_models", return_value=confirmed_catalog):
+                status, _, body = call_wsgi(
+                    app,
+                    "/api/model/diagnose/jobs",
+                    method="POST",
+                    cookie=cookie,
+                    csrf=csrf,
+                    body={"patient_data": oversized},
+                )
+            # 413, а не молчаливое ожидание минуты ради ошибки переполнения от модели.
+            self.assertTrue(status.startswith("413"), body)
+            message = json.loads(body.decode("utf-8"))["error"]
+            self.assertIn("слишком большой", message)
+            self.assertIn("токенов", message)
+
+            compact = {
+                "GENERAL_INFO": {"Patient_ID": "FITS-1", "Age": 61, "Sex": "male"},
+                "COMPLAINTS": {"Main_complaint": "Одышка при нагрузке"},
+            }
+            status, _, body = call_wsgi(
+                app,
+                "/api/model/diagnose/jobs",
+                method="POST",
+                cookie=cookie,
+                csrf=csrf,
+                body={"patient_data": compact},
+            )
+            self.assertTrue(status.startswith("201"), body)
+
+    def test_stale_context_setting_does_not_block_a_reloaded_model(self):
+        # Модель перезагрузили с большим контекстом: сохранённое значение устарело,
+        # и отказывать по нему нельзя — иначе врач не сможет запустить валидный случай.
+        with tempfile.TemporaryDirectory() as tmp:
+            app = self.make_app(tmp)
+            cookie, csrf = login(app)
+            with connect(Path(tmp) / "cvd.sqlite3") as conn:
+                conn.execute("UPDATE app_settings SET value = '8192' WHERE key = 'lm_studio_context_tokens'")
+                conn.execute("UPDATE app_settings SET value = '4096' WHERE key = 'lm_studio_max_tokens'")
+
+            filler = "детальное описание клинической картины с уточнениями и динамикой. " * 60
+            case = {
+                "GENERAL_INFO": {"Patient_ID": "RELOADED-1", "Age": 66, "Sex": "female"},
+                "COMPLAINTS": {"Main_complaint": filler[:3900], "Onset_context": filler[:3900]},
+                "PAST_EVENTS": {"Prior_MI": filler[:3900]},
+            }
+            reloaded_catalog = {
+                "api_version": "v1",
+                "models": [{
+                    "id": "healtheart-cvd-engine",
+                    "state": "loaded",
+                    "loaded_context_length": 32768,
+                    "max_context_length": 131072,
+                }],
+            }
+            with patch("cvd_web.handlers_ai.list_lm_models", return_value=reloaded_catalog):
+                status, _, body = call_wsgi(
+                    app,
+                    "/api/model/diagnose/jobs",
+                    method="POST",
+                    cookie=cookie,
+                    csrf=csrf,
+                    body={"patient_data": case},
+                )
+            self.assertTrue(status.startswith("201"), body)
+            # Свежий контекст сохраняется, чтобы следующая проверка была мгновенной.
+            with connect(Path(tmp) / "cvd.sqlite3") as conn:
+                stored = conn.execute(
+                    "SELECT value FROM app_settings WHERE key = 'lm_studio_context_tokens'"
+                ).fetchone()["value"]
+            self.assertEqual(stored, "32768")
+
+    def test_unreachable_model_does_not_produce_an_invented_size_rejection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            app = self.make_app(tmp)
+            cookie, csrf = login(app)
+            with connect(Path(tmp) / "cvd.sqlite3") as conn:
+                conn.execute("UPDATE app_settings SET value = '8192' WHERE key = 'lm_studio_context_tokens'")
+
+            filler = "описание " * 900
+            case = {"GENERAL_INFO": {"Patient_ID": "OFFLINE-1"}, "COMPLAINTS": {"Main_complaint": filler[:3900], "Onset_context": filler[:3900]}}
+            with patch(
+                "cvd_web.handlers_ai.list_lm_models",
+                side_effect=LMStudioManagementError("connection refused"),
+            ):
+                status, _, body = call_wsgi(
+                    app,
+                    "/api/model/diagnose/jobs",
+                    method="POST",
+                    cookie=cookie,
+                    csrf=csrf,
+                    body={"patient_data": case},
+                )
+            # Проверить размер нечем — пропускаем, врач увидит настоящую ошибку сервиса.
+            self.assertTrue(status.startswith("201"), body)
+
     def test_ai_error_messages_are_actionable_for_the_doctor(self):
         with tempfile.TemporaryDirectory() as tmp:
             app = self.make_app(tmp)
@@ -222,6 +349,13 @@ class SmokeTests(unittest.TestCase):
             )
             message = app.user_friendly_ai_error(overflow)
             self.assertIn("не помещаются в её контекст", message)
+            # Реальная формулировка LM Studio при переполнении отличается от кавычек выше.
+            real_stream_error = (
+                "LM Studio stream вернул ошибку: The number of tokens to keep from the initial "
+                "prompt is greater than the context length (n_keep: 8539>= n_ctx: 8192). "
+                "Try to load the model with a larger context length, or provide a shorter input."
+            )
+            self.assertIn("не помещаются в её контекст", app.user_friendly_ai_error(real_stream_error))
             self.assertIn("Повтор не поможет", message)
             self.assertNotIn("структур", message)
             self.assertNotIn("messages", message)

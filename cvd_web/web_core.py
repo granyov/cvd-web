@@ -28,6 +28,9 @@ PUBLIC_SETTING_KEYS = {
     "usage_notice",
     "support_contact",
     "default_theme",
+    # Нужны рабочему месту, чтобы предупредить о переполнении контекста до отправки.
+    "lm_studio_context_tokens",
+    "lm_studio_max_tokens",
 }
 
 

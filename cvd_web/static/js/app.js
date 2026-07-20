@@ -2819,6 +2819,21 @@
     pendingReviewAction = null;
   }
 
+  function estimateCaseTokens(data) {
+    // Та же эвристика, что и на сервере (примерно 3 символа на токен),
+    // плюс постоянная часть промпта — чтобы цифры в UI и в отказе совпадали.
+    const PROMPT_OVERHEAD_CHARS = 4200;
+    return Math.round((JSON.stringify(data, null, 2).length + PROMPT_OVERHEAD_CHARS) / 3);
+  }
+
+  function contextBudget() {
+    const settings = window.APP_SETTINGS || {};
+    const context = Number(settings.lm_studio_context_tokens || 0);
+    const reserve = Number(settings.lm_studio_max_tokens || 0);
+    // Место для ответа модели тоже занимает контекст.
+    return context ? Math.max(0, context - reserve) : 0;
+  }
+
   function renderReviewContent(data) {
     reviewContent.innerHTML = "";
     const missing = missingRequiredData(data);
@@ -2832,7 +2847,8 @@
       ["Случай", displayValue(getValue(data, "GENERAL_INFO.Patient_ID"))],
       ["Возраст / пол", `${displayValue(getValue(data, "GENERAL_INFO.Age"), "?")} / ${displayValue(getValue(data, "GENERAL_INFO.Sex"), "?")}`],
       ["Готовность", `${readinessPercent}%`],
-      ["Размер JSON", `${JSON.stringify(data).length} символов`]
+      // Объём в токенах понятнее размера JSON: именно он упирается в контекст модели.
+      ["Объём для модели", `~${estimateCaseTokens(data).toLocaleString("ru-RU")} токенов`]
     ];
     const cardGrid = document.createElement("div");
     cardGrid.className = "clinical-cards compact";
@@ -2847,6 +2863,23 @@
       cardGrid.appendChild(card);
     });
     reviewContent.appendChild(cardGrid);
+    // Переполнение контекста ловим до отправки: иначе врач ждёт минуту ради ошибки.
+    const budget = contextBudget();
+    const estimate = estimateCaseTokens(data);
+    const overflows = Boolean(budget) && estimate > budget;
+    if (confirmReviewButton) {
+      confirmReviewButton.disabled = overflows;
+      confirmReviewButton.title = overflows ? "Случай не помещается в контекст модели" : "";
+    }
+    if (overflows) {
+      const warning = document.createElement("div");
+      warning.className = "notice error-note";
+      warning.textContent =
+        `Случай не поместится в контекст модели: примерно ${estimate.toLocaleString("ru-RU")} токенов ` +
+        `при доступных ${budget.toLocaleString("ru-RU")}. Сократите объёмные текстовые поля ` +
+        "(анамнез, описания исследований) или попросите администратора увеличить контекст модели.";
+      reviewContent.appendChild(warning);
+    }
     reviewContent.appendChild(reviewList("Не хватает для полной готовности", missing.map(([, label]) => label), "Все ключевые поля заполнены."));
     reviewContent.appendChild(reviewList("Сигналы", signals, "Явных сигналов по заполненным числовым данным нет."));
     const pre = document.createElement("pre");

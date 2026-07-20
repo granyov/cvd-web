@@ -304,7 +304,12 @@ SCHEMA_MIGRATIONS = [
     "0012_q8_streaming_defaults",
     "0013_text_preparation_jobs",
     "0014_prompt_v5_treatment_recommendations",
+    "0015_active_prompt_version_follows_template",
 ]
+
+# Прежние дефолтные значения active_prompt_version. Миграция 0014 обновляла шаблон,
+# но не версию, поэтому анализы на промпте v5 помечались как v4.
+LEGACY_PROMPT_VERSIONS = ("cvd-cds-prompt-v4", "cvd-cds-prompt-v3")
 
 # Предыдущие дефолтные шаблоны промпта. Если администратор не менял шаблон,
 # миграция подставляет актуальный; кастомные шаблоны остаются нетронутыми.
@@ -386,6 +391,7 @@ SETTINGS_KEYS = [
     "text_structuring_model",
     "lm_studio_timeout_seconds",
     "lm_studio_max_tokens",
+    "lm_studio_context_tokens",
     "lm_studio_temperature",
     "lm_studio_structured_output",
     "lm_studio_max_concurrent",
@@ -428,6 +434,7 @@ def default_settings(config: Config) -> dict[str, tuple[str, str]]:
         "text_structuring_model": ("", "Отдельная модель подготовки текста; пустое значение использует основную модель."),
         "lm_studio_timeout_seconds": (str(config.lm_studio_timeout_seconds), "Таймаут запроса к LM Studio в секундах."),
         "lm_studio_max_tokens": (str(config.lm_studio_max_tokens), "max_tokens для ответа модели."),
+        "lm_studio_context_tokens": ("0", "Контекст загруженной модели в токенах; заполняется health-check, 0 — не проверять объём."),
         "lm_studio_temperature": (str(config.lm_studio_temperature), "temperature для запроса к LM Studio."),
         "lm_studio_structured_output": ("1", "Запрашивать JSON Schema structured output у LM Studio: 1 или 0."),
         "lm_studio_max_concurrent": ("1", "Максимальное число одновременных генераций LM Studio."),
@@ -666,6 +673,23 @@ def apply_migrations(conn: sqlite3.Connection) -> None:
             conn.execute(
                 "UPDATE app_settings SET value = ?, updated_at = ? WHERE key = 'active_prompt_template'",
                 (USER_PROMPT_TEMPLATE, utc_now()),
+            )
+
+    if "0015_active_prompt_version_follows_template" not in applied_migration_ids:
+        row = conn.execute(
+            "SELECT value FROM app_settings WHERE key = 'active_prompt_version'"
+        ).fetchone()
+        stored_version = str(row["value"]).strip() if row else ""
+        template_row = conn.execute(
+            "SELECT value FROM app_settings WHERE key = 'active_prompt_template'"
+        ).fetchone()
+        stored_template = str(template_row["value"]).strip() if template_row else ""
+        # Версию поднимаем только когда шаблон действительно актуальный и версия
+        # осталась прежней дефолтной: кастомные значения администратора не трогаем.
+        if stored_version in LEGACY_PROMPT_VERSIONS and stored_template == USER_PROMPT_TEMPLATE.strip():
+            conn.execute(
+                "UPDATE app_settings SET value = ?, updated_at = ? WHERE key = 'active_prompt_version'",
+                (MODEL_PROMPT_VERSION, utc_now()),
             )
 
     applied_at = utc_now()

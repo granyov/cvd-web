@@ -10,9 +10,10 @@ from contextlib import contextmanager
 from typing import Any
 
 from .auth import utc_now
-from .db import audit, connect, row_to_dict, rows_to_dicts
+from .db import audit, connect, row_to_dict, rows_to_dicts, update_app_settings
 from .inference_queue import InferenceQueueError
-from .lmstudio import LMStudioError, call_lm_studio
+from .lmstudio import LMStudioError, call_lm_studio, estimate_prompt_tokens
+from .lmstudio_models import LMStudioManagementError, list_lm_models
 from .privacy import deidentify_patient_data
 from .quality import has_clinical_input, patient_data_changes, patient_data_hash
 from .text_structuring import TEXT_MAX_INPUT_CHARS, TEXT_STRUCTURING_VERSION, call_text_structuring
@@ -25,6 +26,60 @@ class AiMixin:
         settings = self.load_settings()
         self.configure_inference_queue(settings)
         return self.json_response({"queue": self.inference_queue.snapshot(user_id=user["id"])})
+
+    def case_context_usage(self, patient_data: dict[str, Any], settings: dict[str, str]) -> dict[str, Any]:
+        """Оценка объёма случая относительно контекста модели."""
+        estimate = estimate_prompt_tokens(patient_data, settings.get("active_prompt_template") or None)
+        context_limit = self.setting_int(settings, "lm_studio_context_tokens", 0)
+        reserve = self.setting_int(settings, "lm_studio_max_tokens", 1536)
+        # Ответу модели тоже нужно место в контексте, поэтому вычитаем max_tokens.
+        available = max(0, context_limit - reserve) if context_limit else 0
+        return {
+            "estimated_tokens": estimate,
+            "context_tokens": context_limit,
+            "available_tokens": available,
+            "fits": not available or estimate <= available,
+        }
+
+    def refresh_context_tokens(self, settings: dict[str, str]) -> int | None:
+        """Перечитывает контекст загруженной модели у LM Studio.
+
+        Возвращает None, если проверить не удалось: тогда задание пропускаем,
+        чтобы врач получил настоящую ошибку сервиса, а не выдуманный отказ.
+        """
+        api_url = settings.get("lm_studio_api_url") or self.config.lm_studio_api_url
+        selected_model = settings.get("lm_studio_model") or self.config.lm_studio_model
+        try:
+            catalog = list_lm_models(api_url, timeout_seconds=10, extra_headers=self.ai_gateway_headers(settings))
+        except LMStudioManagementError:
+            return None
+        selected = next((item for item in catalog["models"] if item["id"] == selected_model), None)
+        context = selected.get("loaded_context_length") if selected else None
+        if not context:
+            return None
+        with connect(self.config.db_path) as conn:
+            update_app_settings(conn, {"lm_studio_context_tokens": str(int(context))})
+        return int(context)
+
+    def ensure_case_fits_context(self, patient_data: dict[str, Any], settings: dict[str, str]) -> None:
+        usage = self.case_context_usage(patient_data, settings)
+        if usage["fits"]:
+            return
+        # Сохранённый контекст мог устареть: модель могли перезагрузить с другим размером.
+        # Отказываем только по свежему, подтверждённому значению.
+        refreshed = self.refresh_context_tokens(settings)
+        if refreshed is None:
+            return
+        usage = self.case_context_usage(patient_data, {**settings, "lm_studio_context_tokens": str(refreshed)})
+        if usage["fits"]:
+            return
+        raise HTTPError(
+            413,
+            "Случай слишком большой для текущей модели: примерно "
+            f"{usage['estimated_tokens']} токенов при доступных {usage['available_tokens']}. "
+            "Сократите объёмные текстовые поля (анамнез, описания исследований) "
+            "или попросите администратора увеличить контекст модели.",
+        )
 
     def user_friendly_ai_error(self, message: str | None) -> str:
         """Техническая ошибка -> действие для врача.
@@ -239,6 +294,7 @@ class AiMixin:
             message="Слишком много запросов к модели",
         )
         patient_data, case_id = self.parse_diagnosis_payload(request, user, settings)
+        self.ensure_case_fits_context(patient_data, settings)
         now = utc_now()
         with connect(self.config.db_path) as conn:
             self.enforce_user_ai_job_limit(conn, user["id"], settings)

@@ -234,6 +234,21 @@ def build_chat_request(
     return request_body
 
 
+def estimate_prompt_tokens(patient_data: dict[str, Any], prompt_template: str | None = None) -> int:
+    """Грубая оценка размера промпта в токенах.
+
+    Точное число знает только токенизатор модели, но для предупреждения о
+    переполнении контекста достаточно оценки: для смеси русского текста и JSON
+    один токен - примерно 3 символа. Оценка намеренно консервативная (округление
+    вверх), чтобы скорее предупредить лишний раз, чем пропустить переполнение.
+    """
+    cleaned = remove_empty(patient_data) or {}
+    patient_json = json.dumps(cleaned, ensure_ascii=False, indent=2)
+    template = prompt_template or USER_PROMPT_TEMPLATE
+    total_chars = len(SYSTEM_PROMPT) + len(template) + len(patient_json)
+    return int(total_chars / 3) + 1
+
+
 def extract_json_from_text(text: str) -> dict[str, Any] | None:
     if not text:
         return None
