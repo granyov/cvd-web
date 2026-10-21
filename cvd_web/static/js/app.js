@@ -2841,7 +2841,11 @@
     const ready = scenarioRequired.length - missing.length;
     const readinessPercent = Math.round((ready / scenarioRequired.length) * 100);
     const signalRows = Array.from(signalsPanel.querySelectorAll(".signal-row"));
-    const signals = signalRows.map((node) => node.textContent.trim());
+    // Заголовок и пояснение сигнала — соседние элементы; общий textContent склеивал их без пробела.
+    const signals = signalRows.map((node) => Array.from(node.children)
+      .map((child) => child.textContent.trim())
+      .filter(Boolean)
+      .join(" — ") || node.textContent.trim());
     const cards = [
       ["Пациент", displayValue(getValue(data, "GENERAL_INFO.Full_name"))],
       ["Случай", displayValue(getValue(data, "GENERAL_INFO.Patient_ID"))],

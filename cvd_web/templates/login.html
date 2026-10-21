@@ -10,23 +10,23 @@
 <body class="auth-page" data-theme="{{default_theme}}">
   <main class="auth-card">
     <div class="auth-card-head">
-      <div>
-        <h1>{{app_name}}</h1>
-      </div>
+      <img class="auth-icon" src="/static/favicon.svg" alt="">
+      <h1>{{app_name}}</h1>
+      <p>Войдите, чтобы продолжить</p>
       <button type="button" data-theme-toggle>Тема</button>
     </div>
     <form id="loginForm">
-      <div class="field">
-        <label for="email">Email</label>
-        <input id="email" name="email" type="email" autocomplete="username" required>
+      <div class="auth-fields">
+        <div class="field">
+          <label for="email">Email</label>
+          <input id="email" name="email" type="email" autocomplete="username" required>
+        </div>
+        <div class="field">
+          <label for="password">Пароль</label>
+          <input id="password" name="password" type="password" autocomplete="current-password" required>
+        </div>
       </div>
-      <div class="field">
-        <label for="password">Пароль</label>
-        <input id="password" name="password" type="password" autocomplete="current-password" required>
-      </div>
-      <div class="toolbar" style="margin-top: 14px;">
-        <button class="primary" type="submit">Войти</button>
-      </div>
+      <button class="primary auth-submit" type="submit">Войти</button>
       <p id="loginError" class="muted" role="alert"></p>
     </form>
   </main>

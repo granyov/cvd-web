@@ -12,9 +12,11 @@
   <header class="topbar">
     <div class="brand">{{app_name}} <span class="pill">{{app_version}}</span></div>
     <nav class="nav">
-      <a class="nav-link" href="/app">Рабочее место</a>
-      <a class="nav-link active" href="/cases">Кейсы и история</a>
-      <a id="adminLink" class="nav-link hidden" href="/admin">Админка</a>
+      <div class="nav-tabs">
+        <a class="nav-link" href="/app">Рабочее место</a>
+        <a class="nav-link active" href="/cases">Кейсы и история</a>
+        <a id="adminLink" class="nav-link hidden" href="/admin">Админка</a>
+      </div>
       <div class="user-menu" data-menu>
         <button type="button" class="user-menu-button" data-menu-toggle aria-haspopup="true" aria-expanded="false">
           <span id="userLabel"></span>
@@ -55,11 +57,13 @@
     </section>
 
     <section class="panel records-panel">
-      <div class="records-nav" role="tablist" aria-label="Разделы архива">
-        <button type="button" class="records-tab active" data-library-view="cases" role="tab">Кейсы</button>
-        <button type="button" class="records-tab" data-library-view="results" role="tab">Результаты</button>
-        <button type="button" class="records-tab" data-library-view="imports" role="tab">Импорты</button>
-        <button type="button" class="records-tab" data-library-view="preparations" role="tab">Подготовка AI</button>
+      <div class="records-nav">
+        <div class="segmented" role="tablist" aria-label="Разделы архива">
+          <button type="button" class="records-tab active" data-library-view="cases" role="tab">Кейсы</button>
+          <button type="button" class="records-tab" data-library-view="results" role="tab">Результаты</button>
+          <button type="button" class="records-tab" data-library-view="imports" role="tab">Импорты</button>
+          <button type="button" class="records-tab" data-library-view="preparations" role="tab">Подготовка AI</button>
+        </div>
         <span class="records-nav-spacer"></span>
         <button type="button" id="refreshLibraryButton">Обновить</button>
       </div>
