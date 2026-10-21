@@ -21,12 +21,17 @@ jobs:
       - name: Python tests
         run: python -m unittest discover -s tests -v
       - name: JavaScript tests
-        run: node tests/test_patient_transfer.js
+        run: |
+          node tests/test_patient_transfer.js
+          node tests/test_clinical_quality.js
+          node tests/test_common_ui.js
       - name: Static checks
         run: |
           python -m compileall -q cvd_web
           node --check cvd_web/static/js/app.js
           node --check cvd_web/static/js/admin.js
+          node --check cvd_web/static/js/cases.js
+          node --check cvd_web/static/js/common.js
           bash -n install.sh
       - name: Installer smoke test
         run: |

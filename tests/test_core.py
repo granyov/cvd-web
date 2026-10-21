@@ -122,6 +122,18 @@ class CoreTests(unittest.TestCase):
         self.assertNotEqual(patient_data_hash(patient_data), patient_data_hash(changed_clinical_data))
         self.assertFalse(has_clinical_input({"MODEL_OUTPUT": {"Final_model_diagnosis": "old"}}))
         self.assertTrue(has_clinical_input({"GENERAL_INFO": {"Patient_ID": "Q-2"}}))
+
+    def test_troponin_signal_warns_only_above_reference(self):
+        def troponin_signals(value):
+            quality = case_quality_summary({"LABS_CARDIAC_MARKERS": {"Troponin_ng_L": value}})
+            return [signal for signal in quality["signals"] if "Тропонин" in signal["title"]]
+
+        within = troponin_signals(9)
+        self.assertEqual([signal["kind"] for signal in within], ["info"])
+        above = troponin_signals(48)
+        self.assertEqual([signal["kind"] for signal in above], ["warning"])
+        self.assertEqual(troponin_signals(None), [])
+        self.assertEqual(case_quality_summary({"LABS_CARDIAC_MARKERS": {"Troponin_ng_L": 9}})["critical_signals"], 0)
         changes = patient_data_changes({"GENERAL_INFO": {"Age": 70}}, {"GENERAL_INFO": {"Age": 71, "Sex": "female"}})
         self.assertEqual([item["path"] for item in changes], ["GENERAL_INFO.Sex", "GENERAL_INFO.Age"])
         self.assertEqual(changes[1]["kind"], "changed")

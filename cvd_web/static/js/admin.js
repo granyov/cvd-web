@@ -90,30 +90,11 @@
 
   initCollapsiblePanels();
 
-  function applyAdminMode(mode) {
-    const nextMode = ["admin", "researcher", "doctor"].includes(mode) ? mode : "admin";
-    document.body.dataset.interfaceMode = nextMode;
-    try { localStorage.setItem("cvd:admin-mode", nextMode); } catch (_) {}
-    document.getElementById("adminModeSelect")?.querySelectorAll("option").forEach((option) => {
-      option.selected = option.value === nextMode;
-    });
-  }
+  // Админка целиком техническая: отдельная «плотность» с режимом врача только прятала нужные разделы.
+  document.body.dataset.interfaceMode = "admin";
 
-  function initAdminMode() {
-    let mode = "admin";
-    try { mode = localStorage.getItem("cvd:admin-mode") || "admin"; } catch (_) {}
-    applyAdminMode(mode);
-    document.getElementById("adminModeSelect")?.addEventListener("change", (event) => applyAdminMode(event.target.value));
-  }
-
-  initAdminMode();
-
-  function toast(message) {
-    const node = document.createElement("div");
-    node.className = "toast";
-    node.textContent = message;
-    document.body.appendChild(node);
-    setTimeout(() => node.remove(), 3200);
+  function toast(message, options) {
+    return window.CVDUI.toast(message, options);
   }
 
   async function api(path, options = {}) {
@@ -755,7 +736,15 @@
   }
 
   async function resetUserPassword(userId, email) {
-    const password = window.prompt(`Новый временный пароль для ${email}, минимум 15 символов`);
+    const password = await window.CVDUI.prompt({
+      title: "Сброс пароля",
+      message: `Временный пароль для ${email}. Пользователь сменит его при следующем входе.`,
+      label: "Новый временный пароль",
+      type: "password",
+      autocomplete: "new-password",
+      minLength: 15,
+      confirmLabel: "Сбросить пароль"
+    });
     if (!password) return;
     await api(`/api/admin/users/${userId}/password`, {
       method: "POST",
@@ -1068,7 +1057,13 @@
   }
 
   async function restoreBackup(filename) {
-    if (!window.confirm(`Восстановить базу из ${filename}? Текущая база будет сохранена как защитная копия.`)) return;
+    const confirmed = await window.CVDUI.confirm({
+      title: "Восстановить базу?",
+      message: `База будет заменена копией ${filename}. Текущая база сохранится как защитная копия.`,
+      confirmLabel: "Восстановить",
+      destructive: true
+    });
+    if (!confirmed) return;
     const response = await api("/api/admin/restore", {method: "POST", body: JSON.stringify({filename})});
     backupStatus.textContent = `Восстановлено из ${response.restored_from}; защитная копия: ${response.safety_backup}`;
     toast("База восстановлена из резервной копии");

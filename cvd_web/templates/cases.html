@@ -22,6 +22,9 @@
           <span id="userLabel"></span>
         </button>
         <div class="dropdown-menu hidden" data-menu-panel>
+          <button type="button" class="menu-switch" data-technical-toggle role="menuitemcheckbox" aria-checked="false" title="Модели, метрики архива и служебные данные">
+            <span>Технические данные</span><span class="switch" aria-hidden="true"></span>
+          </button>
           <button type="button" data-theme-toggle>Тёмная тема</button>
           <button id="logoutButton" type="button">Выйти</button>
         </div>
@@ -48,9 +51,8 @@
       <div class="action-queue-head">
         <div>
           <h2 id="actionQueueTitle">Рабочий список смены</h2>
-          <span class="muted">Новые кейсы, активная очередь AI, проверка врача и завершённые случаи.</span>
+          <span class="muted">Нажмите на стадию, чтобы показать её кейсы в списке ниже.</span>
         </div>
-        <button type="button" id="showAttentionCasesButton">К проверке</button>
       </div>
       <div id="worklistStages" class="worklist-stages" aria-label="Статусы рабочего списка"></div>
       <div id="actionQueueList" class="action-queue-list"></div>
@@ -74,13 +76,8 @@
       <section id="library-cases" class="library-view records-body">
         <div class="records-controls">
           <input id="caseSearchInput" type="search" autocomplete="off" placeholder="Название, ID пациента или номер кейса" aria-label="Поиск по кейсам">
-          <select id="caseAnalysisFilter" aria-label="Фильтр кейсов по результатам">
+          <select id="caseAnalysisFilter" aria-label="Дополнительный фильтр кейсов">
             <option value="">Все кейсы</option>
-            <option value="new">Новые</option>
-            <option value="in_progress">В работе</option>
-            <option value="waiting_ai">Ожидают AI</option>
-            <option value="needs_review">Нужна проверка</option>
-            <option value="done">Готово</option>
             <option value="attention">Требуют внимания</option>
             <option value="ready">Готовы к AI</option>
             <option value="incomplete">Неполные данные</option>
@@ -113,10 +110,16 @@
                 </div>
                 <div class="toolbar record-actions">
                   <a id="editCaseLink" class="button primary-link" href="/app">Открыть в работе</a>
-                  <button type="button" id="caseResultButton" title="Открыть последний результат">Результат</button>
-                  <button type="button" id="copyCaseButton" title="Создать копию кейса">Копия</button>
-                  <button type="button" id="fhirCaseButton" title="Скачать FHIR">FHIR</button>
-                  <button type="button" id="deleteCaseButton" class="danger">Удалить</button>
+                  <button type="button" id="caseResultButton" title="Открыть последнее заключение">Заключение</button>
+                  <div class="more-menu" data-menu>
+                    <button type="button" data-menu-toggle aria-haspopup="true" aria-expanded="false">Ещё</button>
+                    <div class="dropdown-menu hidden" data-menu-panel>
+                      <button type="button" id="copyCaseButton">Создать копию для повторного анализа</button>
+                      <button type="button" id="fhirCaseButton">Скачать FHIR R4</button>
+                      <hr class="menu-separator">
+                      <button type="button" id="deleteCaseButton" class="menu-danger">Удалить кейс</button>
+                    </div>
+                  </div>
                 </div>
               </div>
               <div id="caseQuality" class="record-quality"></div>
@@ -220,6 +223,7 @@
   <div id="toastRegion" aria-live="polite"></div>
   <script>window.CURRENT_USER = {{user_json}}; window.APP_SETTINGS = {{settings_json}};</script>
   <script src="/static/js/theme.js"></script>
+  <script src="/static/js/common.js"></script>
   <script src="/static/js/clinical-quality.js"></script>
   <script src="/static/js/cases.js"></script>
 </body>

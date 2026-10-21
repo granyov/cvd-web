@@ -894,7 +894,7 @@ class AdminMixin:
             quality = case_quality_summary(json.loads(row["data_json"]))
             completeness.append(quality["completeness_percent"])
             readiness.append(quality["readiness_percent"])
-            signal_count += len(quality["signals"])
+            signal_count += sum(1 for signal in quality["signals"] if signal.get("kind") != "info")
         quality_summary = {
             "avg_completeness_percent": round(sum(completeness) / len(completeness)) if completeness else 0,
             "avg_readiness_percent": round(sum(readiness) / len(readiness)) if readiness else 0,
@@ -1319,7 +1319,7 @@ class AdminMixin:
             quality = case_quality_summary(data)
             total_completeness += quality["completeness_percent"]
             total_readiness += quality["readiness_percent"]
-            signal_count += len(quality["signals"])
+            signal_count += sum(1 for signal in quality["signals"] if signal.get("kind") != "info")
             cases.append({
                 "id": row["id"],
                 "title": row["title"],

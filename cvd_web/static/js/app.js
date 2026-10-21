@@ -6,13 +6,23 @@
   const jsonPreview = document.getElementById("jsonPreview");
   const modelPreview = document.getElementById("modelPreview");
   const modelStructured = document.getElementById("modelStructured");
-  const saveStatus = document.getElementById("saveStatus");
-  const modelStatus = document.getElementById("modelStatus");
-  const queueStatus = document.getElementById("queueStatus");
+  const workflowCockpit = document.getElementById("workflowCockpit");
   const caseStatusText = document.getElementById("caseStatusText");
+  const saveStateText = document.getElementById("saveStateText");
   const readinessStatusText = document.getElementById("readinessStatusText");
   const aiStatusText = document.getElementById("aiStatusText");
   const workflowProgressBar = document.getElementById("workflowProgressBar");
+  const nextActionButton = document.getElementById("nextActionButton");
+  const workspaceStart = document.getElementById("workspaceStart");
+  const formArea = document.getElementById("formArea");
+  const sectionNav = document.getElementById("sectionNav");
+  const missingOnlyToggle = document.getElementById("missingOnlyToggle");
+  const missingOnlyNotice = document.getElementById("missingOnlyNotice");
+  const readinessCount = document.getElementById("readinessCount");
+  const modelResultSubtitle = document.getElementById("modelResultSubtitle");
+  const commandPalette = document.getElementById("commandPalette");
+  const commandPaletteInput = document.getElementById("commandPaletteInput");
+  const commandPaletteList = document.getElementById("commandPaletteList");
   const taskCountBadge = document.getElementById("taskCountBadge");
   const activeJobsLine = document.getElementById("activeJobsLine");
   const openTaskCenterButton = document.getElementById("openTaskCenterButton");
@@ -23,7 +33,6 @@
   const patientSnapshot = document.getElementById("patientSnapshot");
   const readinessPanel = document.getElementById("readinessPanel");
   const signalsPanel = document.getElementById("signalsPanel");
-  const nextActionText = document.getElementById("nextActionText");
   const diagnoseButton = document.getElementById("diagnoseButton");
   const passwordModal = document.getElementById("passwordModal");
   const passwordForm = document.getElementById("passwordForm");
@@ -49,21 +58,14 @@
   const structureTextStatus = document.getElementById("structureTextStatus");
   const structureTextError = document.getElementById("structureTextError");
   const exportHtmlButton = document.getElementById("exportHtmlButton");
-  const resultReadyBanner = document.getElementById("resultReadyBanner");
-  const viewResultButton = document.getElementById("viewResultButton");
   const draftBanner = document.getElementById("draftBanner");
   const draftBannerText = document.getElementById("draftBannerText");
   const restoreDraftButton = document.getElementById("restoreDraftButton");
   const dismissDraftButton = document.getElementById("dismissDraftButton");
-  const jumpMissingButton = document.getElementById("jumpMissingButton");
   const lastModelSummary = document.getElementById("lastModelSummary");
   const saveCaseButton = document.getElementById("saveCaseButton");
   const scenarioSelect = document.getElementById("scenarioSelect");
   const scenarioHint = document.getElementById("scenarioHint");
-  const quickFieldsGrid = document.getElementById("quickFieldsGrid");
-  const quickWorkspaceToggle = document.getElementById("quickWorkspaceToggle");
-  const quickWorkspaceSummary = document.getElementById("quickWorkspaceSummary");
-  const quickMissingButton = document.getElementById("quickMissingButton");
   const fieldSearchInput = document.getElementById("fieldSearchInput");
   const fieldSearchResults = document.getElementById("fieldSearchResults");
   const doctorDiagnosisWorkbench = document.getElementById("doctorDiagnosisWorkbench");
@@ -71,7 +73,6 @@
   const acceptModelDraftButton = document.getElementById("acceptModelDraftButton");
   const copyModelDiagnosisButton = document.getElementById("copyModelDiagnosisButton");
   const openModelReportButton = document.getElementById("openModelReportButton");
-  const markModelIssueButton = document.getElementById("markModelIssueButton");
   const importDecisionPanel = document.getElementById("importDecisionPanel");
   const importFactReview = document.getElementById("importFactReview");
   const importDiffDetails = document.getElementById("importDiffDetails");
@@ -97,8 +98,29 @@
   let hasUnsavedChanges = false;
   let passwordChangeForced = false;
   let selectedScenarioKey = "general";
-  let quickWorkspaceExpanded = false;
   let lastModelParsed = null;
+  let lastModelMeta = {};
+  let modelStatusText = "AI не запускался";
+  let modelStatusKind = "";
+  let aiRunning = false;
+  let resultOpened = false;
+  let manualEntry = false;
+  let missingOnly = false;
+  // Автосохранение: пауза после ввода и минимальный интервал между записями,
+  // потому что каждое сохранение кейса попадает в журнал аудита.
+  const autosaveDelayMs = 2500;
+  const autosaveMinIntervalMs = 15000;
+  let autosaveTimer = null;
+  let saveInFlight = null;
+  let lastSavedAt = null;
+  let lastSaveAttemptAt = 0;
+  let saveErrorText = "";
+  // Растёт при переключении кейса: ответ сохранения от прежнего кейса не должен менять текущий.
+  let caseSession = 0;
+  const sectionNodes = new Map();
+  const groupHeaderNodes = new Map();
+  let extraSectionsNode = null;
+  let sectionObserver = null;
   const baseDocumentTitle = document.title;
   const knownJobStatuses = new Map();
   let jobStatusesPrimed = false;
@@ -262,12 +284,8 @@
   ];
   const scenarioByKey = new Map(clinicalScenarios.map((scenario) => [scenario.key, scenario]));
 
-  function toast(message) {
-    const node = document.createElement("div");
-    node.className = "toast";
-    node.textContent = message;
-    document.body.appendChild(node);
-    setTimeout(() => node.remove(), 3200);
+  function toast(message, options) {
+    return window.CVDUI.toast(message, options);
   }
 
   function pill(text, kind = "") {
@@ -277,28 +295,52 @@
     return node;
   }
 
-  function setSaveState(text, unsaved) {
+  // Новый кейс создаётся на сервере автоматически, только когда в нём есть что-то опознаваемое:
+  // иначе случайное нажатие клавиши плодило бы пустые кейсы в архиве.
+  function canAutoCreateCase(data) {
+    return ["GENERAL_INFO.Patient_ID", "GENERAL_INFO.Full_name", "COMPLAINTS.Main_complaint"]
+      .some((path) => isFilled(getValue(data, path)));
+  }
+
+  function setSaveState(_label, unsaved) {
     hasUnsavedChanges = Boolean(unsaved);
-    saveStatus.textContent = text;
-    saveStatus.classList.toggle("warning", hasUnsavedChanges);
-    saveCaseButton?.classList.toggle("attention", hasUnsavedChanges);
+    if (hasUnsavedChanges) scheduleAutosave();
     syncStatusBar();
   }
 
+  function saveStateLabel(data) {
+    if (saveErrorText) return [`не сохранено: ${saveErrorText}`, "error"];
+    if (saveInFlight) return ["сохранение…", ""];
+    if (hasUnsavedChanges) {
+      return currentCaseId || canAutoCreateCase(data)
+        ? ["изменения сохранятся автоматически", ""]
+        : ["черновик · сохранится после ввода ID, ФИО или жалобы", "warning"];
+    }
+    if (lastSavedAt) return [`сохранено ${window.CVDUI.relativeTime(lastSavedAt)}`, "ok"];
+    return currentCaseId ? ["сохранён", "ok"] : ["черновик", ""];
+  }
+
   function syncStatusBar(data = null) {
-    if (!caseStatusText && !readinessStatusText && !aiStatusText && !workflowProgressBar) return;
+    if (!caseStatusText) return;
     const snapshot = data || (form ? collectData() : {});
     const required = scenarioRequiredDataPoints();
     const missing = missingRequiredData(snapshot);
     const ready = required.length - missing.length;
     const percent = required.length ? Math.round((ready / required.length) * 100) : 0;
-    if (caseStatusText) {
-      caseStatusText.textContent = currentCaseId
-        ? hasUnsavedChanges ? `Кейс #${currentCaseId} изменён` : `Кейс #${currentCaseId} сохранён`
-        : hasUnsavedChanges ? "Новый кейс с черновиком" : "Новый кейс";
+    caseStatusText.textContent = currentCaseId ? `Кейс #${currentCaseId}` : "Новый кейс";
+    if (saveStateText) {
+      const [label, kind] = saveStateLabel(snapshot);
+      saveStateText.textContent = label;
+      saveStateText.className = `cockpit-meta ${kind}`.trim();
     }
-    if (readinessStatusText) readinessStatusText.textContent = `${percent}% · ${ready}/${required.length}`;
-    if (aiStatusText) aiStatusText.textContent = modelStatus?.textContent || "не запускался";
+    if (readinessStatusText) {
+      readinessStatusText.textContent = `ключевые ${ready} из ${required.length}`;
+      readinessStatusText.className = `cockpit-meta ${missing.length ? "" : "ok"}`.trim();
+    }
+    if (aiStatusText) {
+      aiStatusText.textContent = modelStatusText;
+      aiStatusText.className = `cockpit-meta ${modelStatusKind}`.trim();
+    }
     if (workflowProgressBar) {
       workflowProgressBar.style.width = `${percent}%`;
       workflowProgressBar.classList.toggle("ok", percent === 100);
@@ -306,10 +348,44 @@
   }
 
   function setModelStatus(text, kind = "") {
-    if (!modelStatus) return;
-    modelStatus.textContent = text;
-    modelStatus.className = `pill ${kind}`.trim();
+    modelStatusText = text;
+    modelStatusKind = kind;
     syncStatusBar();
+  }
+
+  function scheduleAutosave() {
+    window.clearTimeout(autosaveTimer);
+    if (!hasUnsavedChanges) return;
+    const sinceLastAttempt = Date.now() - lastSaveAttemptAt;
+    const delay = Math.max(autosaveDelayMs, autosaveMinIntervalMs - sinceLastAttempt);
+    autosaveTimer = window.setTimeout(() => {
+      autosave().catch(() => {});
+    }, delay);
+  }
+
+  async function autosave() {
+    if (!hasUnsavedChanges) return;
+    if (!currentCaseId && !canAutoCreateCase(collectData())) {
+      syncStatusBar();
+      return;
+    }
+    try {
+      await saveCase({silent: true});
+    } catch (err) {
+      saveErrorText = window.CVDUI.humanizeError(err).replace(/\.$/, "");
+      syncStatusBar();
+      // Сеть могла моргнуть: следующая попытка — через обычный интервал автосохранения.
+      scheduleAutosave();
+    }
+  }
+
+  // Перед сменой кейса незаписанные изменения сохраняются, а не теряются.
+  async function flushAutosave() {
+    window.clearTimeout(autosaveTimer);
+    if (saveInFlight) await saveInFlight.catch(() => {});
+    if (hasUnsavedChanges && (currentCaseId || canAutoCreateCase(collectData()))) {
+      await saveCase({silent: true});
+    }
   }
 
   function openModalElement(modal, focusTarget = null) {
@@ -408,116 +484,6 @@
 
   function scenarioMissingRequiredData(data) {
     return scenarioRequiredDataPoints().filter(([path]) => !isFilled(getValue(data, path)));
-  }
-
-  function quickInputValue(path, data) {
-    const value = getValue(data, path);
-    return Array.isArray(value) ? value.join("; ") : value ?? "";
-  }
-
-  function buildQuickControl(meta, data) {
-    const field = meta.field;
-    let input;
-    if (field.type === "textarea") {
-      input = document.createElement("textarea");
-      input.rows = 2;
-    } else if (field.type === "select") {
-      input = document.createElement("select");
-      (field.options || []).forEach(([value, text]) => {
-        const option = document.createElement("option");
-        option.value = value;
-        option.textContent = text;
-        input.appendChild(option);
-      });
-    } else {
-      input = document.createElement("input");
-      input.type = field.type || "text";
-      if (field.step) input.step = field.step;
-      if (field.min !== undefined) input.min = field.min;
-      if (field.max !== undefined) input.max = field.max;
-    }
-    input.dataset.quickPath = meta.path;
-    input.value = quickInputValue(meta.path, data);
-    if (field.placeholder) input.placeholder = field.placeholder;
-    input.addEventListener("input", () => {
-      setFieldValue(meta.path, input.value);
-      if (meta.path === "GENERAL_INFO.Height_cm" || meta.path === "GENERAL_INFO.Weight_kg") calculateBMI();
-      const snapshot = updatePreview();
-      scheduleDraftSave(snapshot);
-      hideRecentCases();
-      setHtmlExportAvailable(false);
-      setSaveState(currentCaseId ? `кейс #${currentCaseId} изменён` : "не сохранено", true);
-    });
-    input.addEventListener("focus", () => {
-      const realInput = form.elements[meta.path];
-      realInput?.closest("details.section")?.classList.add("linked-highlight");
-    });
-    input.addEventListener("blur", () => {
-      form.elements[meta.path]?.closest("details.section")?.classList.remove("linked-highlight");
-    });
-    return input;
-  }
-
-  function renderQuickWorkspace(data = collectData()) {
-    if (!quickFieldsGrid) return;
-    const scenario = selectedScenario();
-    quickFieldsGrid.innerHTML = "";
-    const paths = uniquePaths(scenario.quickPaths);
-    // Профиль может добавлять обязательные поля — врач должен видеть, почему меняется готовность.
-    const extraRequired = scenario.requiredPaths.length;
-    if (scenarioHint) {
-      scenarioHint.textContent = extraRequired ? `+${extraRequired} к обязательным` : "";
-      scenarioHint.title = extraRequired
-        ? `${scenario.hint} Добавлено в обязательные: ${scenario.requiredPaths.map(([, label]) => label).join(", ")}.`
-        : scenario.hint;
-      scenarioHint.classList.toggle("hidden", !extraRequired);
-    }
-    if (quickWorkspaceSummary) {
-      quickWorkspaceSummary.textContent = extraRequired
-        ? `${paths.length} полей · обязательные профиля: ${scenario.requiredPaths.map(([, label]) => label).join(", ")}`
-        : `${paths.length} полей для первичного анализа`;
-    }
-    paths.forEach((path) => {
-      const meta = fieldMeta(path);
-      if (!meta) return;
-      const item = document.createElement("div");
-      item.className = "quick-field";
-      item.dataset.quickField = path;
-      const label = document.createElement("label");
-      label.textContent = meta.field.label;
-      const section = document.createElement("small");
-      section.textContent = meta.section.title;
-      const control = buildQuickControl(meta, data);
-      const action = document.createElement("button");
-      action.type = "button";
-      action.title = "Открыть поле в полной анкете";
-      action.textContent = "Перейти";
-      action.addEventListener("click", () => focusFieldPath(path));
-      item.append(label, section, control, action);
-      quickFieldsGrid.appendChild(item);
-    });
-    applyQuickWorkspaceVisibility();
-  }
-
-  function syncQuickWorkspace(data) {
-    quickFieldsGrid?.querySelectorAll("[data-quick-path]").forEach((input) => {
-      if (document.activeElement === input) return;
-      input.value = quickInputValue(input.dataset.quickPath, data);
-    });
-  }
-
-  function applyQuickWorkspaceVisibility() {
-    const workspace = document.querySelector(".quick-workspace");
-    workspace?.classList.toggle("is-collapsed", !quickWorkspaceExpanded);
-    if (quickWorkspaceToggle) {
-      quickWorkspaceToggle.textContent = quickWorkspaceExpanded ? "Скрыть поля" : "Показать поля";
-      quickWorkspaceToggle.setAttribute("aria-expanded", quickWorkspaceExpanded ? "true" : "false");
-    }
-  }
-
-  function toggleQuickWorkspace() {
-    quickWorkspaceExpanded = !quickWorkspaceExpanded;
-    applyQuickWorkspaceVisibility();
   }
 
   function renderField(section, field) {
@@ -649,6 +615,7 @@
   function renderFormGroupHeader(group) {
     const header = document.createElement("div");
     header.className = "form-section-group";
+    header.dataset.group = group.key;
     const title = document.createElement("strong");
     title.textContent = group.title;
     const hint = document.createElement("span");
@@ -659,13 +626,11 @@
 
   function renderForm() {
     form.innerHTML = "";
-    let currentGroupKey = "";
+    sectionNodes.clear();
+    groupHeaderNodes.clear();
     window.CVD_SCHEMA.forEach((section, index) => {
       const group = sectionGroup(section);
-      if (group.key !== currentGroupKey) {
-        currentGroupKey = group.key;
-        form.appendChild(renderFormGroupHeader(group));
-      }
+      if (!groupHeaderNodes.has(group.key)) groupHeaderNodes.set(group.key, renderFormGroupHeader(group));
       const details = document.createElement("details");
       details.className = "section";
       details.id = `section-${section.key}`;
@@ -677,7 +642,7 @@
       heading.className = "section-summary-title";
       const number = document.createElement("span");
       number.className = "section-number";
-      number.textContent = `${sectionNumber(index)}. `;
+      number.textContent = sectionNumber(index);
       const title = document.createElement("span");
       title.textContent = section.title;
       heading.append(number, title);
@@ -693,8 +658,211 @@
 
       details.appendChild(summary);
       details.appendChild(body);
-      form.appendChild(details);
+      sectionNodes.set(section.key, details);
     });
+    extraSectionsNode = document.createElement("details");
+    extraSectionsNode.className = "extra-sections";
+    const extraSummary = document.createElement("summary");
+    const extraTitle = document.createElement("strong");
+    extraTitle.dataset.extraTitle = "1";
+    const extraHint = document.createElement("span");
+    extraHint.dataset.extraHint = "1";
+    extraSummary.append(extraTitle, extraHint);
+    const extraBody = document.createElement("div");
+    extraBody.className = "extra-sections-body";
+    extraSectionsNode.append(extraSummary, extraBody);
+    arrangeSections();
+  }
+
+  // Разделы, важные для профиля случая, всегда сверху. Остальные уходят в «Дополнительные разделы»,
+  // но раздел с уже введёнными данными остаётся на виду: импорт не должен прятать заполненное.
+  const alwaysPrimarySections = new Set(["GENERAL_INFO", "COMPLAINTS", "FINAL_DIAGNOSES"]);
+
+  function scenarioSectionKeys(scenario = selectedScenario()) {
+    const keys = new Set(alwaysPrimarySections);
+    [
+      ...scenario.quickPaths,
+      ...scenario.requiredPaths.map(([path]) => path),
+      ...requiredDataPoints.map(([path]) => path)
+    ].forEach((path) => keys.add(String(path).split(".")[0]));
+    return keys;
+  }
+
+  function arrangeSections(data = collectData()) {
+    if (!extraSectionsNode) return;
+    const primaryKeys = scenarioSectionKeys();
+    const fragment = document.createDocumentFragment();
+    const extraBody = extraSectionsNode.querySelector(".extra-sections-body");
+    const extra = [];
+    let currentGroupKey = "";
+    window.CVD_SCHEMA.forEach((section) => {
+      const node = sectionNodes.get(section.key);
+      if (!node) return;
+      const hasData = sectionFillPercent(section, data).filled > 0;
+      const primary = section.key !== "MODEL_OUTPUT" && (primaryKeys.has(section.key) || hasData);
+      node.dataset.primary = primary ? "1" : "0";
+      if (!primary) {
+        extra.push(node);
+        return;
+      }
+      const group = sectionGroup(section);
+      if (group.key !== currentGroupKey) {
+        currentGroupKey = group.key;
+        fragment.appendChild(groupHeaderNodes.get(group.key));
+      }
+      fragment.appendChild(node);
+    });
+    extraBody.replaceChildren(...extra);
+    const visibleExtra = extra.filter((node) => node.id !== "section-MODEL_OUTPUT" || !isDoctorMode()).length;
+    extraSectionsNode.querySelector("[data-extra-title]").textContent = `Дополнительные разделы · ${visibleExtra}`;
+    extraSectionsNode.querySelector("[data-extra-hint]").textContent =
+      `Не входят в профиль «${selectedScenario().title}». Раскройте, если данные есть.`;
+    extraSectionsNode.classList.toggle("hidden", visibleExtra === 0);
+    fragment.appendChild(extraSectionsNode);
+    form.replaceChildren(fragment);
+    renderSectionNav(data);
+    if (missingOnly) applyMissingOnly(data);
+  }
+
+  function sectionMissingPaths(data) {
+    const result = new Map();
+    missingRequiredData(data).forEach(([path]) => {
+      const sectionKey = String(path).split(".")[0];
+      result.set(sectionKey, (result.get(sectionKey) || 0) + 1);
+    });
+    return result;
+  }
+
+  function renderSectionNav(data = collectData()) {
+    if (!sectionNav) return;
+    sectionNav.innerHTML = "";
+    const groups = [["Разделы профиля", "1"], ["Дополнительно", "0"]];
+    groups.forEach(([title, primaryFlag]) => {
+      const entries = window.CVD_SCHEMA
+        .map((section, index) => [section, index])
+        .filter(([section]) => sectionNodes.get(section.key)?.dataset.primary === primaryFlag)
+        .filter(([section]) => section.key !== "MODEL_OUTPUT" || !isDoctorMode());
+      if (!entries.length) return;
+      const heading = document.createElement("p");
+      heading.className = "section-nav-heading";
+      heading.textContent = title;
+      sectionNav.appendChild(heading);
+      entries.forEach(([section, index]) => {
+        const link = document.createElement("button");
+        link.type = "button";
+        link.className = `section-nav-link ${primaryFlag === "0" ? "is-extra" : ""}`.trim();
+        link.dataset.navSection = section.key;
+        const number = document.createElement("span");
+        number.className = "section-nav-number";
+        number.textContent = sectionNumber(index);
+        const label = document.createElement("span");
+        label.className = "section-nav-label";
+        label.textContent = section.title;
+        const state = document.createElement("span");
+        state.className = "section-nav-state";
+        state.dataset.navState = section.key;
+        link.append(number, label, state);
+        link.addEventListener("click", () => focusSection(section.key));
+        sectionNav.appendChild(link);
+      });
+    });
+    updateSectionNavStates(data);
+    observeActiveSection();
+  }
+
+  function updateSectionNavStates(data) {
+    if (!sectionNav) return;
+    const missingBySection = sectionMissingPaths(data);
+    window.CVD_SCHEMA.forEach((section) => {
+      const state = sectionNav.querySelector(`[data-nav-state="${section.key}"]`);
+      if (!state) return;
+      const {filled, total, percent} = sectionFillPercent(section, data);
+      const missing = missingBySection.get(section.key) || 0;
+      state.className = `section-nav-state ${missing ? "warning" : percent === 100 ? "ok" : filled ? "partial" : ""}`.trim();
+      state.textContent = missing ? "" : percent === 100 ? "✓" : filled ? `${filled}/${total}` : "";
+      state.title = missing ? `Не заполнено ключевых полей: ${missing}` : "";
+    });
+  }
+
+  // Подсветка раздела, который сейчас на экране, — как в оглавлении документа.
+  function observeActiveSection() {
+    if (!("IntersectionObserver" in window) || !sectionNav) return;
+    sectionObserver?.disconnect();
+    sectionObserver = new IntersectionObserver((entries) => {
+      entries.forEach((entry) => {
+        if (!entry.isIntersecting) return;
+        const key = entry.target.id.replace(/^section-/, "");
+        sectionNav.querySelectorAll(".section-nav-link").forEach((link) => {
+          link.classList.toggle("active", link.dataset.navSection === key);
+        });
+      });
+    }, {rootMargin: "-140px 0px -55% 0px"});
+    sectionNodes.forEach((node) => sectionObserver.observe(node));
+  }
+
+  function applyMissingOnly(data = collectData()) {
+    form.classList.toggle("missing-only", missingOnly);
+    missingOnlyToggle?.setAttribute("aria-pressed", String(missingOnly));
+    missingOnlyToggle?.classList.toggle("is-on", missingOnly);
+    form.querySelectorAll(".is-missing, .has-missing").forEach((node) => node.classList.remove("is-missing", "has-missing"));
+    if (!missingOnly) {
+      missingOnlyNotice?.classList.add("hidden");
+      return;
+    }
+    const missing = missingRequiredData(data);
+    if (!missing.length) {
+      missingOnly = false;
+      form.classList.remove("missing-only");
+      missingOnlyToggle?.setAttribute("aria-pressed", "false");
+      missingOnlyToggle?.classList.remove("is-on");
+      if (missingOnlyNotice) {
+        missingOnlyNotice.textContent = "Все ключевые поля профиля заполнены — показана вся анкета.";
+        missingOnlyNotice.className = "notice ok-note";
+        window.setTimeout(() => missingOnlyNotice.classList.add("hidden"), 4000);
+      }
+      return;
+    }
+    // Набор полей фиксируется при включении фильтра: поле не исчезает из-под курсора, пока его заполняют.
+    missing.forEach(([path]) => {
+      const input = form.elements[path];
+      input?.closest(".field")?.classList.add("is-missing");
+      const details = input?.closest("details.section");
+      if (details) {
+        details.classList.add("has-missing");
+        details.open = true;
+      }
+      const extra = input?.closest(".extra-sections");
+      if (extra) {
+        extra.classList.add("has-missing");
+        extra.open = true;
+      }
+    });
+    if (missingOnlyNotice) {
+      missingOnlyNotice.textContent = `Показаны только незаполненные ключевые поля: ${missing.length}. Заполненные останутся на экране, пока фильтр включён.`;
+      missingOnlyNotice.className = "notice info-note";
+    }
+  }
+
+  function toggleMissingOnly(force) {
+    missingOnly = typeof force === "boolean" ? force : !missingOnly;
+    const data = collectData();
+    applyMissingOnly(data);
+    if (missingOnly) {
+      const first = missingRequiredData(data)[0];
+      if (first) focusFieldPath(first[0]);
+    }
+  }
+
+  function updateScenarioHint() {
+    if (!scenarioHint) return;
+    const scenario = selectedScenario();
+    const extraRequired = scenario.requiredPaths.length;
+    // Профиль может добавлять обязательные поля — врач должен видеть, почему меняется готовность.
+    scenarioHint.textContent = extraRequired ? `+${extraRequired} к ключевым` : "";
+    scenarioHint.title = extraRequired
+      ? `${scenario.hint} Добавлено в ключевые: ${scenario.requiredPaths.map(([, label]) => label).join(", ")}.`
+      : scenario.hint;
+    scenarioHint.classList.toggle("hidden", !extraRequired);
   }
 
   function setupScenarioTemplates() {
@@ -704,6 +872,7 @@
       const option = document.createElement("option");
       option.value = scenario.key;
       option.textContent = scenario.title;
+      option.title = scenario.hint;
       scenarioSelect.appendChild(option);
     });
     try {
@@ -714,10 +883,12 @@
     scenarioSelect.addEventListener("change", () => {
       selectedScenarioKey = scenarioSelect.value;
       try { localStorage.setItem("cvd:selected-scenario", selectedScenarioKey); } catch (_) {}
-      renderQuickWorkspace(updatePreview());
-      toast(`Сценарий: ${selectedScenario().title}`);
+      updateScenarioHint();
+      arrangeSections(updatePreview());
+      toast(`Профиль: ${selectedScenario().title}`);
     });
-    renderQuickWorkspace(collectData());
+    updateScenarioHint();
+    arrangeSections(collectData());
   }
 
   function fieldSearchMatches(query) {
@@ -763,6 +934,9 @@
   function focusSection(sectionKey) {
     const details = document.getElementById(`section-${sectionKey}`);
     if (!details) return;
+    revealForm();
+    const extra = details.closest(".extra-sections");
+    if (extra) extra.open = true;
     details.open = true;
     details.scrollIntoView({behavior: "smooth", block: "start"});
     const firstInput = details.querySelector("input, select, textarea");
@@ -827,7 +1001,7 @@
         setFieldValue(fieldPath(section.key, field.key), sectionData[field.key]);
       });
     });
-    updatePreview();
+    arrangeSections(updatePreview());
     setSaveState(currentCaseId ? `кейс #${currentCaseId}` : "не сохранено", false);
   }
 
@@ -873,7 +1047,7 @@
     updateClinicalQuality(data);
     form.querySelectorAll('[data-has-reference="1"]').forEach(updateFieldReference);
     updateFieldAlerts(data);
-    syncQuickWorkspace(data);
+    updateSectionNavStates(data);
     renderModelWorkbench(lastModelParsed, data);
     return data;
   }
@@ -927,7 +1101,9 @@
   function restoreLocalDraft() {
     if (!pendingDraft?.patient_data) return;
     suppressDraftSave = true;
+    caseSession++;
     currentCaseId = pendingDraft.case_id || null;
+    manualEntry = true;
     resetModelState(true);
     applyData(pendingDraft.patient_data);
     collapseAllSections();
@@ -985,7 +1161,7 @@
     const cards = [
       ["Пациент", isFilled(getValue(data, "GENERAL_INFO.Full_name")) ? displayValue(getValue(data, "GENERAL_INFO.Full_name")) : null],
       ["Случай", isFilled(getValue(data, "GENERAL_INFO.Patient_ID")) ? displayValue(getValue(data, "GENERAL_INFO.Patient_ID")) : null],
-      ["Возраст / пол", isFilled(age) || isFilled(sex) ? `${displayValue(age, "?")} лет · ${displayValue(sex, "?")}` : null],
+      ["Пол и возраст", isFilled(age) || isFilled(sex) ? window.CVDUI.demographicsText(age, sex) : null],
       ["АД / ЧСС", bp || isFilled(heartRate) ? `${displayValue(bp)} · ${displayValue(heartRate, "?")} уд/мин` : null],
       ["Диагноз врача", isFilled(getValue(data, "FINAL_DIAGNOSES.Main_cardiovascular_diagnosis_text")) ? displayValue(getValue(data, "FINAL_DIAGNOSES.Main_cardiovascular_diagnosis_text")) : null]
     ].filter(([, value]) => value !== null);
@@ -1008,32 +1184,68 @@
     });
   }
 
-  function updateWorkflow(data) {
+  function isResultStale(data) {
+    return Boolean(currentModelRequestId && lastModelDataFingerprint && qualityRules.dataFingerprint(data) !== lastModelDataFingerprint);
+  }
+
+  // Одна главная кнопка, которая ведёт по шагам: дозаполнить → запустить AI → открыть результат → в МИС.
+  function nextAction(data) {
     const missing = missingRequiredData(data);
-    const hasCase = Boolean(currentCaseId);
-    const hasResult = Boolean(currentModelRequestId);
-    const ready = missing.length === 0;
-    const scenario = selectedScenario();
-    let nextAction = "Заполните ключевые поля пациента.";
-    let ctaText = "AI-анализ";
-    if (!hasCase) {
-      nextAction = "Сохраните кейс, чтобы зафиксировать данные и историю действий.";
-      ctaText = "Сохранить кейс";
-    } else if (!ready) {
-      nextAction = `${scenario.title}: дозаполните ${missing.slice(0, 3).map(([, label]) => label).join(", ")}${missing.length > 3 ? "…" : ""}.`;
-      ctaText = "Данные для AI";
-    } else if (!hasResult) {
-      nextAction = `${scenario.title}: кейс готов к проверке и запуску AI-анализа.`;
-      ctaText = "AI-анализ";
-    } else {
-      nextAction = "Результат готов: проверьте заключение и сохраните экспертную оценку.";
-      ctaText = "Обновить AI";
+    if (aiRunning) return {label: "AI-анализ выполняется…", hint: "Задание в очереди или обрабатывается. Можно продолжать работу.", disabled: true};
+    if (currentModelRequestId && !isResultStale(data)) {
+      return resultOpened
+        ? {label: "Копировать для МИС", hint: "Текст заключения для вставки в протокол ЕМИАС или другой МИС.", run: () => copyMisText()}
+        : {label: "Открыть результат", hint: "Заключение AI рядом с диагнозом врача.", run: () => openTab("model")};
     }
-    if (nextActionText) nextActionText.textContent = nextAction;
-    if (diagnoseButton && !diagnoseButton.disabled) diagnoseButton.textContent = ctaText;
-    if (quickMissingButton) {
-      quickMissingButton.disabled = missing.length === 0;
-      quickMissingButton.textContent = missing.length ? `К полю (${missing.length})` : "Заполнено";
+    if (missing.length) {
+      const labels = missing.map(([, label]) => label);
+      return {
+        label: `Заполнить ${window.CVDUI.countText(missing.length, ["ключевое поле", "ключевых поля", "ключевых полей"])}`,
+        hint: `Не заполнены: ${labels.join(", ")}.`,
+        run: () => focusFirstMissing(data)
+      };
+    }
+    if (currentModelRequestId) return {label: "Обновить AI-анализ", hint: "Данные изменились после последнего анализа.", run: () => diagnose()};
+    return {label: "Запустить AI-анализ", hint: "Сначала откроется проверка данных перед отправкой.", run: () => diagnose()};
+  }
+
+  let currentNextAction = null;
+
+  function updateNextAction(data) {
+    if (!nextActionButton) return;
+    currentNextAction = nextAction(data);
+    nextActionButton.textContent = currentNextAction.label;
+    nextActionButton.title = currentNextAction.hint || "";
+    nextActionButton.disabled = Boolean(currentNextAction.disabled);
+  }
+
+  function startScreenVisible(data) {
+    return !currentCaseId && !manualEntry && !qualityRules.hasClinicalInput(data);
+  }
+
+  function updateStartScreen(data) {
+    const visible = startScreenVisible(data);
+    workspaceStart?.classList.toggle("hidden", !visible);
+    formArea?.classList.toggle("hidden", visible);
+    workflowCockpit?.classList.toggle("hidden", visible);
+  }
+
+  // Анкета показывается, как только врач выбрал путь «вручную» или перешёл к конкретному полю.
+  function revealForm() {
+    if (manualEntry) return;
+    manualEntry = true;
+    updateStartScreen(collectData());
+  }
+
+  function updateWorkflow(data) {
+    updateStartScreen(data);
+    updateNextAction(data);
+    if (missingOnlyToggle && !missingOnly) {
+      const nothingMissing = missingRequiredData(data).length === 0;
+      missingOnlyToggle.disabled = nothingMissing;
+      missingOnlyToggle.title = nothingMissing
+        ? "Все ключевые поля профиля заполнены"
+        : "Скрыть всё, кроме незаполненных ключевых полей профиля";
     }
     syncStatusBar(data);
   }
@@ -1070,32 +1282,20 @@
     const missing = missingRequiredData(data);
     const total = scenarioRequiredDataPoints().length;
     const ready = total - missing.length;
-    const percent = Math.round((ready / total) * 100);
-    if (jumpMissingButton) {
-      jumpMissingButton.disabled = missing.length === 0;
-      jumpMissingButton.textContent = missing.length ? `К первому незаполненному (${missing.length})` : "Ключевые поля заполнены";
+    // Прогресс уже показан в строке статуса — здесь только сам список того, что осталось.
+    if (readinessCount) {
+      readinessCount.textContent = `${ready} из ${total}`;
+      readinessCount.className = `pill ${missing.length ? "warning" : "ok"}`;
     }
-    const progress = document.createElement("div");
-    progress.className = "readiness-progress";
-    const caption = document.createElement("div");
-    caption.className = "readiness-progress-caption";
-    const captionText = document.createElement("span");
-    captionText.textContent = `Заполнено ${ready} из ${total}`;
-    const captionPercent = document.createElement("strong");
-    captionPercent.textContent = `${percent}%`;
-    caption.append(captionText, captionPercent);
-    const track = document.createElement("div");
-    track.className = "readiness-progress-track";
-    const bar = document.createElement("div");
-    bar.className = `readiness-progress-bar ${percent === 100 ? "ok" : ""}`.trim();
-    bar.style.width = `${percent}%`;
-    track.appendChild(bar);
-    progress.append(caption, track);
-    readinessPanel.appendChild(progress);
     if (!missing.length) {
       const row = document.createElement("div");
       row.className = "check-row ok";
-      row.textContent = "Все ключевые поля заполнены.";
+      const mark = document.createElement("span");
+      mark.className = "check-mark";
+      mark.textContent = "✓";
+      const text = document.createElement("span");
+      text.textContent = "Все ключевые поля заполнены";
+      row.append(mark, text);
       readinessPanel.appendChild(row);
       return;
     }
@@ -1120,16 +1320,14 @@
   function renderSignals(data) {
     if (!signalsPanel) return;
     signalsPanel.innerHTML = "";
-    const signals = qualityRules.clinicalSignals(data);
-    if (signals.length === 0) {
-      const row = document.createElement("div");
-      row.className = "check-row";
-      row.textContent = "Явных сигналов по заполненным числовым данным нет.";
-      signalsPanel.appendChild(row);
-      return;
-    }
-
-    signals.forEach(({kind, title, text, category}) => {
+    // Сначала критические, затем отклонения; справочные свёрнуты, чтобы не приучать игнорировать сигналы.
+    const tierOrder = {critical: 0, error: 0, warning: 1, info: 2};
+    const signals = qualityRules.clinicalSignals(data)
+      .slice()
+      .sort((a, b) => (tierOrder[a.kind] ?? 1) - (tierOrder[b.kind] ?? 1));
+    const significant = signals.filter((signal) => signal.kind !== "info");
+    const informational = signals.filter((signal) => signal.kind === "info");
+    const renderSignal = ({kind, title, text, category}) => {
       const row = document.createElement("div");
       row.className = `signal-row ${kind}`;
       const strong = document.createElement("strong");
@@ -1137,24 +1335,68 @@
       const small = document.createElement("small");
       small.textContent = `${category ? `${category}: ` : ""}${text || "проверьте клинический контекст"}`;
       row.append(strong, small);
+      return row;
+    };
+    if (!significant.length) {
+      const row = document.createElement("div");
+      row.className = "check-row";
+      row.textContent = "Значимых сигналов по заполненным данным нет.";
       signalsPanel.appendChild(row);
-    });
+    }
+    significant.forEach((signal) => signalsPanel.appendChild(renderSignal(signal)));
+    if (informational.length) {
+      const details = document.createElement("details");
+      details.className = "signal-info";
+      const summary = document.createElement("summary");
+      summary.textContent = `Справочно · ${informational.length}`;
+      details.appendChild(summary);
+      informational.forEach((signal) => details.appendChild(renderSignal(signal)));
+      signalsPanel.appendChild(details);
+    }
   }
 
-  async function saveCase() {
-    const data = updatePreview();
-    const response = await api("/api/cases", {
+  async function saveCase({silent = false} = {}) {
+    window.clearTimeout(autosaveTimer);
+    // Сохранения идут строго по очереди: два параллельных создания дали бы два кейса.
+    if (saveInFlight) await saveInFlight.catch(() => {});
+    const session = caseSession;
+    const data = collectData();
+    const snapshot = JSON.stringify(data);
+    const caseIdAtStart = currentCaseId;
+    lastSaveAttemptAt = Date.now();
+    saveInFlight = api("/api/cases", {
       method: "POST",
       body: JSON.stringify({
-        case_id: currentCaseId,
+        case_id: caseIdAtStart,
         patient_data: data
       })
     });
+    syncStatusBar(data);
+    let response;
+    try {
+      response = await saveInFlight;
+    } finally {
+      saveInFlight = null;
+    }
+    if (session !== caseSession) return response;
     currentCaseId = response.case_id;
-    if (currentModelRequestId) updateModelFreshness(data);
-    setSaveState(`кейс #${currentCaseId} сохранён`, false);
-    clearLocalDraft();
-    toast("Кейс сохранён");
+    lastSavedAt = new Date();
+    saveErrorText = "";
+    if (!caseIdAtStart && window.history?.replaceState) {
+      window.history.replaceState(null, "", `/app?case=${currentCaseId}`);
+    }
+    const current = collectData();
+    if (currentModelRequestId) updateModelFreshness(current);
+    // Пока запрос шёл, врач мог продолжить ввод — тогда кейс остаётся «изменённым».
+    if (JSON.stringify(current) === snapshot) {
+      setSaveState("", false);
+      clearLocalDraft();
+    } else {
+      setSaveState("", true);
+    }
+    updateWorkflow(current);
+    if (!silent) toast("Кейс сохранён");
+    return response;
   }
 
   function fillModelOutput(parsed) {
@@ -1163,8 +1405,10 @@
     for (const [key, value] of Object.entries(modelOutput)) {
       setFieldValue(`MODEL_OUTPUT.${key}`, value);
     }
-    updatePreview();
-    scheduleDraftSave();
+    scheduleDraftSave(updatePreview());
+    // Поля ответа модели — часть кейса: сохраняем их, иначе в браузере остаётся «черновик»,
+    // который потом всплывает баннером на новом кейсе. На свежесть AI-результата они не влияют.
+    setSaveState("", true);
   }
 
   function durationText(ms) {
@@ -1286,7 +1530,7 @@
     node.append(title, state);
     if (!compact) {
       const meta = document.createElement("small");
-      const created = job.created_at ? new Date(job.created_at).toLocaleString("ru-RU", {day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit"}) : "";
+      const created = job.created_at ? window.CVDUI.relativeTime(job.created_at) : "";
       const owner = job.created_by?.name || job.created_by?.email || "";
       meta.textContent = [
         job.position ? `позиция ${job.position}` : "",
@@ -1355,7 +1599,12 @@
     ].slice(0, 5);
     const activeCount = jobs.filter((job) => ["queued", "running"].includes(job.status)).length;
     const attentionCount = jobs.filter((job) => ["queued", "running", "error"].includes(job.status)).length;
-    if (taskCountBadge) taskCountBadge.textContent = String(attentionCount);
+    // Кнопка «Задачи» появляется, только когда в центре задач есть что смотреть.
+    openTaskCenterButton?.classList.toggle("hidden", jobs.length === 0);
+    if (taskCountBadge) {
+      taskCountBadge.textContent = String(attentionCount);
+      taskCountBadge.classList.toggle("hidden", attentionCount === 0);
+    }
     openTaskCenterButton?.classList.toggle("attention", attentionCount > 0);
     if (activeJobsLine) {
       activeJobsLine.innerHTML = "";
@@ -1465,6 +1714,10 @@
   function openModelResultModal() {
     if (!modelResultModal) return;
     openModalElement(modelResultModal, document.getElementById("closeModelResultModal"));
+    if (currentModelRequestId && !resultOpened) {
+      resultOpened = true;
+      updateNextAction(collectData());
+    }
   }
 
   function closeModelResultModal() {
@@ -1598,10 +1851,9 @@
     }
     copyModelDiagnosisButton?.toggleAttribute("disabled", !hasAi);
     openModelReportButton?.toggleAttribute("disabled", !currentModelRequestId);
-    markModelIssueButton?.toggleAttribute("disabled", !currentModelRequestId);
   }
 
-  function acceptModelDiagnosisDraft() {
+  async function acceptModelDiagnosisDraft() {
     const ai = modelDiagnosisSummary(lastModelParsed || {});
     if (ai.abstained) {
       toast("AI воздержался от заключения — принимать в черновик нечего");
@@ -1613,14 +1865,23 @@
     }
     const currentDiagnosis = String(form.elements["FINAL_DIAGNOSES.Main_cardiovascular_diagnosis_text"]?.value || "").trim();
     const currentCodes = String(form.elements["FINAL_DIAGNOSES.ICD10_codes"]?.value || "").trim();
-    if ((currentDiagnosis || currentCodes) && !window.confirm("Заменить текущий диагноз врача черновиком AI?")) return;
+    if (currentDiagnosis || currentCodes) {
+      const replace = await window.CVDUI.confirm({
+        title: "Заменить диагноз врача?",
+        message: `Сейчас в анкете: «${currentDiagnosis || currentCodes}». Он будет заменён черновиком AI — после замены проверьте формулировку и коды.`,
+        confirmLabel: "Заменить",
+        destructive: true
+      });
+      if (!replace) return;
+    }
     setFieldValue("FINAL_DIAGNOSES.Main_cardiovascular_diagnosis_text", ai.text);
     setFieldValue("FINAL_DIAGNOSES.ICD10_codes", ai.codes);
     const data = updatePreview();
     scheduleDraftSave(data);
     setSaveState(currentCaseId ? `кейс #${currentCaseId} изменён` : "не сохранено", true);
+    closeModelResultModal();
     focusFieldPath("FINAL_DIAGNOSES.Main_cardiovascular_diagnosis_text");
-    toast("AI-диагноз перенесён в черновик врача");
+    toast("AI-диагноз перенесён в черновик врача — проверьте формулировку");
   }
 
   async function copyModelDiagnosis() {
@@ -1639,16 +1900,29 @@
       toast("Сначала откройте результат AI");
       return;
     }
+    openModelResultModal();
     requestReviewForm.classList.remove("hidden");
     requestReviewForm.rating.value = "wrong";
     requestReviewForm.issue_types.value = requestReviewForm.issue_types.value || "needs_correction";
+    const details = document.getElementById("reviewDetails");
+    if (details) details.open = true;
     requestReviewForm.comment.focus();
-    toast("Оценка переключена на ошибку — добавьте комментарий");
+    saveRequestReview().catch((err) => toast(err.message));
   }
 
   function renderModelOutput(parsed, meta = {}) {
     if (!modelStructured) return;
     lastModelParsed = parsed || null;
+    lastModelMeta = meta || {};
+    if (modelResultSubtitle) {
+      const when = meta.created_at ? window.CVDUI.formatDateTime(meta.created_at) : "";
+      modelResultSubtitle.textContent = [
+        currentCaseId ? `Кейс #${currentCaseId}` : "Несохранённый кейс",
+        when,
+        meta.model || isDoctorMode() ? displayModelName(meta.model) : "",
+        "черновик для проверки врачом"
+      ].filter(Boolean).join(" · ");
+    }
     renderModelWorkbench(lastModelParsed, collectData());
     modelStructured.innerHTML = "";
     const cds = parsed?.CDS_OUTPUT;
@@ -1923,22 +2197,30 @@
     if (!requestReviewForm) return;
     requestReviewForm.classList.toggle("hidden", !requestId);
     if (!requestId) return;
-    requestReviewForm.rating.value = review?.rating || "useful";
+    // Без оценки ни один вариант не выбран: прежнее «Полезно» по умолчанию подталкивало сохранить не глядя.
+    requestReviewForm.querySelectorAll('input[name="rating"]').forEach((input) => {
+      input.checked = input.value === review?.rating;
+    });
     requestReviewForm.issue_types.value = (review?.issue_types || []).join("; ");
     requestReviewForm.corrected_diagnosis.value = review?.corrected_diagnosis || "";
     requestReviewForm.corrected_icd10.value = (review?.corrected_icd10 || []).join("; ");
     requestReviewForm.comment.value = review?.comment || "";
-    reviewStatus.textContent = review ? `оценено: ${review.rating}` : "не оценено";
+    const details = document.getElementById("reviewDetails");
+    if (details) {
+      details.open = Boolean(review && (review.comment || review.corrected_diagnosis || (review.issue_types || []).length));
+    }
+    reviewStatus.textContent = review ? `сохранено: ${ratingLabel(review.rating)}` : "не оценено";
     reviewStatus.className = `pill ${review ? "ok" : ""}`;
   }
 
-  function setHtmlExportAvailable(available, {showBanner = true} = {}) {
+  function ratingLabel(rating) {
+    return {useful: "полезно", partial: "частично", wrong: "неверно", unsafe: "опасно"}[rating] || rating || "без оценки";
+  }
+
+  function setHtmlExportAvailable(available) {
     if (exportHtmlButton) exportHtmlButton.disabled = !available;
     const copyButton = document.getElementById("copyMisTextButton");
     if (copyButton) copyButton.disabled = !available;
-    // Баннер — только для свежего результата; при загрузке из истории достаточно карточки и вкладки.
-    resultReadyBanner?.classList.toggle("hidden", !(available && showBanner));
-    if (viewResultButton) viewResultButton.disabled = !available;
   }
 
   async function copyMisText() {
@@ -1953,8 +2235,15 @@
       toast("Заключение скопировано — вставьте в протокол МИС");
     } catch (_) {
       // Clipboard API недоступен (не-HTTPS контекст) — показываем текст для ручного копирования.
-      const fallback = window.prompt("Скопируйте текст для МИС (Ctrl/Cmd+C):", text);
-      if (fallback !== null) toast("Текст готов к вставке в МИС");
+      await window.CVDUI.prompt({
+        title: "Текст для МИС",
+        message: `Браузер не дал скопировать автоматически. Текст уже выделен — нажмите ${window.CVDUI.shortcut("C")}.`,
+        value: text,
+        multiline: true,
+        readOnly: true,
+        confirmLabel: "Готово",
+        cancelLabel: ""
+      });
     }
   }
 
@@ -2010,13 +2299,18 @@
   }
 
   async function saveRequestReview(event) {
-    event.preventDefault();
+    event?.preventDefault();
     if (!currentModelRequestId) {
       toast("Сначала выберите результат AI-анализа");
       return;
     }
+    const rating = requestReviewForm.rating.value;
+    if (!rating) {
+      toast("Сначала выберите оценку: полезно, частично, неверно или опасно");
+      return;
+    }
     const payload = {
-      rating: requestReviewForm.rating.value,
+      rating,
       issue_types: parseIcdString(requestReviewForm.issue_types.value).map((item) => item.toLowerCase()),
       corrected_diagnosis: requestReviewForm.corrected_diagnosis.value,
       corrected_icd10: parseIcdString(requestReviewForm.corrected_icd10.value),
@@ -2026,9 +2320,9 @@
       method: "POST",
       body: JSON.stringify(payload)
     });
-    reviewStatus.textContent = `оценено: ${payload.rating}`;
+    reviewStatus.textContent = `сохранено: ${ratingLabel(payload.rating)}`;
     reviewStatus.className = "pill ok";
-    toast("Оценка сохранена");
+    toast(event ? "Подробности оценки сохранены" : `Оценка «${ratingLabel(payload.rating)}» сохранена`);
   }
 
   function diagnose() {
@@ -2043,10 +2337,13 @@
   }
 
   async function runDiagnose(patientData) {
-    const button = diagnoseButton || document.getElementById("diagnoseButton");
-    const idleButtonText = button.textContent;
     let response = null;
-    button.disabled = true;
+    aiRunning = true;
+    if (diagnoseButton) diagnoseButton.disabled = true;
+    updateNextAction(patientData);
+    // Результат привязывается к кейсу, поэтому незаписанные правки сохраняем до отправки.
+    await flushAutosave().catch(() => {});
+    resultOpened = false;
     currentModelRequestId = null;
     lastModelDataFingerprint = null;
     lastModelParsed = null;
@@ -2064,17 +2361,9 @@
         const own = queue.user?.by_kind?.diagnosis || {};
         if (own.state === "queued") {
           const eta = own.estimated_wait_ms ? ` · ${queueEtaText(own.estimated_wait_ms)}` : "";
-          setModelStatus(`в очереди · позиция ${own.position}${eta}`, "warning");
-          if (queueStatus) {
-            queueStatus.textContent = `AI очередь: позиция ${own.position}${eta}`;
-            queueStatus.className = "pill warning";
-          }
+          setModelStatus(`AI в очереди · позиция ${own.position}${eta}`, "warning");
         } else if (own.state === "running") {
           setModelStatus("AI обрабатывает запрос", "ok");
-          if (queueStatus) {
-            queueStatus.textContent = "AI обрабатывает запрос";
-            queueStatus.className = "pill ok";
-          }
         }
       } catch (_) {
         // Основной запрос покажет ошибку; сбой служебного polling не должен его прерывать.
@@ -2119,8 +2408,7 @@
       setHtmlExportAvailable(true);
       const seconds = (Number(response.duration_ms || 0) / 1000).toFixed(1);
       const waited = Number(response.queue_wait_ms || 0) > 0 ? ` · очередь ${(Number(response.queue_wait_ms) / 1000).toFixed(1)} с` : "";
-      setModelStatus(`результат готов за ${seconds} с${waited}`, "ok");
-      if (queueStatus) queueStatus.className = "pill hidden";
+      setModelStatus(`AI-результат готов за ${seconds} с${waited}`, "ok");
       updateWorkflow(patientData);
       toast("Результат AI-анализа готов");
     } catch (err) {
@@ -2134,7 +2422,6 @@
         currentModelRequestId = response.request_id;
         setHtmlExportAvailable(true);
       }
-      if (queueStatus) queueStatus.className = "pill hidden";
       toast(resultWasSaved ? `Результат сохранён, но не отображён: ${err.message}` : err.message);
     } finally {
       if (diagnosisQueueTimer) window.clearInterval(diagnosisQueueTimer);
@@ -2145,8 +2432,8 @@
         response?.ok ? "Результат AI-анализа готов" : "AI-анализ завершился",
         response?.ok ? "Откройте вкладку CVD Web, чтобы посмотреть результат." : "Проверьте статус задания в рабочем месте."
       );
-      button.disabled = false;
-      button.textContent = idleButtonText;
+      aiRunning = false;
+      if (diagnoseButton) diagnoseButton.disabled = false;
       updateWorkflow(updatePreview());
     }
   }
@@ -2194,8 +2481,13 @@
   }
 
   async function openCase(caseId) {
+    await flushAutosave().catch((err) => toast(err.message));
     const response = await api(`/api/cases/${caseId}`);
+    caseSession++;
     currentCaseId = response.case.id;
+    lastSavedAt = response.case.updated_at ? new Date(response.case.updated_at) : null;
+    saveErrorText = "";
+    if (window.history?.replaceState) window.history.replaceState(null, "", `/app?case=${currentCaseId}`);
     resetModelState();
     applyData(response.case.data);
     collapseAllSections();
@@ -2224,8 +2516,7 @@
       title.textContent = item.title || `Кейс #${item.id}`;
       const meta = document.createElement("small");
       const quality = item.quality || {};
-      const updated = new Date(item.updated_at).toLocaleString("ru-RU", {day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit"});
-      meta.textContent = `#${item.id} · готовность ${quality.readiness_percent || 0}% · ${updated}`;
+      meta.append(`#${item.id} · готовность ${quality.readiness_percent || 0}% · `, window.CVDUI.timeElement(item.updated_at));
       chip.append(title, meta);
       chip.addEventListener("click", () => openCase(item.id).catch((err) => toast(err.message)));
       list.appendChild(chip);
@@ -2238,13 +2529,13 @@
     currentModelRequestId = item.id;
     lastModelDataFingerprint = qualityRules.dataFingerprint(collectData());
     setModelStatus(
-      item.status === "success" ? item.ai_result_stale ? "данные изменены после AI" : "ответ из истории" : "ошибка из истории",
+      item.status === "success" ? item.ai_result_stale ? "данные изменены после AI" : "AI-результат готов" : "AI: ошибка в последнем запуске",
       item.status === "success" ? item.ai_result_stale ? "warning" : "ok" : "error"
     );
     modelPreview.textContent = JSON.stringify(item.parsed_output || {error: requestErrorText()}, null, 2);
     renderModelOutput(item.parsed_output || {}, item);
     showReviewForm(item.id, item.review);
-    setHtmlExportAvailable(item.status === "success", {showBanner: openModal});
+    setHtmlExportAvailable(item.status === "success");
     updateWorkflow(updatePreview());
   }
 
@@ -2776,7 +3067,10 @@
       }
       resetModelState(true);
       selected.forEach((row) => setFieldValue(row.mapping.path, row.mapping.value));
-      scheduleDraftSave(updatePreview());
+      manualEntry = true;
+      const importedData = updatePreview();
+      arrangeSections(importedData);
+      scheduleDraftSave(importedData);
       setSaveState(currentCaseId ? `кейс #${currentCaseId} изменён импортом` : "импортировано · не сохранено", true);
       closeImportModal();
       toast(`Импортировано полей: ${selected.length}`);
@@ -2840,16 +3134,14 @@
     const scenarioRequired = scenarioRequiredDataPoints();
     const ready = scenarioRequired.length - missing.length;
     const readinessPercent = Math.round((ready / scenarioRequired.length) * 100);
-    const signalRows = Array.from(signalsPanel.querySelectorAll(".signal-row"));
-    // Заголовок и пояснение сигнала — соседние элементы; общий textContent склеивал их без пробела.
-    const signals = signalRows.map((node) => Array.from(node.children)
-      .map((child) => child.textContent.trim())
-      .filter(Boolean)
-      .join(" — ") || node.textContent.trim());
+    // Справочные сигналы в проверку перед отправкой не выносим: здесь только то, что влияет на решение.
+    const signals = qualityRules.clinicalSignals(data)
+      .filter((signal) => signal.kind !== "info")
+      .map((signal) => `${signal.title} — ${signal.text}`);
     const cards = [
       ["Пациент", displayValue(getValue(data, "GENERAL_INFO.Full_name"))],
       ["Случай", displayValue(getValue(data, "GENERAL_INFO.Patient_ID"))],
-      ["Возраст / пол", `${displayValue(getValue(data, "GENERAL_INFO.Age"), "?")} / ${displayValue(getValue(data, "GENERAL_INFO.Sex"), "?")}`],
+      ["Пол и возраст", window.CVDUI.demographicsText(getValue(data, "GENERAL_INFO.Age"), getValue(data, "GENERAL_INFO.Sex")) || "не указаны"],
       ["Готовность", `${readinessPercent}%`],
       // Объём в токенах понятнее размера JSON: именно он упирается в контекст модели.
       ["Объём для модели", `~${estimateCaseTokens(data).toLocaleString("ru-RU")} токенов`]
@@ -2885,10 +3177,16 @@
       reviewContent.appendChild(warning);
     }
     reviewContent.appendChild(reviewList("Не хватает для полной готовности", missing.map(([, label]) => label), "Все ключевые поля заполнены."));
-    reviewContent.appendChild(reviewList("Сигналы", signals, "Явных сигналов по заполненным числовым данным нет."));
+    reviewContent.appendChild(reviewList("Сигналы", signals, "Значимых сигналов по заполненным данным нет."));
+    // Сырой JSON нужен исследователю, а не врачу: в режиме врача блок скрыт стилями.
+    const technical = document.createElement("details");
+    technical.className = "technical-response";
+    const summary = document.createElement("summary");
+    summary.textContent = "Данные для модели (JSON)";
     const pre = document.createElement("pre");
     pre.textContent = JSON.stringify(data, null, 2);
-    reviewContent.appendChild(pre);
+    technical.append(summary, pre);
+    reviewContent.appendChild(technical);
   }
 
   function reviewList(title, items, emptyText) {
@@ -2919,6 +3217,8 @@
     currentModelRequestId = null;
     lastModelDataFingerprint = null;
     lastModelParsed = null;
+    lastModelMeta = {};
+    resultOpened = false;
     setHtmlExportAvailable(false);
     hideAiErrorCard();
     updateModelTabVisibility();
@@ -2935,14 +3235,23 @@
     requestReviewForm?.classList.add("hidden");
   }
 
-  function resetCase() {
+  async function resetCase() {
+    // Незаписанные правки текущего кейса сохраняются, прежде чем анкета очистится.
+    await flushAutosave().catch((err) => toast(err.message));
+    caseSession++;
     currentCaseId = null;
+    lastSavedAt = null;
+    saveErrorText = "";
+    manualEntry = false;
     form.reset();
     collapseAllSections();
     resetModelState();
     clearLocalDraft();
-    updatePreview();
+    if (window.history?.replaceState) window.history.replaceState(null, "", "/app");
+    arrangeSections(updatePreview());
     setSaveState("не сохранено", false);
+    window.scrollTo({top: 0, behavior: "smooth"});
+    showRecentCases().catch(() => {});
   }
 
   function setupTabs() {
@@ -2951,29 +3260,19 @@
     });
   }
 
-  function applyInterfaceMode(mode) {
-    const nextMode = ["doctor", "researcher", "admin"].includes(mode) ? mode : "doctor";
-    document.body.dataset.interfaceMode = nextMode;
-    try { localStorage.setItem("cvd:interface-mode", nextMode); } catch (_) {}
-    document.getElementById("interfaceModeSelect")?.querySelectorAll("option").forEach((option) => {
-      option.selected = option.value === nextMode;
-    });
-    if (nextMode === "doctor") openTab("quality");
+  // Переключатель «Технические данные» живёт в общем модуле; здесь — реакция рабочего места на него.
+  function onInterfaceModeChange() {
+    if (isDoctorMode()) openTab("quality");
+    arrangeSections(collectData());
+    if (lastModelParsed) renderModelOutput(lastModelParsed, lastModelMeta);
   }
 
   function setupUser() {
     const user = window.CURRENT_USER || {};
     document.getElementById("userLabel").textContent = user.email || "";
-    if (user.role === "admin") {
-      document.getElementById("adminLink").classList.remove("hidden");
-    } else {
-      document.querySelector('#interfaceModeSelect option[value="admin"]')?.remove();
-    }
-    let savedMode = "doctor";
-    try { savedMode = localStorage.getItem("cvd:interface-mode") || "doctor"; } catch (_) {}
-    if (savedMode === "admin" && user.role !== "admin") savedMode = "doctor";
-    applyInterfaceMode(savedMode);
-    document.getElementById("interfaceModeSelect")?.addEventListener("change", (event) => applyInterfaceMode(event.target.value));
+    if (user.role === "admin") document.getElementById("adminLink").classList.remove("hidden");
+    if (isDoctorMode()) openTab("quality");
+    document.addEventListener("cvd:interface-mode", onInterfaceModeChange);
     document.getElementById("changePasswordButton").addEventListener("click", () => openPasswordModal(false));
     if (user.must_change_password) openPasswordModal(true);
     document.getElementById("closePasswordModal").addEventListener("click", closePasswordModal);
@@ -3016,7 +3315,8 @@
       const modal = openModals[openModals.length - 1];
       if (!modal) return;
       event.preventDefault();
-      if (modal === importModal) closeImportModal();
+      if (modal === commandPalette) closeCommandPalette();
+      else if (modal === importModal) closeImportModal();
       else if (modal === structureTextModal) closeStructureTextModal();
       else if (modal === taskCenterModal) closeTaskCenterModal();
       else if (modal === modelResultModal) closeModelResultModal();
@@ -3086,12 +3386,174 @@
       toast("Пароль изменён");
   }
 
+  // Палитра команд (Cmd/Ctrl+K): действия рабочего места и поля анкеты в одном поиске.
+  let paletteItems = [];
+  let paletteIndex = 0;
+
+  function paletteActions() {
+    const data = collectData();
+    const technical = !isDoctorMode();
+    const hasResult = Boolean(currentModelRequestId);
+    const user = window.CURRENT_USER || {};
+    const theme = document.body.dataset.theme === "dark" ? "светлую" : "тёмную";
+    return [
+      {label: currentNextAction?.label || "Следующий шаг", hint: "главное действие", run: () => currentNextAction?.run?.(), enabled: Boolean(currentNextAction?.run) && !currentNextAction?.disabled},
+      {label: "Новый кейс", run: () => resetCase()},
+      {label: "Вставить текст выписки…", run: openStructureTextModal},
+      {label: "Загрузить файл…", hint: "PDF, FHIR, CDA/СЭМД, .cvd.json", run: () => importJsonInput.click()},
+      {label: "Запустить AI-анализ", shortcut: window.CVDUI.shortcut("↵"), run: diagnose, enabled: !aiRunning},
+      {label: "Проверить перед AI…", run: () => openReviewModal(null, false)},
+      {label: "Открыть результат AI", run: () => openTab("model"), enabled: hasResult},
+      {label: "Копировать для МИС", run: () => copyMisText(), enabled: hasResult},
+      {label: "Пометить ошибку AI", run: markModelIssue, enabled: hasResult},
+      {label: "Сохранить сейчас", shortcut: window.CVDUI.shortcut("S"), run: () => saveCase()},
+      {label: "К первому незаполненному ключевому полю", shortcut: window.CVDUI.shortcut("N", {alt: true}), run: () => focusFirstMissing(data), enabled: missingRequiredData(data).length > 0},
+      {label: missingOnly ? "Показать всю анкету" : "Только незаполненные ключевые", run: () => { revealForm(); toggleMissingOnly(); }},
+      {label: "Центр AI-задач", run: openTaskCenterModal},
+      {label: "Кейсы и история", hint: "архив", run: () => { window.location.href = "/cases"; }},
+      {label: "Админка", run: () => { window.location.href = "/admin"; }, enabled: user.role === "admin"},
+      {label: `Включить ${theme} тему`, run: () => window.CVDTheme?.toggle()},
+      {label: technical ? "Скрыть технические данные" : "Показать технические данные", run: () => window.CVDUI.setTechnicalData(!technical)},
+      {label: "Скачать JSON", run: downloadJson, enabled: technical},
+      {label: "Экспорт FHIR", run: () => downloadFHIR().catch((err) => toast(err.message)), enabled: technical && Boolean(currentCaseId)}
+    ]
+      .filter((item) => item.enabled !== false)
+      // Главное действие часто совпадает с одним из пунктов списка — показываем его один раз.
+      .filter((item, index, items) => items.findIndex((other) => other.label === item.label) === index)
+      .map((item) => ({...item, kind: "action"}));
+  }
+
+  function paletteFieldItems(query) {
+    const normalized = normalizeSearchText(query);
+    if (normalized.length < 2) return [];
+    return window.CVD_SCHEMA.flatMap((section, sectionIndex) => section.fields.map((field) => ({
+      kind: "field",
+      label: field.label,
+      hint: `${sectionNumber(sectionIndex)}. ${section.title}`,
+      path: fieldPath(section.key, field.key),
+      haystack: normalizeSearchText(`${field.label} ${field.key} ${section.title}`)
+    })))
+      .filter((item) => item.haystack.includes(normalized))
+      .slice(0, 12)
+      .map((item) => ({...item, run: () => focusFieldPath(item.path)}));
+  }
+
+  function renderCommandPalette() {
+    const query = commandPaletteInput.value;
+    const normalized = normalizeSearchText(query);
+    const actions = paletteActions().filter((item) => !normalized || normalizeSearchText(`${item.label} ${item.hint || ""}`).includes(normalized));
+    paletteItems = [...actions, ...paletteFieldItems(query)];
+    paletteIndex = Math.min(paletteIndex, Math.max(0, paletteItems.length - 1));
+    commandPaletteList.innerHTML = "";
+    if (!paletteItems.length) {
+      const empty = document.createElement("p");
+      empty.className = "palette-empty";
+      empty.textContent = "Ничего не найдено. Попробуйте название поля: «тропонин», «ФВ», «МКБ».";
+      commandPaletteList.appendChild(empty);
+      return;
+    }
+    let lastKind = "";
+    paletteItems.forEach((item, index) => {
+      if (item.kind !== lastKind) {
+        lastKind = item.kind;
+        const heading = document.createElement("p");
+        heading.className = "palette-heading";
+        heading.textContent = item.kind === "action" ? "Действия" : "Поля анкеты";
+        commandPaletteList.appendChild(heading);
+      }
+      const row = document.createElement("button");
+      row.type = "button";
+      row.id = `palette-item-${index}`;
+      row.className = `palette-item ${index === paletteIndex ? "active" : ""}`.trim();
+      row.setAttribute("role", "option");
+      row.setAttribute("aria-selected", String(index === paletteIndex));
+      const label = document.createElement("span");
+      label.className = "palette-label";
+      label.textContent = item.label;
+      row.appendChild(label);
+      if (item.hint) {
+        const hint = document.createElement("span");
+        hint.className = "palette-hint";
+        hint.textContent = item.hint;
+        row.appendChild(hint);
+      }
+      if (item.shortcut) {
+        const kbd = document.createElement("kbd");
+        kbd.className = "menu-shortcut";
+        kbd.textContent = item.shortcut;
+        row.appendChild(kbd);
+      }
+      row.addEventListener("mousemove", () => {
+        if (paletteIndex === index) return;
+        paletteIndex = index;
+        highlightPaletteItem();
+      });
+      row.addEventListener("click", () => runPaletteItem(index));
+      commandPaletteList.appendChild(row);
+    });
+    commandPaletteInput.setAttribute("aria-activedescendant", `palette-item-${paletteIndex}`);
+  }
+
+  function highlightPaletteItem() {
+    commandPaletteList.querySelectorAll(".palette-item").forEach((row) => {
+      const active = row.id === `palette-item-${paletteIndex}`;
+      row.classList.toggle("active", active);
+      row.setAttribute("aria-selected", String(active));
+      if (active) row.scrollIntoView({block: "nearest"});
+    });
+    commandPaletteInput.setAttribute("aria-activedescendant", `palette-item-${paletteIndex}`);
+  }
+
+  function runPaletteItem(index) {
+    const item = paletteItems[index];
+    if (!item) return;
+    closeCommandPalette({restoreFocus: false});
+    Promise.resolve(item.run?.()).catch((err) => toast(err.message));
+  }
+
+  function openCommandPalette() {
+    if (!commandPalette) return;
+    commandPaletteInput.value = "";
+    paletteIndex = 0;
+    renderCommandPalette();
+    openModalElement(commandPalette, commandPaletteInput);
+  }
+
+  function closeCommandPalette({restoreFocus = true} = {}) {
+    if (!commandPalette || commandPalette.classList.contains("hidden")) return;
+    if (!restoreFocus) modalTriggers.delete(commandPalette);
+    closeModalElement(commandPalette);
+  }
+
+  function setupCommandPalette() {
+    if (!commandPalette) return;
+    document.getElementById("commandPaletteButton")?.addEventListener("click", openCommandPalette);
+    commandPaletteInput.addEventListener("input", () => {
+      paletteIndex = 0;
+      renderCommandPalette();
+    });
+    commandPaletteInput.addEventListener("keydown", (event) => {
+      if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+        event.preventDefault();
+        if (!paletteItems.length) return;
+        const step = event.key === "ArrowDown" ? 1 : -1;
+        paletteIndex = (paletteIndex + step + paletteItems.length) % paletteItems.length;
+        highlightPaletteItem();
+      } else if (event.key === "Enter") {
+        event.preventDefault();
+        runPaletteItem(paletteIndex);
+      }
+    });
+    commandPalette.addEventListener("click", (event) => {
+      if (event.target === commandPalette) closeCommandPalette();
+    });
+  }
+
   async function initializeWorkspace() {
     const params = new URLSearchParams(window.location.search);
     if (params.get("import")) {
-      document.getElementById("moreActionsButton")?.classList.add("attention");
-      document.getElementById("importJsonButton")?.classList.add("attention");
-      toast("Откройте «Ещё» → «Импорт файла»: JSON, FHIR, CDA/СЭМД или PDF из ЕМИАС");
+      document.getElementById("startFileButton")?.classList.add("attention");
+      toast("Выберите «Загрузить файл»: PDF из ЕМИАС, FHIR, CDA/СЭМД или .cvd.json");
     }
     const caseId = Number(params.get("case") || 0);
     const requestId = Number(params.get("request") || 0);
@@ -3107,10 +3569,43 @@
     }
   }
 
+  async function createDemoCase(button) {
+    if (button) button.disabled = true;
+    try {
+      const response = await api("/api/cases/demo", {method: "POST", body: "{}"});
+      await openCase(response.case_id);
+      toast("Демо-кейс создан: данные синтетические");
+    } catch (err) {
+      toast(err.message);
+    } finally {
+      if (button) button.disabled = false;
+    }
+  }
+
+  // Изменения, не успевшие уйти автосохранением, отправляем при уходе со страницы.
+  // keepalive переживает закрытие вкладки, но ограничен 64 КБ — большой кейс остаётся в локальном черновике.
+  function flushOnPageHide() {
+    if (!hasUnsavedChanges || saveInFlight) return;
+    const data = collectData();
+    if (!currentCaseId && !canAutoCreateCase(data)) return;
+    const body = JSON.stringify({case_id: currentCaseId, patient_data: data});
+    if (body.length > 60000) return;
+    try {
+      fetch("/api/cases", {
+        method: "POST",
+        keepalive: true,
+        headers: {"Content-Type": "application/json", "X-CSRF-Token": csrfToken},
+        body
+      }).catch(() => {});
+    } catch (_) {}
+  }
+
+  window.CVDUI.applyInterfaceMode();
   renderForm();
   setupTabs();
   setupScenarioTemplates();
   setupUser();
+  setupCommandPalette();
   updateStructureTextCounter();
   fieldSearchInput?.addEventListener("input", () => renderFieldSearchResults(fieldSearchInput.value));
   fieldSearchInput?.addEventListener("keydown", (event) => {
@@ -3127,12 +3622,27 @@
     if (event.target === fieldSearchInput || fieldSearchResults.contains(event.target)) return;
     fieldSearchResults.classList.add("hidden");
   });
-  quickMissingButton?.addEventListener("click", () => focusFirstMissing());
-  quickWorkspaceToggle?.addEventListener("click", toggleQuickWorkspace);
-  acceptModelDraftButton?.addEventListener("click", acceptModelDiagnosisDraft);
+  nextActionButton?.addEventListener("click", () => {
+    Promise.resolve(currentNextAction?.run?.()).catch((err) => toast(err.message));
+  });
+  missingOnlyToggle?.addEventListener("click", () => toggleMissingOnly());
+  document.getElementById("startPasteButton")?.addEventListener("click", openStructureTextModal);
+  document.getElementById("startFileButton")?.addEventListener("click", (event) => {
+    event.currentTarget.classList.remove("attention");
+    importJsonInput.click();
+  });
+  document.getElementById("startManualButton")?.addEventListener("click", () => {
+    revealForm();
+    focusFirstMissing(collectData());
+  });
+  document.getElementById("startDemoButton")?.addEventListener("click", (event) => createDemoCase(event.currentTarget));
+  acceptModelDraftButton?.addEventListener("click", () => acceptModelDiagnosisDraft().catch((err) => toast(err.message)));
   copyModelDiagnosisButton?.addEventListener("click", () => copyModelDiagnosis().catch((err) => toast(err.message)));
   openModelReportButton?.addEventListener("click", () => viewHtmlResult());
-  markModelIssueButton?.addEventListener("click", markModelIssue);
+  // Оценка сохраняется сразу по нажатию — подробности можно дописать позже.
+  requestReviewForm?.querySelectorAll('input[name="rating"]').forEach((input) => {
+    input.addEventListener("change", () => saveRequestReview().catch((err) => toast(err.message)));
+  });
   form.addEventListener("input", (event) => {
     if (event.target.name === "GENERAL_INFO.Height_cm" || event.target.name === "GENERAL_INFO.Weight_kg") {
       calculateBMI();
@@ -3150,14 +3660,28 @@
     event.preventDefault();
     event.returnValue = "";
   });
+  window.addEventListener("pagehide", flushOnPageHide);
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden) document.title = baseDocumentTitle;
+    if (document.hidden && hasUnsavedChanges) autosave().catch(() => {});
   });
   document.addEventListener("keydown", (event) => {
     const modKey = event.metaKey || event.ctrlKey;
+    const modalOpen = Boolean(document.querySelector(".modal:not(.hidden)"));
+    if (modKey && !event.shiftKey && !event.altKey && event.code === "KeyK") {
+      event.preventDefault();
+      if (commandPalette && !commandPalette.classList.contains("hidden")) closeCommandPalette();
+      else if (!modalOpen) openCommandPalette();
+      return;
+    }
     if (modKey && !event.shiftKey && !event.altKey && event.code === "KeyS") {
       event.preventDefault();
       saveCase().catch((err) => toast(err.message));
+      return;
+    }
+    if (modKey && !event.shiftKey && !event.altKey && event.key === "Enter" && !modalOpen) {
+      event.preventDefault();
+      if (!aiRunning) diagnose();
       return;
     }
     if (event.altKey && !modKey && event.code === "KeyN") {
@@ -3167,7 +3691,6 @@
   });
   restoreDraftButton?.addEventListener("click", restoreLocalDraft);
   dismissDraftButton?.addEventListener("click", () => draftBanner?.classList.add("hidden"));
-  jumpMissingButton?.addEventListener("click", () => focusFirstMissing());
   document.getElementById("saveCaseButton").addEventListener("click", () => saveCase().catch((err) => toast(err.message)));
   document.getElementById("diagnoseButton").addEventListener("click", diagnose);
   document.getElementById("retryDiagnoseButton")?.addEventListener("click", () => {
@@ -3181,11 +3704,7 @@
   document.getElementById("downloadJsonButton").addEventListener("click", downloadJson);
   exportHtmlButton?.addEventListener("click", () => exportHtmlReport().catch((err) => toast(err.message)));
   document.getElementById("copyMisTextButton")?.addEventListener("click", () => copyMisText().catch((err) => toast(err.message)));
-  viewResultButton?.addEventListener("click", () => viewHtmlResult());
-  document.getElementById("importJsonButton").addEventListener("click", (event) => {
-    event.currentTarget.classList.remove("attention");
-    importJsonInput.click();
-  });
+  document.getElementById("importJsonButton").addEventListener("click", () => importJsonInput.click());
   importJsonInput.addEventListener("change", () => {
     const file = importJsonInput.files?.[0];
     importJson(file).catch((err) => toast(err.message)).finally(() => {
@@ -3193,25 +3712,15 @@
     });
   });
   document.getElementById("downloadFhirButton").addEventListener("click", () => downloadFHIR().catch((err) => toast(err.message)));
-  document.getElementById("newCaseButton").addEventListener("click", resetCase);
-  document.getElementById("demoCaseButton")?.addEventListener("click", async (event) => {
-    const button = event.currentTarget;
-    button.disabled = true;
-    try {
-      const response = await api("/api/cases/demo", {method: "POST", body: "{}"});
-      await openCase(response.case_id);
-      toast("Демо-кейс создан: данные синтетические");
-    } catch (err) {
-      toast(err.message);
-    } finally {
-      button.disabled = false;
-    }
-  });
+  document.getElementById("newCaseButton").addEventListener("click", () => resetCase().catch((err) => toast(err.message)));
+  document.getElementById("demoCaseButton")?.addEventListener("click", (event) => createDemoCase(event.currentTarget));
   updatePreview();
   initDraftRestore();
   refreshAiJobs().catch(() => {});
   activeJobsTimer = window.setInterval(() => {
     refreshAiJobs().catch(() => {});
   }, 5000);
+  // «Сохранено 2 мин назад» должно стареть, даже если врач ничего не трогает.
+  window.setInterval(() => syncStatusBar(), 30000);
   initializeWorkspace().catch((err) => toast(err.message));
 })();

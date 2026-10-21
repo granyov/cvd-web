@@ -22,13 +22,6 @@
           <span id="userLabel"></span>
         </button>
         <div class="dropdown-menu hidden" data-menu-panel>
-          <label class="dropdown-field">Плотность админки
-            <select id="adminModeSelect" class="mode-select" aria-label="Плотность админки">
-              <option value="admin">Админ</option>
-              <option value="researcher">Исследователь</option>
-              <option value="doctor">Врач</option>
-            </select>
-          </label>
           <button type="button" data-theme-toggle>Тёмная тема</button>
           <button id="logoutButton" type="button">Выйти</button>
         </div>
@@ -605,6 +598,7 @@
 
   <script>window.CURRENT_USER = {{user_json}}; window.APP_SETTINGS = {{settings_json}};</script>
   <script src="/static/js/theme.js"></script>
+  <script src="/static/js/common.js"></script>
   <script src="/static/js/admin.js"></script>
 </body>
 </html>

@@ -8,6 +8,9 @@
     results: [],
     imports: [],
     preparations: [],
+    // Стадия рабочего списка — основной фильтр; выпадающий список хранит только дополнительные.
+    stage: "",
+    pendingDelete: null,
     selectedCaseId: null,
     selectedCase: null,
     latestResultId: null,
@@ -28,7 +31,6 @@
     actionQueuePanel: document.getElementById("actionQueuePanel"),
     actionQueueList: document.getElementById("actionQueueList"),
     worklistStages: document.getElementById("worklistStages"),
-    showAttentionCases: document.getElementById("showAttentionCasesButton"),
     caseSearch: document.getElementById("caseSearchInput"),
     caseAnalysis: document.getElementById("caseAnalysisFilter"),
     caseCount: document.getElementById("caseCount"),
@@ -73,18 +75,21 @@
   let importSearchTimer = null;
   let preparationSearchTimer = null;
 
-  let interfaceMode = "doctor";
-  try { interfaceMode = window.localStorage.getItem("cvd:interface-mode") || "doctor"; } catch (_) {}
-  if (interfaceMode === "admin" && window.CURRENT_USER?.role !== "admin") interfaceMode = "doctor";
+  function isDoctorMode() {
+    return window.CVDUI.interfaceMode() === "doctor";
+  }
 
   function displayModelName(model) {
     // Врач видит бренд сервиса, а не внутреннее имя модели.
-    return interfaceMode === "doctor" ? "CVD Engine" : (model || "модель не указана");
+    return isDoctorMode() ? "CVD Engine" : (model || "модель не указана");
   }
 
-  if (interfaceMode === "doctor") {
-    document.getElementById("resultModelFilter")?.classList.add("hidden");
+  function applyModeVisibility() {
+    window.CVDUI.applyInterfaceMode();
+    document.getElementById("resultModelFilter")?.classList.toggle("hidden", isDoctorMode());
   }
+
+  applyModeVisibility();
 
   async function api(path, options = {}) {
     const response = await fetch(path, {
@@ -100,12 +105,8 @@
     return data;
   }
 
-  function toast(message) {
-    const item = document.createElement("div");
-    item.className = "toast";
-    item.textContent = message;
-    document.body.appendChild(item);
-    window.setTimeout(() => item.remove(), 3200);
+  function toast(message, options) {
+    return window.CVDUI.toast(message, options);
   }
 
   function setLoading(loading) {
@@ -117,12 +118,8 @@
     nodes.libraryError.classList.toggle("hidden", !error);
   }
 
-  function formatDateTime(value) {
-    const date = new Date(value);
-    if (Number.isNaN(date.getTime())) return String(value || "");
-    return new Intl.DateTimeFormat("ru-RU", {
-      day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit"
-    }).format(date);
+  function timeNode(value) {
+    return window.CVDUI.timeElement(value);
   }
 
   function valueAt(data, section, field, fallback = "Не указано") {
@@ -202,14 +199,16 @@
   async function loadCases(append = false) {
     const sequence = ++state.caseSequence;
     const query = nodes.caseSearch.value.trim();
-    const analysis = nodes.caseAnalysis.value;
+    const analysis = state.stage || nodes.caseAnalysis.value;
     const offset = append ? state.cases.length : 0;
     const response = await api(
       `/api/cases?q=${encodeURIComponent(query)}&analysis=${encodeURIComponent(analysis)}&limit=50&offset=${offset}`
     );
     if (sequence !== state.caseSequence) return;
-    state.cases = append ? [...state.cases, ...(response.cases || [])] : (response.cases || []);
-    nodes.caseCount.textContent = `${response.total || 0} кейсов`;
+    const received = (response.cases || []).filter((item) => item.id !== state.pendingDelete?.id);
+    state.cases = append ? [...state.cases, ...received] : received;
+    const total = Math.max(0, Number(response.total || 0) - (state.pendingDelete ? 1 : 0));
+    nodes.caseCount.textContent = window.CVDUI.countText(total, ["кейс", "кейса", "кейсов"]);
     nodes.moreCases.classList.toggle("hidden", !response.has_more);
     renderCases();
     if (!append && state.cases.length && !state.cases.some((item) => item.id === state.selectedCaseId)) {
@@ -245,15 +244,25 @@
       title.textContent = item.title || `Кейс #${item.id}`;
       const status = pill(statusText, statusKind);
       const meta = document.createElement("small");
-      meta.textContent = `#${item.id} · готовность ${item.quality?.readiness_percent || 0}% · ${caseStatusDescription(item)}`;
+      meta.textContent = caseStatusDescription(item);
       card.append(title, status, meta);
       card.addEventListener("click", async () => {
         await switchView("cases");
+        setStageFilter("");
         nodes.caseAnalysis.value = "attention";
         await loadCases();
         await selectCase(item.id);
       });
       nodes.actionQueueList.appendChild(card);
+    });
+  }
+
+  function setStageFilter(stageKey) {
+    state.stage = stageKey;
+    nodes.worklistStages?.querySelectorAll(".worklist-stage").forEach((button) => {
+      const active = button.dataset.stage === (stageKey || "archive");
+      button.classList.toggle("selected", active);
+      button.setAttribute("aria-pressed", String(active));
     });
   }
 
@@ -272,18 +281,22 @@
       button.append(count, label);
       button.addEventListener("click", async () => {
         await switchView("cases");
-        nodes.caseAnalysis.value = stage.key === "archive" ? "" : stage.key;
+        // Повторное нажатие на выбранную стадию снимает фильтр.
+        const next = stage.key === "archive" || state.stage === stage.key ? "" : stage.key;
+        setStageFilter(next);
+        nodes.caseAnalysis.value = "";
         await loadCases();
       });
       nodes.worklistStages.appendChild(button);
     });
+    setStageFilter(state.stage);
   }
 
   function renderCases() {
     nodes.casesList.innerHTML = "";
     if (!state.cases.length) {
       nodes.casesList.className = "record-list record-empty";
-      const filtered = Boolean(nodes.caseSearch.value.trim() || nodes.caseAnalysis.value);
+      const filtered = Boolean(nodes.caseSearch.value.trim() || nodes.caseAnalysis.value || state.stage);
       const title = document.createElement("strong");
       title.textContent = filtered ? "По заданным фильтрам ничего не найдено" : "Кейсов пока нет";
       const hint = document.createElement("span");
@@ -331,27 +344,17 @@
       button.type = "button";
       button.className = `record-list-item ${item.id === state.selectedCaseId ? "selected" : ""}`.trim();
       button.dataset.caseId = String(item.id);
+      // В строке списка — только то, по чему врач выбирает кейс; остальное в карточке справа.
       const head = document.createElement("span");
       head.className = "record-list-head";
       const title = document.createElement("strong");
       title.textContent = item.title;
       const [statusText, statusKind] = caseWorkflowStatus(item);
       head.append(title, pill(statusText, statusKind));
-      const patient = document.createElement("span");
-      patient.textContent = item.patient_id ? `ID пациента: ${item.patient_id}` : "ID пациента не указан";
       const meta = document.createElement("small");
-      const quality = item.quality || {};
-      const owner = item.owner?.name || item.owner?.email || "";
-      meta.textContent = [
-        `Кейс #${item.id}`,
-        owner ? `ответственный: ${owner}` : "",
-        `готовность ${quality.readiness_percent || 0}%`,
-        `сигналов ${(quality.signals || []).length}`,
-        `${item.analysis_count || 0} анализов`,
-        caseStatusDescription(item),
-        formatDateTime(item.updated_at)
-      ].filter(Boolean).join(" · ");
-      button.append(head, patient, meta);
+      meta.className = "record-list-meta";
+      meta.append(item.patient_id ? `ID ${item.patient_id} · ` : "без ID · ", timeNode(item.updated_at));
+      button.append(head, meta);
       button.addEventListener("click", () => selectCase(item.id).catch(handleError));
       nodes.casesList.appendChild(button);
     });
@@ -390,14 +393,25 @@
     nodes.detailContent.classList.remove("hidden");
     nodes.detailTitle.textContent = caseItem.title;
     nodes.detailMeta.innerHTML = "";
-    nodes.detailMeta.append(
-      pill(`Кейс #${caseItem.id}`),
-      pill(caseItem.patient_id ? `ID ${caseItem.patient_id}` : "без ID", caseItem.patient_id ? "ok" : "warning"),
-      pill(...caseWorkflowStatus(listItem || caseItem || {analysis_count: results.length, latest_result_id: state.latestResultId, latest_request_status: results[0]?.status, quality: caseItem.quality || {}})),
-      pill(caseStatusDescription(listItem || caseItem || {analysis_count: results.length, latest_result_id: state.latestResultId, latest_request_status: results[0]?.status, quality: caseItem.quality || {}})),
-      pill(caseItem.owner?.name || caseItem.owner?.email ? `ответственный: ${caseItem.owner?.name || caseItem.owner?.email}` : "ответственный не указан"),
-      pill(`${listItem?.analysis_count || results.length} анализов`)
+    const statusSource = listItem || caseItem || {analysis_count: results.length, latest_result_id: state.latestResultId, latest_request_status: results[0]?.status, quality: caseItem.quality || {}};
+    const owner = caseItem.owner?.name || caseItem.owner?.email || "";
+    const analyses = listItem?.analysis_count ?? results.length;
+    const facts = document.createElement("small");
+    facts.className = "record-detail-facts";
+    facts.append(
+      [
+        `Кейс #${caseItem.id}`,
+        caseItem.patient_id ? `ID ${caseItem.patient_id}` : "без ID пациента",
+        owner ? `ответственный: ${owner}` : "",
+        window.CVDUI.countText(analyses, ["анализ", "анализа", "анализов"]),
+        "обновлён "
+      ].filter(Boolean).join(" · "),
+      timeNode(caseItem.updated_at)
     );
+    const next = document.createElement("p");
+    next.className = "record-detail-next";
+    next.textContent = caseStatusDescription(statusSource);
+    nodes.detailMeta.append(pill(...caseWorkflowStatus(statusSource)), facts, next);
     nodes.editCase.href = `/app?case=${caseItem.id}`;
     nodes.caseResult.disabled = !state.latestResultId;
     renderCaseQuality(caseItem.quality || {});
@@ -411,7 +425,7 @@
     const values = [
       ["Заполненность", `${quality.completeness_percent || 0}%`],
       ["Готовность", `${quality.readiness_percent || 0}%`],
-      ["Сигналы", String((quality.signals || []).length)],
+      ["Сигналы", String((quality.signals || []).filter((signal) => signal.kind !== "info").length)],
       ["Критические", String(quality.critical_signals || 0)]
     ];
     values.forEach(([label, value]) => {
@@ -429,7 +443,7 @@
     nodes.clinicalSummary.innerHTML = "";
     const fields = [
       ["Пациент", valueAt(data, "GENERAL_INFO", "Full_name")],
-      ["Возраст / пол", `${valueAt(data, "GENERAL_INFO", "Age", "?")} лет · ${valueAt(data, "GENERAL_INFO", "Sex", "?")}`],
+      ["Пол и возраст", window.CVDUI.demographicsText(data?.GENERAL_INFO?.Age, data?.GENERAL_INFO?.Sex) || "Не указано"],
       ["Основная жалоба", valueAt(data, "COMPLAINTS", "Main_complaint")],
       ["Рабочий диагноз", valueAt(data, "FINAL_DIAGNOSES", "Main_cardiovascular_diagnosis_text")]
     ];
@@ -456,7 +470,7 @@
       const title = document.createElement("strong");
       title.textContent = `Результат #${item.id}`;
       const meta = document.createElement("small");
-      meta.textContent = `${item.status === "success" ? "готов" : "ошибка"} · ${formatDateTime(item.created_at)}`;
+      meta.append(`${item.status === "success" ? "готов" : "ошибка"} · `, timeNode(item.created_at));
       const actions = document.createElement("div");
       actions.className = "toolbar";
       if (item.status === "success") actions.appendChild(actionLink("Отчёт", `/reports/${item.id}`, true));
@@ -497,7 +511,7 @@
       const title = document.createElement("strong");
       title.textContent = event.text;
       const time = document.createElement("small");
-      time.textContent = formatDateTime(event.when);
+      time.appendChild(timeNode(event.when));
       content.append(title, time);
       row.append(dot, content);
       nodes.caseTimeline.appendChild(row);
@@ -573,7 +587,7 @@
       const footer = document.createElement("div");
       footer.className = "result-record-footer";
       const meta = document.createElement("span");
-      meta.textContent = `${formatDateTime(item.created_at)} · ${displayModelName(item.model)} · ${(Number(item.duration_ms || 0) / 1000).toFixed(1)} с`;
+      meta.append(timeNode(item.created_at), ` · ${displayModelName(item.model)} · ${(Number(item.duration_ms || 0) / 1000).toFixed(1)} с`);
       const actions = document.createElement("div");
       actions.className = "toolbar";
       if (item.status === "success") actions.appendChild(actionLink("Открыть отчёт", `/reports/${item.id}`, true));
@@ -621,7 +635,7 @@
       const footer = document.createElement("div");
       footer.className = "result-record-footer";
       const date = document.createElement("span");
-      date.textContent = formatDateTime(item.applied_at || item.created_at);
+      date.appendChild(timeNode(item.applied_at || item.created_at));
       footer.appendChild(date);
       if (item.case_id) footer.appendChild(actionLink(item.case_title || `Кейс #${item.case_id}`, `/app?case=${item.case_id}`));
       card.append(heading, meta, footer);
@@ -668,7 +682,7 @@
       const footer = document.createElement("div");
       footer.className = "result-record-footer";
       const date = document.createElement("span");
-      date.textContent = formatDateTime(item.applied_at || item.updated_at || item.created_at);
+      date.appendChild(timeNode(item.applied_at || item.updated_at || item.created_at));
       footer.appendChild(date);
       if (item.case_id) footer.appendChild(actionLink(item.case_title || `Кейс #${item.case_id}`, `/app?case=${item.case_id}`));
       card.append(heading, meta, preview, footer);
@@ -722,6 +736,53 @@
     if (timerName === "preparation") preparationSearchTimer = timer;
   }
 
+  // Удаление откладывается на несколько секунд: вместо «Вы уверены?» — кнопка «Отменить» в уведомлении.
+  const deleteUndoMs = 6000;
+
+  async function commitCaseDelete(pending) {
+    window.clearTimeout(pending.timer);
+    if (state.pendingDelete === pending) state.pendingDelete = null;
+    await api(`/api/cases/${pending.id}/delete`, {method: "POST", body: "{}"});
+    await Promise.all([loadSummary(), loadActionQueue()]);
+  }
+
+  async function scheduleCaseDelete(item) {
+    if (state.pendingDelete) await commitCaseDelete(state.pendingDelete);
+    const pending = {id: item.id, title: item.title, timer: null};
+    state.pendingDelete = pending;
+    state.cases = state.cases.filter((caseItem) => caseItem.id !== item.id);
+    clearCaseDetail();
+    renderCases();
+    if (state.cases.length) await selectCase(state.cases[0].id);
+    pending.timer = window.setTimeout(() => commitCaseDelete(pending).catch(handleError), deleteUndoMs);
+    toast(`Кейс «${item.title}» удалён`, {
+      actionLabel: "Отменить",
+      duration: deleteUndoMs,
+      onAction: () => {
+        window.clearTimeout(pending.timer);
+        if (state.pendingDelete === pending) state.pendingDelete = null;
+        loadCases().then(() => selectCase(item.id)).catch(handleError);
+        toast("Удаление отменено");
+      }
+    });
+  }
+
+  // Если вкладку закрыли до истечения таймера, удаление всё равно должно дойти до сервера.
+  function flushPendingDelete() {
+    const pending = state.pendingDelete;
+    if (!pending) return;
+    window.clearTimeout(pending.timer);
+    state.pendingDelete = null;
+    try {
+      fetch(`/api/cases/${pending.id}/delete`, {
+        method: "POST",
+        keepalive: true,
+        headers: {"Content-Type": "application/json", "X-CSRF-Token": csrfToken},
+        body: "{}"
+      }).catch(() => {});
+    } catch (_) {}
+  }
+
   function setupActions() {
     const user = window.CURRENT_USER || {};
     document.getElementById("userLabel").textContent = user.email || "";
@@ -734,16 +795,15 @@
       button.addEventListener("click", () => switchView(button.dataset.libraryView).catch(handleError));
     });
     document.getElementById("refreshLibraryButton").addEventListener("click", refreshActiveView);
-    nodes.showAttentionCases?.addEventListener("click", async () => {
-      await switchView("cases");
-      nodes.caseAnalysis.value = "attention";
-      await loadCases();
-    });
     nodes.caseSearch.addEventListener("input", () => debounce("case", () => loadCases()));
-    nodes.caseAnalysis.addEventListener("change", () => loadCases().catch(handleError));
+    nodes.caseAnalysis.addEventListener("change", () => {
+      setStageFilter("");
+      loadCases().catch(handleError);
+    });
     document.getElementById("clearCaseFiltersButton").addEventListener("click", () => {
       nodes.caseSearch.value = "";
       nodes.caseAnalysis.value = "";
+      setStageFilter("");
       loadCases().catch(handleError);
     });
     nodes.moreCases.addEventListener("click", () => loadCases(true).catch(handleError));
@@ -797,18 +857,19 @@
       link.click();
       link.remove();
     });
-    nodes.deleteCase.addEventListener("click", async () => {
+    nodes.deleteCase.addEventListener("click", () => {
       if (!state.selectedCaseId || !state.selectedCase) return;
-      if (!window.confirm(`Удалить кейс «${state.selectedCase.title}»? Результаты останутся в истории.`)) return;
-      await api(`/api/cases/${state.selectedCaseId}/delete`, {method: "POST", body: "{}"});
-      clearCaseDetail();
-      await Promise.all([loadSummary(), loadCases()]);
-      toast("Кейс удалён");
+      scheduleCaseDelete({id: state.selectedCaseId, title: state.selectedCase.title}).catch(handleError);
     });
+    window.addEventListener("pagehide", flushPendingDelete);
   }
 
   async function initialize() {
     setupActions();
+    document.addEventListener("cvd:interface-mode", () => {
+      applyModeVisibility();
+      renderResults();
+    });
     const requestedView = new URLSearchParams(window.location.search).get("view");
     if (["cases", "results", "imports", "preparations"].includes(requestedView)) {
       await switchView(requestedView);

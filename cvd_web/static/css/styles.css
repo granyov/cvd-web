@@ -258,6 +258,15 @@ a {
   color: var(--danger);
 }
 
+.notice.info-note {
+  background: var(--accent-soft);
+}
+
+.clinical-cards .snapshot-empty {
+  margin: 0;
+  padding: 12px 14px;
+}
+
 ::selection {
   background: var(--accent-soft);
   color: var(--text);
@@ -432,32 +441,8 @@ a {
   color: #fff;
 }
 
-.dropdown-field {
-  display: grid;
-  gap: 4px;
-  padding: 6px 10px;
-  font-size: 0.78rem;
-  color: var(--muted);
-}
-
-.dropdown-field .mode-select {
-  width: 100%;
-}
-
 .more-menu {
   position: relative;
-}
-
-.case-context {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 6px;
-  min-width: 0;
-}
-
-.legacy-status {
-  display: none;
 }
 
 .workflow-cockpit {
@@ -465,71 +450,17 @@ a {
   top: 68px;
   z-index: 8;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 12px 14px;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 10px 12px;
   align-items: center;
   margin: 0 0 16px;
   border: 0;
   border-radius: var(--radius-lg);
-  padding: 12px 14px 14px;
+  padding: 12px 14px 12px 18px;
   background: var(--material);
   -webkit-backdrop-filter: saturate(180%) blur(24px);
   backdrop-filter: saturate(180%) blur(24px);
   box-shadow: 0 6px 24px rgba(0, 0, 0, 0.08), 0 0 0 0.5px var(--border);
-}
-
-.workflow-cockpit-main {
-  display: grid;
-  min-width: 0;
-  gap: 8px;
-}
-
-.workflow-status-grid {
-  display: grid;
-  grid-template-columns: minmax(120px, 1fr) minmax(110px, 0.75fr) minmax(140px, 1fr);
-  gap: 8px;
-}
-
-.workflow-status-grid > div {
-  min-width: 0;
-  border: 0;
-  border-radius: 12px;
-  padding: 8px 12px;
-  background: var(--field-bg);
-}
-
-.workflow-status-grid span,
-.workflow-status-grid strong {
-  display: block;
-  min-width: 0;
-}
-
-.workflow-status-grid span {
-  color: var(--muted);
-  font-size: 0.75rem;
-  font-weight: 500;
-}
-
-.workflow-status-grid strong {
-  overflow: hidden;
-  color: var(--text);
-  font-size: 0.9375rem;
-  font-weight: 600;
-  line-height: 1.35;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.workflow-cockpit-actions {
-  display: flex;
-  align-items: center;
-}
-
-#openTaskCenterButton {
-  flex: 0 0 auto;
-  min-width: 144px;
-  white-space: nowrap;
-  padding-inline: 9px;
 }
 
 .button-badge {
@@ -565,63 +496,6 @@ a {
   background: var(--tint-green);
 }
 
-.next-action-line {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: baseline;
-  gap: 6px;
-  margin-bottom: 0;
-  padding: 9px 12px;
-  border-radius: 12px;
-  background: var(--accent-soft);
-  font-size: 0.875rem;
-}
-
-.next-action-line strong {
-  color: var(--accent);
-  font-weight: 600;
-}
-
-.quick-workspace {
-  display: grid;
-  gap: 10px;
-  margin-bottom: 16px;
-  border: 0;
-  border-radius: var(--radius);
-  padding: 12px 16px;
-  background: var(--panel);
-  box-shadow: var(--shadow);
-}
-
-.quick-workspace.is-collapsed .quick-workspace-body {
-  display: none;
-}
-
-.quick-workspace-head {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px 12px;
-  align-items: center;
-}
-
-.quick-workspace h2 {
-  margin: 0;
-  font-size: 0.95rem;
-}
-
-.quick-profile-label {
-  margin: 0 0 0 4px;
-  color: var(--muted);
-  font-size: 0.82rem;
-  font-weight: 500;
-}
-
-.quick-workspace-head select {
-  width: auto;
-  min-width: 210px;
-  max-width: 300px;
-}
-
 .quick-profile-badge {
   padding: 2px 9px;
   border-radius: 999px;
@@ -630,84 +504,6 @@ a {
   font-size: 0.76rem;
   font-weight: 600;
   cursor: help;
-}
-
-.quick-workspace-head #quickWorkspaceToggle {
-  margin-left: auto;
-}
-
-.quick-workspace-body {
-  display: grid;
-  gap: 9px;
-}
-
-.quick-workspace-body-head {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
-  align-items: center;
-  border-top: 1px solid var(--border);
-  padding-top: 9px;
-}
-
-.quick-workspace-body-head .muted {
-  min-width: 0;
-  font-size: 0.8rem;
-  line-height: 1.35;
-}
-
-.quick-fields-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
-  gap: 9px;
-}
-
-.quick-field {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 5px 8px;
-  align-items: end;
-  border: 0;
-  border-radius: 12px;
-  padding: 10px;
-  background: var(--panel-2);
-}
-
-.quick-field label,
-.quick-field small {
-  grid-column: 1 / -1;
-  min-width: 0;
-}
-
-.quick-field label {
-  color: var(--text);
-  font-size: 0.82rem;
-  font-weight: 700;
-}
-
-.quick-field small {
-  overflow: hidden;
-  color: var(--muted);
-  font-size: 0.72rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.quick-field input,
-.quick-field select,
-.quick-field textarea {
-  min-width: 0;
-  padding: 7px 8px;
-}
-
-.quick-field textarea {
-  min-height: 72px;
-}
-
-.quick-field button {
-  min-height: 32px;
-  padding: 6px 8px;
-  font-size: 0.75rem;
 }
 
 .field-search-box {
@@ -863,43 +659,6 @@ a {
   pointer-events: none;
   color: var(--muted);
   font-size: 0.74rem;
-}
-
-/* Прогресс ключевых полей */
-.readiness-progress {
-  display: grid;
-  gap: 6px;
-  margin-bottom: 10px;
-}
-
-.readiness-progress-caption {
-  display: flex;
-  justify-content: space-between;
-  align-items: baseline;
-  font-size: 0.82rem;
-  color: var(--muted);
-}
-
-.readiness-progress-caption strong {
-  color: var(--text);
-}
-
-.readiness-progress-track {
-  height: 4px;
-  border-radius: 999px;
-  background: var(--fill);
-  overflow: hidden;
-}
-
-.readiness-progress-bar {
-  height: 100%;
-  border-radius: 999px;
-  background: var(--accent-fill);
-  transition: width 0.25s ease;
-}
-
-.readiness-progress-bar.ok {
-  background: var(--tint-green);
 }
 
 /* Red flags в отчёте AI */
@@ -2199,6 +1958,22 @@ button.job-chip {
   cursor: pointer;
 }
 
+.job-chip {
+  max-width: 100%;
+}
+
+.job-chip strong {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.job-chip .muted {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
 .job-chip .muted {
   color: var(--muted);
 }
@@ -2461,38 +2236,6 @@ details.section.linked-highlight {
 
 .ai-error-body small {
   color: var(--muted);
-}
-
-.result-ready {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 14px;
-  margin-bottom: 16px;
-  border: 0;
-  border-radius: var(--radius);
-  padding: 14px 16px;
-  background: var(--panel);
-  box-shadow: 0 0 0 1.5px var(--accent-fill), var(--shadow);
-}
-
-.result-ready strong,
-.result-ready span {
-  display: block;
-}
-
-.result-ready span {
-  margin-top: 2px;
-  color: var(--muted);
-  font-size: 0.84rem;
-}
-
-.result-ready button {
-  flex: 0 0 auto;
-  min-width: 190px;
-  color: #fff;
-  text-align: center;
-  white-space: normal;
 }
 
 .pill {
@@ -3761,20 +3504,10 @@ body[data-theme="dark"] .toast {
     flex: 1 1 auto;
   }
 
-  .result-ready {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
   .draft-banner,
   .quality-heading {
     align-items: stretch;
     flex-direction: column;
-  }
-
-  .result-ready button {
-    width: 100%;
-    min-width: 0;
   }
 
   .quality-heading button {
@@ -3978,39 +3711,6 @@ body[data-theme="dark"] .toast {
   .settings-group-title span {
     text-align: left;
   }
-}
-.section-nav {
-  position: sticky;
-  top: 72px;
-  z-index: 2;
-  display: flex;
-  gap: 8px;
-  overflow-x: auto;
-  border: 0;
-  border-radius: 999px;
-  background: var(--material);
-  -webkit-backdrop-filter: saturate(180%) blur(20px);
-  backdrop-filter: saturate(180%) blur(20px);
-  box-shadow: 0 0 0 0.5px var(--border);
-  margin-bottom: 12px;
-  padding: 6px;
-  scrollbar-width: thin;
-}
-
-.section-nav-item {
-  flex: 0 0 auto;
-  border-radius: 999px;
-  font-size: 0.8rem;
-  padding: 6px 12px;
-  white-space: nowrap;
-}
-
-.section-nav-item.ok {
-  color: var(--ok);
-}
-
-.section-nav-item.warning {
-  color: var(--warning);
 }
 
 .import-review-summary,
@@ -4242,16 +3942,6 @@ body[data-theme="dark"] .toast {
   .model-meta-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
-
-  .section-nav {
-    top: 58px;
-  }
-}
-
-.mode-select {
-  width: auto;
-  min-width: 130px;
-  padding: 8px 10px;
 }
 
 .admin-shell {
@@ -4320,10 +4010,9 @@ body[data-interface-mode="doctor"] #downloadJsonButton,
 body[data-interface-mode="doctor"] #downloadFhirButton,
 body[data-interface-mode="doctor"] .technical-response,
 body[data-interface-mode="doctor"] #demoCaseButton,
+body[data-interface-mode="doctor"] .technical-only,
 /* Ответ модели врач читает в окне результата, а не редактирует как поле анкеты. */
-body[data-interface-mode="doctor"] #section-MODEL_OUTPUT,
-body[data-interface-mode="doctor"] #admin-logs-section,
-body[data-interface-mode="doctor"] #admin-settings-section {
+body[data-interface-mode="doctor"] #section-MODEL_OUTPUT {
   display: none !important;
 }
 
@@ -4345,30 +4034,19 @@ body[data-interface-mode="researcher"] .layout {
 
 @media (max-width: 900px) {
   .workflow-cockpit,
-  .quick-workspace-head,
   .action-queue-head {
     grid-template-columns: 1fr;
     align-items: stretch;
   }
 
-  .workflow-status-grid,
   .model-workbench-grid,
   .import-decision-panel,
   .worklist-stages {
     grid-template-columns: 1fr;
   }
 
-  .quick-workspace-head,
   .action-queue-head {
     flex-direction: column;
-  }
-
-  .quick-workspace-controls {
-    flex-wrap: wrap;
-  }
-
-  .quick-workspace-controls select {
-    min-width: min(100%, 260px);
   }
 
   .task-center-summary {
@@ -4387,11 +4065,6 @@ body[data-interface-mode="researcher"] .layout {
     margin-left: -4px;
   }
 
-  .workflow-status-grid {
-    gap: 6px;
-  }
-
-  .quick-fields-grid,
   .action-queue-list {
     grid-template-columns: 1fr;
   }
@@ -4458,5 +4131,949 @@ button.check-row.warning:focus-visible {
 @media (max-width: 900px) {
   .quality-dashboard-grid {
     grid-template-columns: 1fr;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Путь врача: стартовый экран, строка статуса с одной главной кнопкой,
+ * навигация по разделам, экран результата, палитра команд и диалоги.
+ * ------------------------------------------------------------------------- */
+
+kbd,
+.menu-shortcut {
+  display: inline-flex;
+  align-items: center;
+  min-height: 20px;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: var(--fill);
+  color: var(--muted);
+  font-family: var(--font-text);
+  font-size: 0.6875rem;
+  font-weight: 500;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+.dropdown-menu .menu-shortcut {
+  margin-left: auto;
+  padding-left: 12px;
+}
+
+.dropdown-menu button:hover .menu-shortcut {
+  background: rgba(255, 255, 255, 0.2);
+  color: rgba(255, 255, 255, 0.9);
+}
+
+hr.menu-separator {
+  height: 1px;
+  margin: 4px 8px;
+  border: 0;
+  background: var(--border);
+}
+
+.dropdown-menu .menu-switch {
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.switch {
+  position: relative;
+  flex: 0 0 auto;
+  width: 34px;
+  height: 20px;
+  border-radius: 999px;
+  background: var(--fill-strong);
+  transition: background-color 0.18s ease;
+}
+
+.switch::after {
+  content: "";
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.22);
+  transition: transform 0.18s ease;
+}
+
+.menu-switch.is-on .switch {
+  background: var(--tint-green);
+}
+
+.menu-switch.is-on .switch::after {
+  transform: translateX(14px);
+}
+
+.dropdown-menu .menu-danger {
+  color: var(--danger);
+}
+
+.dropdown-menu .menu-danger:hover {
+  background: var(--tint-red);
+  color: #fff;
+}
+
+.palette-trigger {
+  justify-content: flex-start;
+  gap: 8px;
+  min-width: 230px;
+  color: var(--muted);
+  font-weight: 400;
+}
+
+.palette-trigger .menu-shortcut {
+  margin-left: auto;
+}
+
+.layout > .panel:first-child > .panel-header .palette-trigger {
+  background: var(--panel);
+}
+
+/* Строка статуса: что за кейс, сохранён ли он, сколько ключевых полей и что с AI. */
+.cockpit-status {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 0;
+  min-width: 0;
+  font-size: 0.875rem;
+}
+
+.cockpit-status strong {
+  margin-right: 12px;
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.cockpit-meta {
+  color: var(--muted);
+}
+
+.cockpit-meta + .cockpit-meta::before {
+  content: "·";
+  margin: 0 8px;
+  color: var(--muted);
+}
+
+.cockpit-meta.ok {
+  color: var(--ok);
+}
+
+.cockpit-meta.warning {
+  color: var(--warning);
+}
+
+.cockpit-meta.error {
+  color: var(--danger);
+}
+
+#nextActionButton {
+  min-height: 36px;
+  padding: 8px 18px;
+  white-space: nowrap;
+}
+
+.workflow-cockpit #openTaskCenterButton {
+  white-space: nowrap;
+}
+
+/* Стартовый экран нового кейса: три пути вместо пустой анкеты из 117 полей. */
+.workspace-start {
+  padding: 24px 4px 8px;
+}
+
+.workspace-start h1 {
+  margin: 0 0 6px;
+  font-size: 2.125rem;
+  font-weight: 700;
+  letter-spacing: -0.024em;
+}
+
+.workspace-start > p {
+  max-width: 640px;
+  margin: 0 0 22px;
+  font-size: 1rem;
+  line-height: 1.45;
+}
+
+.start-options {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.start-option {
+  display: grid;
+  align-content: start;
+  justify-items: start;
+  gap: 8px;
+  min-height: 184px;
+  padding: 20px;
+  border-radius: var(--radius-lg);
+  background: var(--panel);
+  box-shadow: var(--shadow), 0 0 0 0.5px var(--border);
+  color: var(--text);
+  text-align: left;
+  white-space: normal;
+  transition: transform 0.15s ease, box-shadow 0.15s ease, background-color 0.15s ease;
+}
+
+.start-option:hover {
+  background: var(--panel);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.08), 0 0 0 0.5px var(--border);
+  transform: translateY(-2px);
+}
+
+.start-option strong {
+  font-size: 1.0625rem;
+  font-weight: 600;
+}
+
+.start-option > span:not(.start-icon) {
+  color: var(--muted);
+  font-size: 0.875rem;
+  font-weight: 400;
+  line-height: 1.45;
+}
+
+.start-icon {
+  display: inline-grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  margin-bottom: 4px;
+  border-radius: 12px;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.start-icon .icon {
+  width: 22px;
+  height: 22px;
+}
+
+.start-option.is-primary {
+  background: var(--accent-fill);
+  box-shadow: 0 8px 24px rgba(0, 113, 227, 0.28);
+  color: #fff;
+}
+
+.start-option.is-primary:hover {
+  background: color-mix(in srgb, var(--accent-fill) 92%, white);
+}
+
+.start-option.is-primary > span:not(.start-icon) {
+  color: rgba(255, 255, 255, 0.86);
+}
+
+.start-option.is-primary .start-icon {
+  background: rgba(255, 255, 255, 0.2);
+  color: #fff;
+}
+
+.link-button {
+  min-height: 0;
+  margin-top: 16px;
+  padding: 4px 0;
+  background: none;
+  color: var(--accent);
+}
+
+.link-button:hover {
+  background: none;
+  text-decoration: underline;
+}
+
+/* Анкета: оглавление разделов слева, инструменты профиля и поиска над ней. */
+.form-area {
+  display: grid;
+  grid-template-columns: 210px minmax(0, 1fr);
+  gap: 20px;
+  align-items: start;
+}
+
+.form-column {
+  min-width: 0;
+}
+
+.section-sidebar {
+  position: sticky;
+  top: 156px;
+  max-height: calc(100vh - 172px);
+  overflow-y: auto;
+  padding: 2px 0 12px;
+  scrollbar-width: thin;
+}
+
+.section-nav-heading {
+  margin: 16px 10px 6px;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.section-nav-heading:first-child {
+  margin-top: 4px;
+}
+
+.section-nav-link {
+  display: grid;
+  grid-template-columns: 20px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-height: 32px;
+  padding: 5px 10px;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  text-align: left;
+}
+
+.section-nav-link:hover {
+  background: var(--fill);
+}
+
+.section-nav-link.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.section-nav-link.is-extra {
+  color: var(--muted);
+}
+
+.section-nav-number {
+  color: var(--muted);
+  font-family: var(--font-rounded);
+  font-size: 0.6875rem;
+  font-weight: 600;
+}
+
+.section-nav-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.section-nav-state {
+  color: var(--muted);
+  font-size: 0.6875rem;
+  font-weight: 600;
+}
+
+.section-nav-state.ok {
+  color: var(--ok);
+}
+
+.section-nav-state.warning {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--tint-orange);
+}
+
+.form-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px 12px;
+  margin: 0 0 10px;
+}
+
+.profile-picker {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  white-space: nowrap;
+}
+
+.profile-picker select {
+  width: auto;
+  min-width: 220px;
+  background-color: var(--panel);
+  box-shadow: var(--shadow), 0 0 0 0.5px var(--border);
+  color: var(--text);
+}
+
+.form-toolbar .field-search-box {
+  flex: 1 1 220px;
+  margin: 0;
+}
+
+.toggle-chip {
+  min-height: 34px;
+  background: var(--panel);
+  box-shadow: 0 0 0 0.5px var(--border);
+  font-size: 0.8125rem;
+}
+
+.toggle-chip.is-on {
+  background: var(--accent-fill);
+  box-shadow: none;
+  color: #fff;
+}
+
+.toggle-chip.is-on:hover {
+  background: color-mix(in srgb, var(--accent-fill) 88%, white);
+}
+
+#missingOnlyNotice {
+  margin: 0 0 12px;
+}
+
+/* Фильтр «только незаполненные ключевые»: прячет всё, кроме нужных полей. */
+#caseForm.missing-only details.section:not(.has-missing),
+#caseForm.missing-only .form-section-group,
+#caseForm.missing-only .extra-sections:not(.has-missing),
+#caseForm.missing-only .extra-sections > summary,
+#caseForm.missing-only details.section.has-missing .field:not(.is-missing) {
+  display: none;
+}
+
+.extra-sections {
+  margin-top: 28px;
+}
+
+.extra-sections > summary {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 4px 12px;
+  padding: 10px 4px;
+  cursor: pointer;
+  list-style: none;
+}
+
+.extra-sections > summary::-webkit-details-marker {
+  display: none;
+}
+
+.extra-sections > summary::before {
+  content: "";
+  align-self: center;
+  width: 7px;
+  height: 7px;
+  margin-right: 2px;
+  border-right: 2px solid var(--muted);
+  border-bottom: 2px solid var(--muted);
+  transform: rotate(-45deg);
+  transition: transform 0.18s ease;
+}
+
+.extra-sections[open] > summary::before {
+  transform: rotate(45deg);
+}
+
+.extra-sections > summary strong {
+  font-size: 1.25rem;
+  font-weight: 700;
+  letter-spacing: -0.014em;
+}
+
+.extra-sections > summary span {
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+
+.extra-sections-body {
+  padding-top: 6px;
+}
+
+/* Справочные сигналы свёрнуты под значимыми. */
+.signal-info > summary {
+  padding: 4px 2px;
+  color: var(--muted);
+  font-size: 0.8125rem;
+  font-weight: 600;
+  cursor: pointer;
+  list-style: none;
+}
+
+.signal-info > summary::-webkit-details-marker {
+  display: none;
+}
+
+.signal-info > summary::before {
+  content: "›";
+  display: inline-block;
+  width: 12px;
+  transition: transform 0.15s ease;
+}
+
+.signal-info[open] > summary::before {
+  transform: rotate(90deg);
+}
+
+.signal-info > .signal-row {
+  margin-top: 7px;
+}
+
+/* Результат AI — документ на весь экран: слева заключение, справа решения врача. */
+.result-view {
+  padding: 24px;
+}
+
+.result-view .model-result-card {
+  width: min(1320px, 100%);
+  height: calc(100vh - 48px);
+  height: calc(100dvh - 48px);
+  max-height: none;
+}
+
+.result-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 24px;
+  align-items: start;
+}
+
+.result-main {
+  display: grid;
+  gap: 14px;
+  min-width: 0;
+}
+
+.result-side {
+  position: sticky;
+  top: 0;
+  display: grid;
+  gap: 14px;
+}
+
+.result-actions {
+  display: grid;
+  gap: 8px;
+}
+
+.result-actions > button,
+.result-actions .more-menu > button {
+  width: 100%;
+  min-height: 40px;
+}
+
+.result-actions .more-menu .dropdown-menu {
+  left: 0;
+  right: 0;
+}
+
+.model-workbench-panel.is-ai {
+  background: var(--accent-soft);
+}
+
+.result-side .review-form {
+  margin: 0;
+}
+
+.review-form-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 8px;
+}
+
+.rating-segments {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 6px;
+}
+
+.rating-segments label {
+  position: relative;
+  margin: 0;
+}
+
+.rating-segments input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.rating-segments span {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 38px;
+  border-radius: 10px;
+  background: var(--panel);
+  box-shadow: 0 0 0 0.5px var(--border);
+  font-size: 0.875rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.rating-segments span:hover {
+  background: var(--fill);
+}
+
+.rating-segments input:checked + span {
+  background: var(--accent-fill);
+  box-shadow: none;
+  color: #fff;
+}
+
+.rating-segments .is-danger input:checked + span {
+  background: var(--tint-red);
+}
+
+.rating-segments input:focus-visible + span {
+  outline: 3px solid var(--focus-ring);
+  outline-offset: 1px;
+}
+
+.review-details > summary {
+  padding: 2px 0;
+  color: var(--accent);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  cursor: pointer;
+  list-style: none;
+}
+
+.review-details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.review-details-body {
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.result-disclaimer {
+  margin: 0;
+  font-size: 0.75rem;
+}
+
+/* Палитра команд — как Spotlight: поле поиска сверху, результаты списком. */
+.palette {
+  place-items: start center;
+  padding-top: 12vh;
+}
+
+.palette-card {
+  width: min(640px, 100%);
+  max-height: min(560px, 76vh);
+  border-radius: 18px;
+}
+
+.palette-search {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--border);
+}
+
+.palette-search .icon {
+  width: 18px;
+  height: 18px;
+  color: var(--muted);
+}
+
+.palette-search input::-webkit-search-cancel-button {
+  display: none;
+}
+
+.palette-search input,
+.palette-search input:focus {
+  min-height: 30px;
+  padding: 0;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  box-shadow: none;
+  font-size: 1.0625rem;
+}
+
+.palette-list {
+  overflow-y: auto;
+  padding: 4px 8px 8px;
+}
+
+.palette-heading {
+  margin: 10px 10px 4px;
+  color: var(--muted);
+  font-size: 0.75rem;
+  font-weight: 600;
+}
+
+.palette-item {
+  justify-content: flex-start;
+  gap: 10px;
+  width: 100%;
+  min-height: 38px;
+  padding: 8px 12px;
+  border-radius: 9px;
+  background: transparent;
+  font-weight: 400;
+  text-align: left;
+}
+
+.palette-item.active {
+  background: var(--accent-fill);
+  color: #fff;
+}
+
+.palette-item.active .palette-hint {
+  color: rgba(255, 255, 255, 0.82);
+}
+
+.palette-item.active .menu-shortcut {
+  background: rgba(255, 255, 255, 0.2);
+  color: #fff;
+}
+
+.palette-label {
+  flex: 0 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.palette-hint {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted);
+  font-size: 0.8125rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.palette-item .menu-shortcut {
+  margin-left: auto;
+}
+
+.palette-empty {
+  margin: 0;
+  padding: 24px 16px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.palette-footer {
+  display: flex;
+  gap: 16px;
+  padding: 10px 18px;
+  border-top: 1px solid var(--border);
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.palette-footer kbd {
+  margin-right: 3px;
+}
+
+/* Тост с действием: «Удалено · Отменить». */
+.toast {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.toast-action {
+  min-height: 0;
+  padding: 4px 12px;
+  background: rgba(255, 255, 255, 0.16);
+  color: #fff;
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
+
+.toast-action:hover {
+  background: rgba(255, 255, 255, 0.28);
+}
+
+/* Диалоги вместо window.confirm/prompt. */
+.ui-dialog {
+  z-index: 90;
+}
+
+.dialog-card {
+  width: min(420px, 100%);
+}
+
+.dialog-card:has(textarea) {
+  width: min(640px, 100%);
+}
+
+.dialog-body {
+  display: grid;
+  gap: 10px;
+  padding: 24px 24px 8px;
+}
+
+.dialog-body h2 {
+  margin: 0;
+  font-size: 1.1875rem;
+  font-weight: 700;
+}
+
+.dialog-body p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.45;
+}
+
+.dialog-field {
+  display: grid;
+  gap: 6px;
+  margin: 6px 0 0;
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+
+.dialog-field textarea {
+  min-height: 200px;
+}
+
+.dialog-body .dialog-error {
+  color: var(--danger);
+  font-size: 0.8125rem;
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 16px 24px 22px;
+}
+
+.dialog-actions button {
+  min-width: 96px;
+}
+
+button.danger-fill {
+  background: var(--tint-red);
+  color: #fff;
+  font-weight: 600;
+}
+
+button.danger-fill:hover {
+  background: color-mix(in srgb, var(--tint-red) 88%, black);
+}
+
+/* Архив: метрики — для аналитики, врачу они не нужны; стадии работают как фильтр. */
+body[data-interface-mode="doctor"] .records-metrics {
+  display: none;
+}
+
+body[data-interface-mode="doctor"] .records-hero {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.worklist-stage.selected,
+.worklist-stage.is-total.selected {
+  background: var(--panel);
+  box-shadow: 0 0 0 2px var(--accent-fill);
+}
+
+.record-list-meta {
+  color: var(--muted);
+}
+
+#caseDetailMeta {
+  align-items: center;
+}
+
+.record-detail-facts {
+  display: block;
+  width: 100%;
+  color: var(--muted);
+  font-size: 0.8125rem;
+}
+
+.record-detail-next {
+  width: 100%;
+  margin: 2px 0 0;
+  font-size: 0.875rem;
+}
+
+@media (max-width: 1240px) {
+  .form-area {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .section-sidebar {
+    display: none;
+  }
+}
+
+@media (max-width: 1000px) {
+  .result-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .result-side {
+    position: static;
+    order: -1;
+  }
+}
+
+@media (max-width: 700px) {
+  .workflow-cockpit {
+    position: static;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .cockpit-status .cockpit-meta:not(#saveStateText) {
+    display: none;
+  }
+
+  #nextActionButton {
+    width: 100%;
+  }
+
+  .start-options {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .start-option {
+    min-height: 0;
+  }
+
+  .workspace-start h1 {
+    font-size: 1.75rem;
+  }
+
+  .palette-trigger {
+    display: none;
+  }
+
+  .profile-picker {
+    flex: 1 1 100%;
+    flex-wrap: wrap;
+  }
+
+  .profile-picker select {
+    flex: 1 1 auto;
+    width: 100%;
+    min-width: 0;
+  }
+
+  .result-view {
+    padding: 0;
+  }
+
+  .result-view .model-result-card {
+    height: 100vh;
+    height: 100dvh;
+    border-radius: 0;
+  }
+
+  .rating-segments {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 }
