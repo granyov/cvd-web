@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-VERSION="v0.9.17"
+VERSION="v0.9.20"
 TARGET=""
 INSTALL_DIR=""
 BIND_HOST=""

@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.9.20 - 2026-10-21
+
+- Restyle the interface after Apple's iOS/iPadOS and macOS design kits in light and dark themes, with the system font stack; status text, links and white-on-red buttons use darker shades that pass WCAG AA, and the focus outline is opaque.
+- Open a new case on a start screen with three paths (paste a discharge note, upload a file, fill in manually) instead of an empty form of 117 fields.
+- Replace the status tiles, the "Next:" hint and the duplicate progress bar with one status line and one primary button that walks the case from key fields to the AI analysis, the result and the MIS copy.
+- Save cases automatically after a pause in typing and at most once every 15 seconds; create a new case only once it has an ID, a name or a complaint; flush pending edits before switching cases, an AI run, the MIS copy and logout; send edits of an existing case with keepalive when the tab closes; serialise saves so a retry never creates a case twice; ask before leaving a case whose edits could not be saved.
+- Keep an AI result with the case that started it: if the doctor opened another case meanwhile, a notification offers to open the result instead of writing it into the open form.
+- Offer a local draft of `/app?case=N` after a reload when it is newer than the server copy.
+- Open other users' cases read-only for administrators and hide their delete action.
+- Let the case profile order the form sections, add a section sidebar with fill state and a "missing key fields only" filter; navigating to a hidden field turns the filter off.
+- Show the AI result as a full-screen document with "Accept into draft" and "Copy for MIS" and a one-tap rating; accepting the draft does not mark the result stale; rating saves are debounced and serialised, and "Mark AI error" never downgrades an "unsafe" rating.
+- Make the archive stages the case filter, shorten list rows, and replace the delete confirmation with an undo that pauses on hover and focus, takes keyboard focus, survives several deletes in a row and restores the case when the server refuses.
+- Tier clinical signals; a troponin within the reference range is informational.
+- Add a Cmd/Ctrl+K palette and Cmd/Ctrl+Enter, Cmd/Ctrl+S and Alt+N shortcuts.
+- Replace the three interface modes with a "Technical data" switch, stored per account.
+- Show toasts above modals; dialogs keep focus inside, submit on Enter only from the field and close on Escape from anywhere.
+- Rewrite user-facing texts: natural demographics, readable connection errors, app dialogs instead of browser windows.
+- Add `tests/test_common_ui.js` for the shared UI module.
+- Update Umbrel metadata and image tag for `ghcr.io/granyov/cvd-web:v0.9.20`.
+
 ## v0.9.17 - 2026-07-20
 
 - Warn on the printed conclusion when the case was edited after the analysis, naming the changed fields: on screen that warning lives a second, on paper the document lives for years.
