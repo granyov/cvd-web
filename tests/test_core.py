@@ -122,6 +122,9 @@ class CoreTests(unittest.TestCase):
         self.assertNotEqual(patient_data_hash(patient_data), patient_data_hash(changed_clinical_data))
         self.assertFalse(has_clinical_input({"MODEL_OUTPUT": {"Final_model_diagnosis": "old"}}))
         self.assertTrue(has_clinical_input({"GENERAL_INFO": {"Patient_ID": "Q-2"}}))
+        changes = patient_data_changes({"GENERAL_INFO": {"Age": 70}}, {"GENERAL_INFO": {"Age": 71, "Sex": "female"}})
+        self.assertEqual([item["path"] for item in changes], ["GENERAL_INFO.Sex", "GENERAL_INFO.Age"])
+        self.assertEqual(changes[1]["kind"], "changed")
 
     def test_troponin_signal_warns_only_above_reference(self):
         def troponin_signals(value):
@@ -134,9 +137,6 @@ class CoreTests(unittest.TestCase):
         self.assertEqual([signal["kind"] for signal in above], ["warning"])
         self.assertEqual(troponin_signals(None), [])
         self.assertEqual(case_quality_summary({"LABS_CARDIAC_MARKERS": {"Troponin_ng_L": 9}})["critical_signals"], 0)
-        changes = patient_data_changes({"GENERAL_INFO": {"Age": 70}}, {"GENERAL_INFO": {"Age": 71, "Sex": "female"}})
-        self.assertEqual([item["path"] for item in changes], ["GENERAL_INFO.Sex", "GENERAL_INFO.Age"])
-        self.assertEqual(changes[1]["kind"], "changed")
 
     def test_empty_ai_gateway_headers_json_clears_legacy_headers(self):
         with tempfile.TemporaryDirectory() as tmp:

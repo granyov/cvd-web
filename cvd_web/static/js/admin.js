@@ -740,8 +740,10 @@
       title: "Сброс пароля",
       message: `Временный пароль для ${email}. Пользователь сменит его при следующем входе.`,
       label: "Новый временный пароль",
-      type: "password",
-      autocomplete: "new-password",
+      // Пароль виден: администратор передаёт его пользователю и должен проверить, что ввёл.
+      type: "text",
+      autocomplete: "off",
+      spellcheck: false,
       minLength: 15,
       confirmLabel: "Сбросить пароль"
     });
@@ -850,7 +852,8 @@
     const row = document.createElement("tr");
     const quality = item.quality || {};
     const missing = (quality.missing_required || []).map((entry) => entry.label).join(", ");
-    const signals = (quality.signals || []).map((entry) => entry.title).join(", ");
+    // Справочные сигналы в сводке не считаются — и в таблице их не перечисляем.
+    const signals = (quality.signals || []).filter((entry) => entry.kind !== "info").map((entry) => entry.title).join(", ");
     row.append(
       td(item.id),
       td(item.title),

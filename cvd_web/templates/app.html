@@ -38,7 +38,7 @@
           <span id="userLabel"></span>
         </button>
         <div class="dropdown-menu hidden" data-menu-panel>
-          <button type="button" class="menu-switch" data-technical-toggle role="menuitemcheckbox" aria-checked="false" title="Модели, JSON, экспорт и служебные метрики">
+          <button type="button" class="menu-switch" data-technical-toggle role="switch" aria-checked="false" title="Модели, JSON, экспорт и служебные метрики">
             <span>Технические данные</span><span class="switch" aria-hidden="true"></span>
           </button>
           <button type="button" data-theme-toggle>Тёмная тема</button>
@@ -69,6 +69,7 @@
                 <button type="button" id="demoCaseButton" class="technical-only" title="Создать синтетический демо-кейс с заполненной анкетой"><svg class="icon"><use href="#i-flask"/></svg>Демо-кейс</button>
               </div>
             </div>
+            <button type="button" id="openTaskCenterButton" class="hidden"><svg class="icon"><use href="#i-list-check"/></svg>Задачи <span id="taskCountBadge" class="button-badge hidden">0</span></button>
             <input id="importJsonInput" class="hidden" type="file" accept="application/json,application/xml,text/xml,application/pdf,.json,.xml,.pdf">
           </div>
           <button type="button" id="commandPaletteButton" class="palette-trigger" title="Поиск по анкете и командам">
@@ -83,7 +84,6 @@
               <span id="readinessStatusText" class="cockpit-meta">ключевые 0 из 8</span>
               <span id="aiStatusText" class="cockpit-meta">AI не запускался</span>
             </div>
-            <button type="button" id="openTaskCenterButton" class="hidden"><svg class="icon"><use href="#i-list-check"/></svg>Задачи <span id="taskCountBadge" class="button-badge hidden">0</span></button>
             <button type="button" id="nextActionButton" class="primary">Заполнить ключевые поля</button>
             <div class="workflow-progress-track" aria-hidden="true">
               <div id="workflowProgressBar" class="workflow-progress-bar"></div>
@@ -250,20 +250,20 @@
                 <summary>Подробности: ошибки, правильный диагноз, комментарий</summary>
                 <div class="review-details-body">
                   <div class="field">
-                    <label>Типы ошибок<span class="key">через ;</span></label>
-                    <input name="issue_types" type="text" placeholder="wrong_icd; missed_red_flag">
+                    <label for="reviewIssueTypes">Типы ошибок<span class="key">через ;</span></label>
+                    <input id="reviewIssueTypes" name="issue_types" type="text" placeholder="wrong_icd; missed_red_flag">
                   </div>
                   <div class="field">
-                    <label>Корректный диагноз</label>
-                    <textarea name="corrected_diagnosis"></textarea>
+                    <label for="reviewCorrectedDiagnosis">Корректный диагноз</label>
+                    <textarea id="reviewCorrectedDiagnosis" name="corrected_diagnosis"></textarea>
                   </div>
                   <div class="field">
-                    <label>Корректные МКБ-10<span class="key">через ;</span></label>
-                    <input name="corrected_icd10" type="text" placeholder="I10; I25.1">
+                    <label for="reviewCorrectedIcd">Корректные МКБ-10<span class="key">через ;</span></label>
+                    <input id="reviewCorrectedIcd" name="corrected_icd10" type="text" placeholder="I10; I25.1">
                   </div>
                   <div class="field">
-                    <label>Комментарий</label>
-                    <textarea name="comment"></textarea>
+                    <label for="reviewComment">Комментарий</label>
+                    <textarea id="reviewComment" name="comment"></textarea>
                   </div>
                   <button class="primary" type="submit">Сохранить подробности</button>
                 </div>

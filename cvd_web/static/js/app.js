@@ -90,7 +90,6 @@
   let structureTextChunkEstimate = 1;
   let structureQueueState = null;
   let structureQueueTimer = null;
-  let diagnosisQueueTimer = null;
   let activeJobsTimer = null;
   let draftSaveTimer = null;
   let suppressDraftSave = false;
@@ -102,8 +101,12 @@
   let lastModelMeta = {};
   let modelStatusText = "AI не запускался";
   let modelStatusKind = "";
-  let aiRunning = false;
+  // Сессии кейсов, в которых сейчас идёт AI-анализ: результат принадлежит своему кейсу.
+  const aiRunningSessions = new Set();
+  let currentModelRequestOk = false;
+  let resultStaleOnServer = false;
   let resultOpened = false;
+  let caseReadOnly = false;
   let manualEntry = false;
   let missingOnly = false;
   // Автосохранение: пауза после ввода и минимальный интервал между записями,
@@ -111,7 +114,9 @@
   const autosaveDelayMs = 2500;
   const autosaveMinIntervalMs = 15000;
   let autosaveTimer = null;
+  let saveQueue = Promise.resolve();
   let saveInFlight = null;
+  let inFlightSnapshot = null;
   let lastSavedAt = null;
   let lastSaveAttemptAt = 0;
   let saveErrorText = "";
@@ -124,7 +129,7 @@
   const baseDocumentTitle = document.title;
   const knownJobStatuses = new Map();
   let jobStatusesPrimed = false;
-  let awaitedDiagnosisJobId = null;
+  const awaitedDiagnosisJobIds = new Set();
   const modalTriggers = new WeakMap();
 
   const qualityRules = window.CVDClinicalQuality;
@@ -308,7 +313,10 @@
     syncStatusBar();
   }
 
+  const readOnlyText = "Кейс другого пользователя открыт только для просмотра — изменения не сохраняются";
+
   function saveStateLabel(data) {
+    if (caseReadOnly) return [hasUnsavedChanges ? "только просмотр · изменения не сохраняются" : "только просмотр", "warning"];
     if (saveErrorText) return [`не сохранено: ${saveErrorText}`, "error"];
     if (saveInFlight) return ["сохранение…", ""];
     if (hasUnsavedChanges) {
@@ -355,7 +363,7 @@
 
   function scheduleAutosave() {
     window.clearTimeout(autosaveTimer);
-    if (!hasUnsavedChanges) return;
+    if (!hasUnsavedChanges || caseReadOnly) return;
     const sinceLastAttempt = Date.now() - lastSaveAttemptAt;
     const delay = Math.max(autosaveDelayMs, autosaveMinIntervalMs - sinceLastAttempt);
     autosaveTimer = window.setTimeout(() => {
@@ -363,29 +371,55 @@
     }, delay);
   }
 
-  async function autosave() {
-    if (!hasUnsavedChanges) return;
+  async function autosave(options = {}) {
+    if (!hasUnsavedChanges || caseReadOnly) return;
     if (!currentCaseId && !canAutoCreateCase(collectData())) {
       syncStatusBar();
       return;
     }
-    try {
-      await saveCase({silent: true});
-    } catch (err) {
-      saveErrorText = window.CVDUI.humanizeError(err).replace(/\.$/, "");
-      syncStatusBar();
-      // Сеть могла моргнуть: следующая попытка — через обычный интервал автосохранения.
-      scheduleAutosave();
-    }
+    // Ошибку уже показала строка статуса, а повтор запланировал saveCase.
+    await saveCase({silent: true, ...options}).catch(() => {});
   }
 
   // Перед сменой кейса незаписанные изменения сохраняются, а не теряются.
   async function flushAutosave() {
     window.clearTimeout(autosaveTimer);
-    if (saveInFlight) await saveInFlight.catch(() => {});
+    if (caseReadOnly) return;
+    await saveQueue;
     if (hasUnsavedChanges && (currentCaseId || canAutoCreateCase(collectData()))) {
       await saveCase({silent: true});
     }
+  }
+
+  // Сохраняет правки перед уходом с кейса. Если сохранить не удалось, спрашивает, уходить ли:
+  // правки тогда остаются только в локальном черновике.
+  async function flushBeforeLeaving(actionText) {
+    try {
+      await flushAutosave();
+      return {ok: true, saved: true};
+    } catch (err) {
+      window.clearTimeout(draftSaveTimer);
+      writeLocalDraft(collectData());
+      const proceed = await window.CVDUI.confirm({
+        title: "Изменения не сохранены на сервере",
+        message: `${window.CVDUI.humanizeError(err)} Если ${actionText} сейчас, правки останутся только в локальном черновике этого браузера, и новый ввод его перезапишет.`,
+        confirmLabel: "Всё равно продолжить",
+        cancelLabel: "Остаться",
+        destructive: true
+      });
+      return {ok: proceed, saved: false};
+    }
+  }
+
+  // 408 и 429 — временные, 409 — кейс занят пакетной обработкой; остальные 4xx повтором не исправить.
+  function isRetryableSaveError(err) {
+    const status = Number(err?.status || 0);
+    return !status || status >= 500 || [408, 409, 425, 429].includes(status);
+  }
+
+  // keepalive-запрос браузер ограничивает 64 КБ тела; кириллица занимает по два байта на символ.
+  function fitsKeepalive(body) {
+    return new TextEncoder().encode(body).length <= 60000;
   }
 
   function openModalElement(modal, focusTarget = null) {
@@ -424,7 +458,9 @@
     });
     const data = await response.json().catch(() => ({}));
     if (!response.ok) {
-      throw new Error(data.error || `HTTP ${response.status}`);
+      const error = new Error(data.error || `HTTP ${response.status}`);
+      error.status = response.status;
+      throw error;
     }
     return data;
   }
@@ -762,7 +798,11 @@
         state.className = "section-nav-state";
         state.dataset.navState = section.key;
         link.append(number, label, state);
-        link.addEventListener("click", () => focusSection(section.key));
+        link.addEventListener("click", () => {
+          // Пока идёт плавная прокрутка, наблюдатель не перебивает выбранный раздел.
+          navLockUntil = Date.now() + 900;
+          focusSection(section.key);
+        });
         sectionNav.appendChild(link);
       });
     });
@@ -784,20 +824,63 @@
     });
   }
 
-  // Подсветка раздела, который сейчас на экране, — как в оглавлении документа.
+  let navLockUntil = 0;
+  const visibleSections = new Set();
+
+  function setActiveNav(key) {
+    sectionNav?.querySelectorAll(".section-nav-link").forEach((link) => {
+      const active = link.dataset.navSection === key;
+      link.classList.toggle("active", active);
+      if (active) link.setAttribute("aria-current", "location");
+      else link.removeAttribute("aria-current");
+    });
+  }
+
+  // Подсветка раздела, который сейчас на экране, — как в оглавлении документа: верхний из видимых.
   function observeActiveSection() {
     if (!("IntersectionObserver" in window) || !sectionNav) return;
     sectionObserver?.disconnect();
+    visibleSections.clear();
     sectionObserver = new IntersectionObserver((entries) => {
       entries.forEach((entry) => {
-        if (!entry.isIntersecting) return;
-        const key = entry.target.id.replace(/^section-/, "");
-        sectionNav.querySelectorAll(".section-nav-link").forEach((link) => {
-          link.classList.toggle("active", link.dataset.navSection === key);
-        });
+        if (entry.isIntersecting) visibleSections.add(entry.target);
+        else visibleSections.delete(entry.target);
       });
-    }, {rootMargin: "-140px 0px -55% 0px"});
+      if (Date.now() < navLockUntil) return;
+      const top = Array.from(visibleSections)
+        .filter((node) => node.isConnected && node.getClientRects().length > 0)
+        .sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top)[0];
+      if (top) setActiveNav(top.id.replace(/^section-/, ""));
+    }, {rootMargin: `-${stickyOffset()}px 0px -55% 0px`});
     sectionNodes.forEach((node) => sectionObserver.observe(node));
+  }
+
+  function stickyOffset() {
+    const value = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--sticky-offset"));
+    return Number.isFinite(value) && value > 0 ? Math.round(value) : 140;
+  }
+
+  // Высота шапки и строки статуса меняется (перенос строк, ширина окна) — отступы прилипания и
+  // прокрутки к разделу берутся из реальных размеров, чтобы заголовок раздела не уходил под них.
+  function updateStickyOffsets() {
+    const root = document.documentElement;
+    const topbar = document.querySelector(".topbar");
+    const topbarHeight = topbar ? Math.ceil(topbar.getBoundingClientRect().height) : 56;
+    const cockpitSticky = workflowCockpit && !workflowCockpit.classList.contains("hidden")
+      && getComputedStyle(workflowCockpit).position === "sticky";
+    const cockpitHeight = cockpitSticky ? Math.ceil(workflowCockpit.getBoundingClientRect().height) : 0;
+    root.style.setProperty("--topbar-h", `${topbarHeight}px`);
+    root.style.setProperty("--cockpit-h", `${cockpitHeight}px`);
+    root.style.setProperty("--sticky-offset", `${topbarHeight + (cockpitHeight ? cockpitHeight + 24 : 12)}px`);
+  }
+
+  function watchStickyOffsets() {
+    updateStickyOffsets();
+    if ("ResizeObserver" in window) {
+      const observer = new ResizeObserver(() => updateStickyOffsets());
+      [document.querySelector(".topbar"), workflowCockpit].filter(Boolean).forEach((node) => observer.observe(node));
+    }
+    window.addEventListener("resize", updateStickyOffsets);
   }
 
   function applyMissingOnly(data = collectData()) {
@@ -891,10 +974,17 @@
     arrangeSections(collectData());
   }
 
+  // В режиме врача раздел ответа модели скрыт, поэтому и в поиске его полей нет.
+  function searchableSections() {
+    return window.CVD_SCHEMA
+      .map((section, sectionIndex) => ({section, sectionIndex}))
+      .filter(({section}) => section.key !== "MODEL_OUTPUT" || !isDoctorMode());
+  }
+
   function fieldSearchMatches(query) {
     const normalized = normalizeSearchText(query);
     if (normalized.length < 2) return [];
-    return window.CVD_SCHEMA.flatMap((section, sectionIndex) =>
+    return searchableSections().flatMap(({section, sectionIndex}) =>
       section.fields.map((field) => {
         const path = fieldPath(section.key, field.key);
         return {
@@ -931,16 +1021,33 @@
     });
   }
 
-  function focusSection(sectionKey) {
+  // Фильтр «только незаполненные» прячет остальное; переход к скрытому разделу или полю его выключает.
+  function revealThroughFilter(node, isTarget) {
+    if (!missingOnly || !node || isTarget(node)) return;
+    toggleMissingOnly(false);
+    toast("Показана вся анкета, чтобы открыть выбранное поле");
+  }
+
+  // Фокус переводится с задержкой (после прокрутки); если за это время открыли окно, его не трогаем.
+  function modalIsOpen() {
+    return Boolean(document.querySelector(".modal:not(.hidden)"));
+  }
+
+  function focusSection(sectionKey, {focusInput = true} = {}) {
     const details = document.getElementById(`section-${sectionKey}`);
     if (!details) return;
     revealForm();
+    revealThroughFilter(details, (node) => node.classList.contains("has-missing"));
     const extra = details.closest(".extra-sections");
     if (extra) extra.open = true;
     details.open = true;
+    setActiveNav(sectionKey);
     details.scrollIntoView({behavior: "smooth", block: "start"});
-    const firstInput = details.querySelector("input, select, textarea");
-    window.setTimeout(() => firstInput?.focus(), 250);
+    if (!focusInput) return;
+    const firstInput = Array.from(details.querySelectorAll("input, select, textarea")).find((input) => input.getClientRects().length > 0);
+    window.setTimeout(() => {
+      if (!modalIsOpen()) firstInput?.focus({preventScroll: true});
+    }, 250);
   }
 
   function collapseAllSections() {
@@ -1062,7 +1169,7 @@
   }
 
   function writeLocalDraft(data) {
-    if (suppressDraftSave) return;
+    if (suppressDraftSave || caseReadOnly) return;
     if (!qualityRules.hasClinicalInput(data)) return;
     const payload = {
       case_id: currentCaseId,
@@ -1078,7 +1185,7 @@
   }
 
   function scheduleDraftSave(data = null) {
-    if (suppressDraftSave) return;
+    if (suppressDraftSave || caseReadOnly) return;
     const snapshot = data || collectData();
     window.clearTimeout(draftSaveTimer);
     draftSaveTimer = window.setTimeout(() => writeLocalDraft(snapshot), 350);
@@ -1102,11 +1209,14 @@
     if (!pendingDraft?.patient_data) return;
     suppressDraftSave = true;
     caseSession++;
+    caseReadOnly = false;
+    saveErrorText = "";
     currentCaseId = pendingDraft.case_id || null;
+    if (window.history?.replaceState) window.history.replaceState(null, "", currentCaseId ? `/app?case=${currentCaseId}` : "/app");
     manualEntry = true;
     resetModelState(true);
-    applyData(pendingDraft.patient_data);
     collapseAllSections();
+    applyData(pendingDraft.patient_data);
     setSaveState(currentCaseId ? `кейс #${currentCaseId} восстановлен из черновика` : "черновик восстановлен", true);
     suppressDraftSave = false;
     clearLocalDraft();
@@ -1116,9 +1226,22 @@
 
   function initDraftRestore() {
     const params = new URLSearchParams(window.location.search);
+    // Черновик открытого по ссылке кейса сверяется с сервером после загрузки (offerCaseDraft).
     if (params.get("case") || params.get("request")) return;
     const draft = readLocalDraft();
     if (draft?.patient_data && qualityRules.hasClinicalInput(draft.patient_data)) showDraftBanner(draft);
+  }
+
+  // После перезагрузки /app?case=N черновик этого кейса предлагается, только если он новее
+  // серверной копии и отличается от неё: иначе правки, не успевшие уйти на сервер, терялись бы.
+  function offerCaseDraft(caseId, serverUpdatedAt) {
+    const draft = readLocalDraft();
+    if (!draft?.patient_data || Number(draft.case_id) !== Number(caseId)) return;
+    const draftTime = new Date(draft.updated_at || 0).getTime();
+    const serverTime = serverUpdatedAt ? new Date(serverUpdatedAt).getTime() : 0;
+    if (serverTime && draftTime <= serverTime) return;
+    if (JSON.stringify(draft.patient_data) === JSON.stringify(collectData())) return;
+    showDraftBanner(draft);
   }
 
   function sectionFillPercent(section, data) {
@@ -1184,15 +1307,40 @@
     });
   }
 
+  // Диагноз врача не учитываем: принятый черновик AI не должен делать заключение «устаревшим»
+  // и отправлять врача на повторный анализ собственного вывода модели.
+  function clinicalFingerprint(data) {
+    const copy = {...(data || {})};
+    delete copy.FINAL_DIAGNOSES;
+    return qualityRules.dataFingerprint(copy);
+  }
+
+  // Сервер считает результат устаревшим при любой правке, в том числе диагноза врача.
+  function serverResultStale(item) {
+    if (!item?.ai_result_stale) return false;
+    const changes = Array.isArray(item.ai_result_changes) ? item.ai_result_changes : [];
+    return !changes.length || changes.some((change) => !String(change.path || "").startsWith("FINAL_DIAGNOSES."));
+  }
+
+  function hasUsableResult() {
+    return Boolean(currentModelRequestId && currentModelRequestOk);
+  }
+
   function isResultStale(data) {
-    return Boolean(currentModelRequestId && lastModelDataFingerprint && qualityRules.dataFingerprint(data) !== lastModelDataFingerprint);
+    if (!hasUsableResult()) return false;
+    if (resultStaleOnServer) return true;
+    return Boolean(lastModelDataFingerprint && clinicalFingerprint(data) !== lastModelDataFingerprint);
+  }
+
+  function aiBusy() {
+    return aiRunningSessions.has(caseSession);
   }
 
   // Одна главная кнопка, которая ведёт по шагам: дозаполнить → запустить AI → открыть результат → в МИС.
   function nextAction(data) {
     const missing = missingRequiredData(data);
-    if (aiRunning) return {label: "AI-анализ выполняется…", hint: "Задание в очереди или обрабатывается. Можно продолжать работу.", disabled: true};
-    if (currentModelRequestId && !isResultStale(data)) {
+    if (aiBusy()) return {label: "AI-анализ выполняется…", hint: "Задание в очереди или обрабатывается. Можно продолжать работу.", disabled: true};
+    if (hasUsableResult() && !isResultStale(data)) {
       return resultOpened
         ? {label: "Копировать для МИС", hint: "Текст заключения для вставки в протокол ЕМИАС или другой МИС.", run: () => copyMisText()}
         : {label: "Открыть результат", hint: "Заключение AI рядом с диагнозом врача.", run: () => openTab("model")};
@@ -1205,7 +1353,7 @@
         run: () => focusFirstMissing(data)
       };
     }
-    if (currentModelRequestId) return {label: "Обновить AI-анализ", hint: "Данные изменились после последнего анализа.", run: () => diagnose()};
+    if (hasUsableResult()) return {label: "Обновить AI-анализ", hint: "Данные изменились после последнего анализа.", run: () => diagnose()};
     return {label: "Запустить AI-анализ", hint: "Сначала откроется проверка данных перед отправкой.", run: () => diagnose()};
   }
 
@@ -1252,9 +1400,14 @@
 
   function focusFieldPath(path) {
     const [section, field] = String(path || "").split(".");
-    focusSection(section);
     const target = document.getElementById(fieldId(section, field));
-    window.setTimeout(() => target?.focus(), 260);
+    revealThroughFilter(target, (node) => Boolean(node.closest(".field")?.classList.contains("is-missing")));
+    focusSection(section, {focusInput: false});
+    window.setTimeout(() => {
+      if (modalIsOpen()) return;
+      target?.scrollIntoView({behavior: "smooth", block: "center"});
+      target?.focus({preventScroll: true});
+    }, 260);
   }
 
   function focusFirstMissing(data = updatePreview()) {
@@ -1267,7 +1420,7 @@
   }
 
   function updateModelFreshness(data) {
-    const stale = Boolean(currentModelRequestId && lastModelDataFingerprint && qualityRules.dataFingerprint(data) !== lastModelDataFingerprint);
+    const stale = isResultStale(data);
     if (stale) {
       setModelStatus("данные изменены после AI", "warning");
     }
@@ -1355,28 +1508,45 @@
     }
   }
 
-  async function saveCase({silent = false} = {}) {
+  // Сохранения идут строго по очереди: два параллельных создания дали бы два кейса.
+  function saveCase(options = {}) {
+    const run = saveQueue.then(() => performSave(options));
+    saveQueue = run.catch(() => {});
+    return run;
+  }
+
+  async function performSave({silent = false, keepalive = false} = {}) {
+    if (caseReadOnly) throw new Error(readOnlyText);
+    // Пока сохранение ждало очереди, предыдущее могло уже записать эти же правки.
+    if (silent && !hasUnsavedChanges) return null;
     window.clearTimeout(autosaveTimer);
-    // Сохранения идут строго по очереди: два параллельных создания дали бы два кейса.
-    if (saveInFlight) await saveInFlight.catch(() => {});
     const session = caseSession;
     const data = collectData();
     const snapshot = JSON.stringify(data);
     const caseIdAtStart = currentCaseId;
+    const body = JSON.stringify({case_id: caseIdAtStart, patient_data: data});
     lastSaveAttemptAt = Date.now();
+    inFlightSnapshot = snapshot;
     saveInFlight = api("/api/cases", {
       method: "POST",
-      body: JSON.stringify({
-        case_id: caseIdAtStart,
-        patient_data: data
-      })
+      keepalive: Boolean(keepalive && caseIdAtStart && fitsKeepalive(body)),
+      body
     });
     syncStatusBar(data);
     let response;
     try {
       response = await saveInFlight;
+    } catch (err) {
+      if (session === caseSession) {
+        saveErrorText = window.CVDUI.humanizeError(err).replace(/\.$/, "");
+        // Сеть могла моргнуть: следующая попытка — через обычный интервал автосохранения.
+        if (isRetryableSaveError(err)) scheduleAutosave();
+      }
+      throw err;
     } finally {
       saveInFlight = null;
+      inFlightSnapshot = null;
+      syncStatusBar();
     }
     if (session !== caseSession) return response;
     currentCaseId = response.case_id;
@@ -1387,6 +1557,11 @@
     }
     const current = collectData();
     if (currentModelRequestId) updateModelFreshness(current);
+    if (!caseIdAtStart) {
+      // Черновик, записанный до создания кейса, теперь относится к нему.
+      window.clearTimeout(draftSaveTimer);
+      if (hasUnsavedChanges) writeLocalDraft(current);
+    }
     // Пока запрос шёл, врач мог продолжить ввод — тогда кейс остаётся «изменённым».
     if (JSON.stringify(current) === snapshot) {
       setSaveState("", false);
@@ -1668,7 +1843,7 @@
       const wasActive = previous === undefined || ["queued", "running"].includes(previous);
       const finished = ["success", "error"].includes(job.status);
       if (!wasActive || !finished || previous === job.status) return;
-      if (job.type === "diagnosis" && job.id === awaitedDiagnosisJobId) return;
+      if (job.type === "diagnosis" && awaitedDiagnosisJobIds.has(job.id)) return;
       const ready = job.status === "success";
       toast(ready ? `${aiJobTitle(job)}: результат готов` : `${aiJobTitle(job)}: ошибка выполнения`);
       markTitleReady();
@@ -1711,10 +1886,10 @@
     return grid;
   }
 
-  function openModelResultModal() {
+  function openModelResultModal(focusTarget = null) {
     if (!modelResultModal) return;
-    openModalElement(modelResultModal, document.getElementById("closeModelResultModal"));
-    if (currentModelRequestId && !resultOpened) {
+    openModalElement(modelResultModal, focusTarget || document.getElementById("closeModelResultModal"));
+    if (hasUsableResult() && !resultOpened) {
       resultOpened = true;
       updateNextAction(collectData());
     }
@@ -1850,7 +2025,7 @@
         : "Принять AI-диагноз в черновик врача";
     }
     copyModelDiagnosisButton?.toggleAttribute("disabled", !hasAi);
-    openModelReportButton?.toggleAttribute("disabled", !currentModelRequestId);
+    openModelReportButton?.toggleAttribute("disabled", !hasUsableResult());
   }
 
   async function acceptModelDiagnosisDraft() {
@@ -1900,14 +2075,16 @@
       toast("Сначала откройте результат AI");
       return;
     }
-    openModelResultModal();
     requestReviewForm.classList.remove("hidden");
-    requestReviewForm.rating.value = "wrong";
-    requestReviewForm.issue_types.value = requestReviewForm.issue_types.value || "needs_correction";
     const details = document.getElementById("reviewDetails");
     if (details) details.open = true;
-    requestReviewForm.comment.focus();
-    saveRequestReview().catch((err) => toast(err.message));
+    openModelResultModal(requestReviewForm.comment);
+    // Оценку «опасно» не понижаем до «неверно»: она важнее для разбора ошибок модели.
+    const rating = requestReviewForm.rating.value;
+    requestReviewForm.issue_types.value = requestReviewForm.issue_types.value || "needs_correction";
+    if (rating === "unsafe" || rating === "wrong") return;
+    requestReviewForm.rating.value = "wrong";
+    scheduleRatingSave();
   }
 
   function renderModelOutput(parsed, meta = {}) {
@@ -1916,8 +2093,9 @@
     lastModelMeta = meta || {};
     if (modelResultSubtitle) {
       const when = meta.created_at ? window.CVDUI.formatDateTime(meta.created_at) : "";
+      const caseId = meta.case_id ?? currentCaseId;
       modelResultSubtitle.textContent = [
-        currentCaseId ? `Кейс #${currentCaseId}` : "Несохранённый кейс",
+        caseId ? `Кейс #${caseId}` : "Несохранённый кейс",
         when,
         meta.model || isDoctorMode() ? displayModelName(meta.model) : "",
         "черновик для проверки врачом"
@@ -1968,7 +2146,7 @@
       modelStructured.appendChild(strip);
     }
     renderLastModelSummary(cds, meta);
-    if (meta.ai_result_stale) {
+    if (serverResultStale(meta)) {
       modelStructured.appendChild(renderStaleDiff(meta.ai_result_changes || []));
     }
     if (diagnoses.length > 0) {
@@ -2223,11 +2401,23 @@
     if (copyButton) copyButton.disabled = !available;
   }
 
+  // Текст для МИС и отчёт сервер собирает из сохранённого кейса, поэтому сначала дописываем правки.
+  async function flushForReport() {
+    try {
+      await flushAutosave();
+      return true;
+    } catch (err) {
+      toast(`Кейс не сохранён: ${window.CVDUI.humanizeError(err)} Отчёт собирается из сохранённой версии — сохраните кейс и повторите.`, {duration: 6000});
+      return false;
+    }
+  }
+
   async function copyMisText() {
-    if (!currentModelRequestId) {
+    if (!hasUsableResult()) {
       toast("Сначала получите успешный результат AI-анализа");
       return;
     }
+    if (!(await flushForReport())) return;
     const response = await api(`/api/reports/${currentModelRequestId}/mis-text`);
     const text = String(response.text || "");
     try {
@@ -2247,11 +2437,12 @@
     }
   }
 
-  function viewHtmlResult(requestId = currentModelRequestId) {
-    if (!requestId) {
+  async function viewHtmlResult(requestId = currentModelRequestId) {
+    if (!requestId || !hasUsableResult()) {
       toast("Сначала получите успешный результат AI-анализа");
       return;
     }
+    if (!(await flushForReport())) return;
     const link = document.createElement("a");
     link.href = `/reports/${encodeURIComponent(requestId)}`;
     link.target = "_blank";
@@ -2262,7 +2453,7 @@
   }
 
   async function exportHtmlReport() {
-    if (!currentModelRequestId) {
+    if (!hasUsableResult()) {
       toast("Сначала получите успешный результат AI-анализа");
       return;
     }
@@ -2294,12 +2485,29 @@
       setTimeout(() => URL.revokeObjectURL(url), 1000);
       toast("HTML-отчёт сформирован");
     } finally {
-      setHtmlExportAvailable(Boolean(currentModelRequestId));
+      setHtmlExportAvailable(hasUsableResult());
     }
+  }
+
+  let reviewSaveTimer = null;
+  let reviewSaveQueue = Promise.resolve();
+  let reviewSaveSeq = 0;
+
+  // Стрелки в группе оценок проходят через соседние варианты: отправляем только итоговый выбор.
+  function scheduleRatingSave() {
+    window.clearTimeout(reviewSaveTimer);
+    const requestId = currentModelRequestId;
+    reviewStatus.textContent = "сохранение…";
+    reviewStatus.className = "pill";
+    reviewSaveTimer = window.setTimeout(() => {
+      if (requestId !== currentModelRequestId) return;
+      saveRequestReview().catch((err) => toast(err.message));
+    }, 400);
   }
 
   async function saveRequestReview(event) {
     event?.preventDefault();
+    window.clearTimeout(reviewSaveTimer);
     if (!currentModelRequestId) {
       toast("Сначала выберите результат AI-анализа");
       return;
@@ -2309,6 +2517,7 @@
       toast("Сначала выберите оценку: полезно, частично, неверно или опасно");
       return;
     }
+    const requestId = currentModelRequestId;
     const payload = {
       rating,
       issue_types: parseIcdString(requestReviewForm.issue_types.value).map((item) => item.toLowerCase()),
@@ -2316,16 +2525,34 @@
       corrected_icd10: parseIcdString(requestReviewForm.corrected_icd10.value),
       comment: requestReviewForm.comment.value
     };
-    await api(`/api/requests/${currentModelRequestId}/review`, {
+    const seq = ++reviewSaveSeq;
+    const isLatest = () => seq === reviewSaveSeq && requestId === currentModelRequestId;
+    // Оценки уходят по очереди: иначе параллельные запросы могли сохранить не ту, что выбрана.
+    const run = reviewSaveQueue.then(() => api(`/api/requests/${requestId}/review`, {
       method: "POST",
       body: JSON.stringify(payload)
-    });
+    }));
+    reviewSaveQueue = run.catch(() => {});
+    try {
+      await run;
+    } catch (err) {
+      if (isLatest()) {
+        reviewStatus.textContent = `не сохранено: ${ratingLabel(payload.rating)}`;
+        reviewStatus.className = "pill error";
+      }
+      throw err;
+    }
+    if (!isLatest()) return;
     reviewStatus.textContent = `сохранено: ${ratingLabel(payload.rating)}`;
     reviewStatus.className = "pill ok";
     toast(event ? "Подробности оценки сохранены" : `Оценка «${ratingLabel(payload.rating)}» сохранена`);
   }
 
   function diagnose() {
+    if (aiBusy()) {
+      toast("AI-анализ этого кейса уже выполняется — дождитесь результата");
+      return;
+    }
     const patientData = updatePreview();
     if (!qualityRules.hasClinicalInput(patientData)) {
       setModelStatus("добавьте данные пациента", "warning");
@@ -2337,14 +2564,26 @@
   }
 
   async function runDiagnose(patientData) {
+    if (aiBusy()) return;
     let response = null;
-    aiRunning = true;
+    let jobId = null;
+    const session = caseSession;
+    // Пока идёт анализ, врач может открыть другой кейс: всё, что ниже меняет экран, проверяет это.
+    const sameCase = () => session === caseSession;
+    aiRunningSessions.add(session);
     if (diagnoseButton) diagnoseButton.disabled = true;
     updateNextAction(patientData);
     // Результат привязывается к кейсу, поэтому незаписанные правки сохраняем до отправки.
     await flushAutosave().catch(() => {});
+    if (!sameCase()) {
+      aiRunningSessions.delete(session);
+      return;
+    }
+    const caseIdAtRun = currentCaseId;
     resultOpened = false;
     currentModelRequestId = null;
+    currentModelRequestOk = false;
+    resultStaleOnServer = false;
     lastModelDataFingerprint = null;
     lastModelParsed = null;
     renderModelWorkbench(null, patientData);
@@ -2354,11 +2593,13 @@
     modelPreview.textContent = "Выполняется AI-анализ...";
     modelStructured.textContent = "AI-анализ выполняется. Результат появится здесь после завершения задания.";
     requestReviewForm?.classList.add("hidden");
-    diagnosisQueueTimer = window.setInterval(async () => {
+    const queueTimer = window.setInterval(async () => {
+      if (!sameCase()) return;
       try {
         const status = await api("/api/inference/status");
         const queue = status.queue || {};
         const own = queue.user?.by_kind?.diagnosis || {};
+        if (!sameCase()) return;
         if (own.state === "queued") {
           const eta = own.estimated_wait_ms ? ` · ${queueEtaText(own.estimated_wait_ms)}` : "";
           setModelStatus(`AI в очереди · позиция ${own.position}${eta}`, "warning");
@@ -2370,39 +2611,44 @@
       }
     }, 2000);
     try {
-      const requestFingerprint = qualityRules.dataFingerprint(patientData);
+      const requestFingerprint = clinicalFingerprint(patientData);
       const job = await api("/api/model/diagnose/jobs", {
         method: "POST",
         body: JSON.stringify({
-          case_id: currentCaseId,
+          case_id: caseIdAtRun,
           patient_data: patientData
         })
       });
-      awaitedDiagnosisJobId = job.job_id;
+      jobId = job.job_id;
+      awaitedDiagnosisJobIds.add(jobId);
       requestNotifyPermission();
       await refreshAiJobs();
-      setModelStatus(`задание #${job.job_id} в очереди`, "warning");
+      if (sameCase()) setModelStatus(`задание #${job.job_id} в очереди`, "warning");
       while (true) {
         await wait(2000);
         const jobStatus = await api(`/api/model/diagnose/jobs/${job.job_id}`);
         refreshAiJobs().catch(() => {});
         const item = jobStatus.job || {};
-        if (item.status === "queued") {
-          setModelStatus(`задание #${item.id} ожидает`, "warning");
+        if (item.status === "queued" || item.status === "running") {
+          if (sameCase()) {
+            setModelStatus(`задание #${item.id} ${item.status === "queued" ? "ожидает" : "выполняется"}`, item.status === "queued" ? "warning" : "ok");
+          }
           continue;
         }
-        if (item.status === "running") {
-          setModelStatus(`задание #${item.id} выполняется`, "ok");
-          continue;
-        }
-        response = jobStatus.result || {ok: false, error: item.error || "AI-задание завершилось без результата"};
-        if (!response.ok) throw new Error(response.error || "AI-анализ завершился ошибкой");
+        response = jobStatus.result || {ok: false, error: item.user_error || item.error || "AI-задание завершилось без результата"};
+        if (!response.ok) throw new Error(response.user_error || response.error || "AI-анализ завершился ошибкой");
         break;
+      }
+      if (!sameCase()) {
+        // Результат остаётся у своего кейса: в открытую сейчас анкету его не переносим.
+        announceForeignResult(caseIdAtRun, response.request_id, true);
+        return;
       }
       modelPreview.textContent = JSON.stringify(response.parsed || response.response, null, 2);
       fillModelOutput(response.parsed);
       renderModelOutput(response.parsed, response);
       showReviewForm(response.request_id, null);
+      currentModelRequestOk = true;
       openModelResultModal();
       lastModelDataFingerprint = requestFingerprint;
       setHtmlExportAvailable(true);
@@ -2412,7 +2658,13 @@
       updateWorkflow(patientData);
       toast("Результат AI-анализа готов");
     } catch (err) {
-      const resultWasSaved = Boolean(response?.request_id);
+      // Неуспешный запуск тоже получает request_id — результатом он от этого не становится.
+      const resultWasSaved = Boolean(response?.ok && response?.request_id);
+      if (!sameCase()) {
+        if (resultWasSaved) announceForeignResult(caseIdAtRun, response.request_id, true);
+        else announceForeignResult(caseIdAtRun, null, false, err.message);
+        return;
+      }
       if (!resultWasSaved) {
         modelPreview.textContent = err.message;
         showAiErrorCard(err.message);
@@ -2420,22 +2672,48 @@
       setModelStatus(resultWasSaved ? "результат сохранён · ошибка отображения" : "ошибка AI-анализа", "error");
       if (resultWasSaved) {
         currentModelRequestId = response.request_id;
+        currentModelRequestOk = true;
         setHtmlExportAvailable(true);
       }
       toast(resultWasSaved ? `Результат сохранён, но не отображён: ${err.message}` : err.message);
     } finally {
-      if (diagnosisQueueTimer) window.clearInterval(diagnosisQueueTimer);
-      diagnosisQueueTimer = null;
-      awaitedDiagnosisJobId = null;
+      window.clearInterval(queueTimer);
+      if (jobId) awaitedDiagnosisJobIds.delete(jobId);
+      aiRunningSessions.delete(session);
       markTitleReady();
       notifyDesktop(
         response?.ok ? "Результат AI-анализа готов" : "AI-анализ завершился",
         response?.ok ? "Откройте вкладку CVD Web, чтобы посмотреть результат." : "Проверьте статус задания в рабочем месте."
       );
-      aiRunning = false;
-      if (diagnoseButton) diagnoseButton.disabled = false;
-      updateWorkflow(updatePreview());
+      if (sameCase()) {
+        if (diagnoseButton) diagnoseButton.disabled = false;
+        updateWorkflow(updatePreview());
+      }
     }
+  }
+
+  // Анализ закончился, когда врач уже работает с другим кейсом: сообщаем и даём перейти к результату.
+  function announceForeignResult(caseId, requestId, ok, errorText = "") {
+    const caseText = caseId ? `кейса #${caseId}` : "предыдущего кейса";
+    if (!ok) {
+      toast(`AI-анализ ${caseText} завершился ошибкой: ${errorText}`, {duration: 8000});
+      return;
+    }
+    toast(`Результат AI-анализа ${caseText} готов`, {
+      actionLabel: "Открыть",
+      duration: 10000,
+      onAction: () => openCaseResult(caseId, requestId).catch((err) => toast(err.message))
+    });
+  }
+
+  async function openCaseResult(caseId, requestId) {
+    if (!caseId) {
+      openTaskCenterModal();
+      return;
+    }
+    if (!(await openCase(caseId))) return;
+    const response = await api(`/api/requests/${requestId}`);
+    if (currentCaseId === caseId) openRequestResult(response.request);
   }
 
   function requestErrorText() {
@@ -2481,19 +2759,33 @@
   }
 
   async function openCase(caseId) {
-    await flushAutosave().catch((err) => toast(err.message));
+    const flush = await flushBeforeLeaving("открыть другой кейс");
+    if (!flush.ok) return false;
     const response = await api(`/api/cases/${caseId}`);
     caseSession++;
     currentCaseId = response.case.id;
+    // Администратор видит чужие кейсы, но сервер сохраняет только кейсы владельца.
+    const ownerId = response.case.owner?.id;
+    caseReadOnly = Boolean(ownerId && window.CURRENT_USER?.id && ownerId !== window.CURRENT_USER.id);
     lastSavedAt = response.case.updated_at ? new Date(response.case.updated_at) : null;
     saveErrorText = "";
     if (window.history?.replaceState) window.history.replaceState(null, "", `/app?case=${currentCaseId}`);
+    if (flush.saved) {
+      pendingDraft = null;
+      draftBanner?.classList.add("hidden");
+    }
     resetModelState();
-    applyData(response.case.data);
     collapseAllSections();
+    applyData(response.case.data);
     hideRecentCases();
     loadLatestCaseResult(currentCaseId).catch(() => {});
-    toast("Кейс загружен");
+    if (caseReadOnly) {
+      const owner = response.case.owner?.name || response.case.owner?.email || "другого пользователя";
+      toast(`Кейс ${owner} открыт только для просмотра: правки не сохраняются`, {duration: 6000});
+    } else {
+      toast("Кейс загружен");
+    }
+    return true;
   }
 
   function hideRecentCases() {
@@ -2525,12 +2817,17 @@
   }
 
   function openRequestResult(item, {openModal = true} = {}) {
-    if (openModal) openTab("model");
+    // Тот же результат, загруженный повторно, не сбрасывает отметку «уже открыт».
+    if (currentModelRequestId !== item.id) resultOpened = false;
     currentModelRequestId = item.id;
-    lastModelDataFingerprint = qualityRules.dataFingerprint(collectData());
+    currentModelRequestOk = item.status === "success";
+    // Вердикт сервера о свежести переживает перезагрузку страницы, сравнение отпечатков — нет.
+    resultStaleOnServer = currentModelRequestOk && serverResultStale(item);
+    lastModelDataFingerprint = clinicalFingerprint(collectData());
+    if (openModal) openTab("model");
     setModelStatus(
-      item.status === "success" ? item.ai_result_stale ? "данные изменены после AI" : "AI-результат готов" : "AI: ошибка в последнем запуске",
-      item.status === "success" ? item.ai_result_stale ? "warning" : "ok" : "error"
+      currentModelRequestOk ? resultStaleOnServer ? "данные изменены после AI" : "AI-результат готов" : "AI: ошибка в последнем запуске",
+      currentModelRequestOk ? resultStaleOnServer ? "warning" : "ok" : "error"
     );
     modelPreview.textContent = JSON.stringify(item.parsed_output || {error: requestErrorText()}, null, 2);
     renderModelOutput(item.parsed_output || {}, item);
@@ -2543,7 +2840,8 @@
     const payload = await api(`/api/requests?case_id=${caseId}&status=success&limit=1`);
     const item = (payload.requests || [])[0];
     if (!item || !item.parsed_output) return;
-    if (currentCaseId !== caseId) return;
+    // Пока шёл запрос, мог открыться другой кейс или уже выбранный результат.
+    if (currentCaseId !== caseId || currentModelRequestId) return;
     openRequestResult(item, {openModal: false});
   }
 
@@ -3215,6 +3513,8 @@
 
   function resetModelState(clearFields = false) {
     currentModelRequestId = null;
+    currentModelRequestOk = false;
+    resultStaleOnServer = false;
     lastModelDataFingerprint = null;
     lastModelParsed = null;
     lastModelMeta = {};
@@ -3237,16 +3537,24 @@
 
   async function resetCase() {
     // Незаписанные правки текущего кейса сохраняются, прежде чем анкета очистится.
-    await flushAutosave().catch((err) => toast(err.message));
+    const flush = await flushBeforeLeaving("начать новый кейс");
+    if (!flush.ok) return;
     caseSession++;
     currentCaseId = null;
+    caseReadOnly = false;
     lastSavedAt = null;
     saveErrorText = "";
     manualEntry = false;
+    window.clearTimeout(draftSaveTimer);
     form.reset();
     collapseAllSections();
     resetModelState();
-    clearLocalDraft();
+    // Если сохранить не удалось, локальный черновик — единственная копия правок.
+    if (flush.saved) clearLocalDraft();
+    else {
+      pendingDraft = null;
+      draftBanner?.classList.add("hidden");
+    }
     if (window.history?.replaceState) window.history.replaceState(null, "", "/app");
     arrangeSections(updatePreview());
     setSaveState("не сохранено", false);
@@ -3310,8 +3618,9 @@
       if (event.target === importModal) closeImportModal();
     });
     document.addEventListener("keydown", (event) => {
-      if (event.key !== "Escape") return;
-      const openModals = Array.from(document.querySelectorAll(".modal:not(.hidden)"));
+      // Диалоги CVDUI закрываются сами; здесь — только модальные окна рабочего места.
+      if (event.key !== "Escape" || window.CVDUI.dialogOpen()) return;
+      const openModals = Array.from(document.querySelectorAll(".modal:not(.hidden):not(.ui-dialog)"));
       const modal = openModals[openModals.length - 1];
       if (!modal) return;
       event.preventDefault();
@@ -3339,8 +3648,11 @@
     passwordForm.new_password.addEventListener("input", updatePasswordStrength);
     requestReviewForm?.addEventListener("submit", (event) => saveRequestReview(event).catch((err) => toast(err.message)));
     document.getElementById("logoutButton").addEventListener("click", async () => {
+      // После выхода сессия недействительна, поэтому правки отправляем до него.
+      const flush = await flushBeforeLeaving("выйти");
+      if (!flush.ok) return;
       const response = await api("/api/logout", { method: "POST", body: "{}" });
-      // Draft is already in localStorage; do not double-warn on intentional logout.
+      // Черновик уже в localStorage; при намеренном выходе второй раз не предупреждаем.
       hasUnsavedChanges = false;
       window.location.href = response.redirect || "/login";
     });
@@ -3393,7 +3705,7 @@
   function paletteActions() {
     const data = collectData();
     const technical = !isDoctorMode();
-    const hasResult = Boolean(currentModelRequestId);
+    const hasResult = hasUsableResult();
     const user = window.CURRENT_USER || {};
     const theme = document.body.dataset.theme === "dark" ? "светлую" : "тёмную";
     return [
@@ -3401,12 +3713,12 @@
       {label: "Новый кейс", run: () => resetCase()},
       {label: "Вставить текст выписки…", run: openStructureTextModal},
       {label: "Загрузить файл…", hint: "PDF, FHIR, CDA/СЭМД, .cvd.json", run: () => importJsonInput.click()},
-      {label: "Запустить AI-анализ", shortcut: window.CVDUI.shortcut("↵"), run: diagnose, enabled: !aiRunning},
+      {label: "Запустить AI-анализ", shortcut: window.CVDUI.shortcut("↵"), run: diagnose, enabled: !aiBusy()},
       {label: "Проверить перед AI…", run: () => openReviewModal(null, false)},
       {label: "Открыть результат AI", run: () => openTab("model"), enabled: hasResult},
       {label: "Копировать для МИС", run: () => copyMisText(), enabled: hasResult},
       {label: "Пометить ошибку AI", run: markModelIssue, enabled: hasResult},
-      {label: "Сохранить сейчас", shortcut: window.CVDUI.shortcut("S"), run: () => saveCase()},
+      {label: "Сохранить сейчас", shortcut: window.CVDUI.shortcut("S"), run: () => saveCase(), enabled: !caseReadOnly},
       {label: "К первому незаполненному ключевому полю", shortcut: window.CVDUI.shortcut("N", {alt: true}), run: () => focusFirstMissing(data), enabled: missingRequiredData(data).length > 0},
       {label: missingOnly ? "Показать всю анкету" : "Только незаполненные ключевые", run: () => { revealForm(); toggleMissingOnly(); }},
       {label: "Центр AI-задач", run: openTaskCenterModal},
@@ -3426,7 +3738,7 @@
   function paletteFieldItems(query) {
     const normalized = normalizeSearchText(query);
     if (normalized.length < 2) return [];
-    return window.CVD_SCHEMA.flatMap((section, sectionIndex) => section.fields.map((field) => ({
+    return searchableSections().flatMap(({section, sectionIndex}) => section.fields.map((field) => ({
       kind: "field",
       label: field.label,
       hint: `${sectionNumber(sectionIndex)}. ${section.title}`,
@@ -3446,7 +3758,9 @@
     paletteIndex = Math.min(paletteIndex, Math.max(0, paletteItems.length - 1));
     commandPaletteList.innerHTML = "";
     if (!paletteItems.length) {
+      commandPaletteInput.removeAttribute("aria-activedescendant");
       const empty = document.createElement("p");
+      empty.setAttribute("role", "presentation");
       empty.className = "palette-empty";
       empty.textContent = "Ничего не найдено. Попробуйте название поля: «тропонин», «ФВ», «МКБ».";
       commandPaletteList.appendChild(empty);
@@ -3458,6 +3772,7 @@
         lastKind = item.kind;
         const heading = document.createElement("p");
         heading.className = "palette-heading";
+        heading.setAttribute("role", "presentation");
         heading.textContent = item.kind === "action" ? "Действия" : "Поля анкеты";
         commandPaletteList.appendChild(heading);
       }
@@ -3507,7 +3822,8 @@
   function runPaletteItem(index) {
     const item = paletteItems[index];
     if (!item) return;
-    closeCommandPalette({restoreFocus: false});
+    // Фокус возвращается туда, откуда открыли палитру: окна, открытые командой, вернут его туда же.
+    closeCommandPalette();
     Promise.resolve(item.run?.()).catch((err) => toast(err.message));
   }
 
@@ -3540,7 +3856,9 @@
         paletteIndex = (paletteIndex + step + paletteItems.length) % paletteItems.length;
         highlightPaletteItem();
       } else if (event.key === "Enter") {
+        // Ctrl/Cmd+Enter здесь выбирает пункт, а не запускает анализ глобальной комбинацией.
         event.preventDefault();
+        event.stopPropagation();
         runPaletteItem(paletteIndex);
       }
     });
@@ -3559,6 +3877,7 @@
     const requestId = Number(params.get("request") || 0);
     if (Number.isInteger(caseId) && caseId > 0) {
       await openCase(caseId);
+      if (currentCaseId === caseId && !caseReadOnly) offerCaseDraft(caseId, lastSavedAt);
     }
     if (Number.isInteger(requestId) && requestId > 0) {
       const response = await api(`/api/requests/${requestId}`);
@@ -3573,8 +3892,7 @@
     if (button) button.disabled = true;
     try {
       const response = await api("/api/cases/demo", {method: "POST", body: "{}"});
-      await openCase(response.case_id);
-      toast("Демо-кейс создан: данные синтетические");
+      if (await openCase(response.case_id)) toast("Демо-кейс создан: данные синтетические");
     } catch (err) {
       toast(err.message);
     } finally {
@@ -3584,12 +3902,14 @@
 
   // Изменения, не успевшие уйти автосохранением, отправляем при уходе со страницы.
   // keepalive переживает закрытие вкладки, но ограничен 64 КБ — большой кейс остаётся в локальном черновике.
+  // Новый кейс так не создаём: ответ не прочитать, и восстановленный черновик создал бы второй такой же.
   function flushOnPageHide() {
-    if (!hasUnsavedChanges || saveInFlight) return;
+    if (!hasUnsavedChanges || !currentCaseId || caseReadOnly) return;
     const data = collectData();
-    if (!currentCaseId && !canAutoCreateCase(data)) return;
+    // Те же данные уже уходят обычным запросом — второй не нужен.
+    if (JSON.stringify(data) === inFlightSnapshot) return;
     const body = JSON.stringify({case_id: currentCaseId, patient_data: data});
-    if (body.length > 60000) return;
+    if (!fitsKeepalive(body)) return;
     try {
       fetch("/api/cases", {
         method: "POST",
@@ -3601,6 +3921,7 @@
   }
 
   window.CVDUI.applyInterfaceMode();
+  watchStickyOffsets();
   renderForm();
   setupTabs();
   setupScenarioTemplates();
@@ -3638,10 +3959,10 @@
   document.getElementById("startDemoButton")?.addEventListener("click", (event) => createDemoCase(event.currentTarget));
   acceptModelDraftButton?.addEventListener("click", () => acceptModelDiagnosisDraft().catch((err) => toast(err.message)));
   copyModelDiagnosisButton?.addEventListener("click", () => copyModelDiagnosis().catch((err) => toast(err.message)));
-  openModelReportButton?.addEventListener("click", () => viewHtmlResult());
+  openModelReportButton?.addEventListener("click", () => viewHtmlResult().catch((err) => toast(err.message)));
   // Оценка сохраняется сразу по нажатию — подробности можно дописать позже.
   requestReviewForm?.querySelectorAll('input[name="rating"]').forEach((input) => {
-    input.addEventListener("change", () => saveRequestReview().catch((err) => toast(err.message)));
+    input.addEventListener("change", scheduleRatingSave);
   });
   form.addEventListener("input", (event) => {
     if (event.target.name === "GENERAL_INFO.Height_cm" || event.target.name === "GENERAL_INFO.Weight_kg") {
@@ -3654,18 +3975,30 @@
     setSaveState(currentCaseId ? `кейс #${currentCaseId} изменён` : "не сохранено", true);
   });
   window.addEventListener("beforeunload", (event) => {
-    if (!hasUnsavedChanges) return;
+    if (!hasUnsavedChanges || caseReadOnly) return;
     window.clearTimeout(draftSaveTimer);
     try { writeLocalDraft(collectData()); } catch (_) {}
     event.preventDefault();
     event.returnValue = "";
   });
   window.addEventListener("pagehide", flushOnPageHide);
+  // Вкладку могут закрыть, пока она в фоне: сохраняем сразу, но не чаще обычного интервала
+  // (каждое сохранение пишется в журнал аудита). Запрос keepalive переживёт закрытие вкладки.
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden) document.title = baseDocumentTitle;
-    if (document.hidden && hasUnsavedChanges) autosave().catch(() => {});
+    if (!document.hidden) {
+      document.title = baseDocumentTitle;
+      return;
+    }
+    if (!hasUnsavedChanges || !currentCaseId || saveInFlight) return;
+    if (Date.now() - lastSaveAttemptAt < autosaveMinIntervalMs) return;
+    autosave({keepalive: true});
+  });
+  // Страница вернулась из кеша «назад/вперёд»: досохраняем то, что могло не уйти при уходе.
+  window.addEventListener("pageshow", (event) => {
+    if (event.persisted && hasUnsavedChanges) scheduleAutosave();
   });
   document.addEventListener("keydown", (event) => {
+    if (event.defaultPrevented) return;
     const modKey = event.metaKey || event.ctrlKey;
     const modalOpen = Boolean(document.querySelector(".modal:not(.hidden)"));
     if (modKey && !event.shiftKey && !event.altKey && event.code === "KeyK") {
@@ -3681,10 +4014,11 @@
     }
     if (modKey && !event.shiftKey && !event.altKey && event.key === "Enter" && !modalOpen) {
       event.preventDefault();
-      if (!aiRunning) diagnose();
+      diagnose();
       return;
     }
-    if (event.altKey && !modKey && event.code === "KeyN") {
+    // Поверх анкеты открыто окно — переход к полю под ним только сбил бы фокус.
+    if (event.altKey && !modKey && event.code === "KeyN" && !modalOpen) {
       event.preventDefault();
       focusFirstMissing();
     }
@@ -3694,6 +4028,7 @@
   document.getElementById("saveCaseButton").addEventListener("click", () => saveCase().catch((err) => toast(err.message)));
   document.getElementById("diagnoseButton").addEventListener("click", diagnose);
   document.getElementById("retryDiagnoseButton")?.addEventListener("click", () => {
+    if (aiBusy()) return;
     hideAiErrorCard();
     runDiagnose(updatePreview()).catch((err) => toast(err.message));
   });

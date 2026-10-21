@@ -10,7 +10,10 @@
     preparations: [],
     // Стадия рабочего списка — основной фильтр; выпадающий список хранит только дополнительные.
     stage: "",
-    pendingDelete: null,
+    // Кейсы, удаление которых ещё можно отменить: id → {id, title, committed, toast}.
+    pendingDeletes: new Map(),
+    caseTotal: 0,
+    loadedCaseIds: new Set(),
     selectedCaseId: null,
     selectedCase: null,
     latestResultId: null,
@@ -200,15 +203,19 @@
     const sequence = ++state.caseSequence;
     const query = nodes.caseSearch.value.trim();
     const analysis = state.stage || nodes.caseAnalysis.value;
-    const offset = append ? state.cases.length : 0;
+    // Скрытые до подтверждения удаления кейсы ещё лежат на сервере и занимают места в выдаче.
+    const offset = append ? state.cases.length + hiddenLoadedCount() : 0;
     const response = await api(
       `/api/cases?q=${encodeURIComponent(query)}&analysis=${encodeURIComponent(analysis)}&limit=50&offset=${offset}`
     );
     if (sequence !== state.caseSequence) return;
-    const received = (response.cases || []).filter((item) => item.id !== state.pendingDelete?.id);
+    const raw = response.cases || [];
+    if (!append) state.loadedCaseIds = new Set();
+    raw.forEach((item) => state.loadedCaseIds.add(item.id));
+    const received = raw.filter((item) => !state.pendingDeletes.has(item.id));
     state.cases = append ? [...state.cases, ...received] : received;
-    const total = Math.max(0, Number(response.total || 0) - (state.pendingDelete ? 1 : 0));
-    nodes.caseCount.textContent = window.CVDUI.countText(total, ["кейс", "кейса", "кейсов"]);
+    state.caseTotal = Number(response.total || 0);
+    renderCaseCount();
     nodes.moreCases.classList.toggle("hidden", !response.has_more);
     renderCases();
     if (!append && state.cases.length && !state.cases.some((item) => item.id === state.selectedCaseId)) {
@@ -218,13 +225,28 @@
     }
   }
 
+  function hiddenLoadedCount() {
+    let count = 0;
+    state.pendingDeletes.forEach((_, id) => {
+      if (state.loadedCaseIds.has(id)) count += 1;
+    });
+    return count;
+  }
+
+  function renderCaseCount() {
+    const total = Math.max(0, state.caseTotal - hiddenLoadedCount());
+    nodes.caseCount.textContent = window.CVDUI.countText(total, ["кейс", "кейса", "кейсов"]);
+  }
+
   async function loadActionQueue() {
     if (!nodes.actionQueuePanel || !nodes.actionQueueList) return;
     const response = await api("/api/worklist?limit=4");
     const stages = response.stages || [];
     const attentionStage = stages.find((stage) => stage.key === "needs_review") || {items: [], count: 0};
     const waitingStage = stages.find((stage) => stage.key === "waiting_ai") || {items: [], count: 0};
-    const items = [...(attentionStage.items || []), ...(waitingStage.items || [])].slice(0, 6);
+    const items = [...(attentionStage.items || []), ...(waitingStage.items || [])]
+      .filter((item) => !state.pendingDeletes.has(item.id))
+      .slice(0, 6);
     nodes.actionQueuePanel.classList.toggle("hidden", response.total === 0);
     renderWorklistStages(stages);
     nodes.actionQueueList.innerHTML = "";
@@ -248,8 +270,8 @@
       card.append(title, status, meta);
       card.addEventListener("click", async () => {
         await switchView("cases");
-        setStageFilter("");
         nodes.caseAnalysis.value = "attention";
+        setStageFilter("");
         await loadCases();
         await selectCase(item.id);
       });
@@ -259,8 +281,10 @@
 
   function setStageFilter(stageKey) {
     state.stage = stageKey;
+    // «Все кейсы» выбраны, только когда список ничем не сужен — ни стадией, ни дополнительным фильтром.
+    const archiveActive = !stageKey && !nodes.caseAnalysis.value;
     nodes.worklistStages?.querySelectorAll(".worklist-stage").forEach((button) => {
-      const active = button.dataset.stage === (stageKey || "archive");
+      const active = stageKey ? button.dataset.stage === stageKey : archiveActive && button.dataset.stage === "archive";
       button.classList.toggle("selected", active);
       button.setAttribute("aria-pressed", String(active));
     });
@@ -283,8 +307,8 @@
         await switchView("cases");
         // Повторное нажатие на выбранную стадию снимает фильтр.
         const next = stage.key === "archive" || state.stage === stage.key ? "" : stage.key;
-        setStageFilter(next);
         nodes.caseAnalysis.value = "";
+        setStageFilter(next);
         await loadCases();
       });
       nodes.worklistStages.appendChild(button);
@@ -370,6 +394,7 @@
   }
 
   async function selectCase(caseId) {
+    if (state.pendingDeletes.has(Number(caseId))) return;
     state.selectedCaseId = Number(caseId);
     renderCases();
     const sequence = ++state.detailSequence;
@@ -414,6 +439,9 @@
     nodes.detailMeta.append(pill(...caseWorkflowStatus(statusSource)), facts, next);
     nodes.editCase.href = `/app?case=${caseItem.id}`;
     nodes.caseResult.disabled = !state.latestResultId;
+    // Администратор видит чужие кейсы, но удалить кейс может только его автор.
+    const ownedByMe = !caseItem.owner?.id || caseItem.owner.id === window.CURRENT_USER?.id;
+    nodes.deleteCase.classList.toggle("hidden", !ownedByMe);
     renderCaseQuality(caseItem.quality || {});
     renderClinicalSummary(caseItem.data || {});
     renderCaseResults(results);
@@ -737,50 +765,82 @@
   }
 
   // Удаление откладывается на несколько секунд: вместо «Вы уверены?» — кнопка «Отменить» в уведомлении.
+  // Срок отсчитывает само уведомление: пока на нём указатель или фокус, удаление ждёт.
   const deleteUndoMs = 6000;
 
   async function commitCaseDelete(pending) {
-    window.clearTimeout(pending.timer);
-    if (state.pendingDelete === pending) state.pendingDelete = null;
-    await api(`/api/cases/${pending.id}/delete`, {method: "POST", body: "{}"});
+    if (pending.committed) return;
+    pending.committed = true;
+    pending.toast?.dismiss();
+    try {
+      await api(`/api/cases/${pending.id}/delete`, {method: "POST", body: "{}"});
+    } catch (error) {
+      // Сервер удаление не принял (чужой кейс, пакетная обработка) — кейс возвращается в список.
+      state.pendingDeletes.delete(pending.id);
+      renderCaseCount();
+      loadCases().catch(() => {});
+      throw new Error(`Кейс «${pending.title}» не удалён: ${error.message}`);
+    }
+    if (state.loadedCaseIds.delete(pending.id)) state.caseTotal = Math.max(0, state.caseTotal - 1);
+    state.pendingDeletes.delete(pending.id);
+    renderCaseCount();
     await Promise.all([loadSummary(), loadActionQueue()]);
   }
 
-  async function scheduleCaseDelete(item) {
-    if (state.pendingDelete) await commitCaseDelete(state.pendingDelete);
-    const pending = {id: item.id, title: item.title, timer: null};
-    state.pendingDelete = pending;
-    state.cases = state.cases.filter((caseItem) => caseItem.id !== item.id);
-    clearCaseDetail();
-    renderCases();
-    if (state.cases.length) await selectCase(state.cases[0].id);
-    pending.timer = window.setTimeout(() => commitCaseDelete(pending).catch(handleError), deleteUndoMs);
-    toast(`Кейс «${item.title}» удалён`, {
-      actionLabel: "Отменить",
-      duration: deleteUndoMs,
-      onAction: () => {
-        window.clearTimeout(pending.timer);
-        if (state.pendingDelete === pending) state.pendingDelete = null;
-        loadCases().then(() => selectCase(item.id)).catch(handleError);
-        toast("Удаление отменено");
-      }
-    });
+  function undoCaseDelete(pending) {
+    if (pending.committed) {
+      toast("Кейс уже удалён — отменить нельзя");
+      return;
+    }
+    state.pendingDeletes.delete(pending.id);
+    renderCaseCount();
+    loadCases().then(() => selectCase(pending.id)).catch(handleError);
+    toast("Удаление отменено");
   }
 
-  // Если вкладку закрыли до истечения таймера, удаление всё равно должно дойти до сервера.
-  function flushPendingDelete() {
-    const pending = state.pendingDelete;
-    if (!pending) return;
-    window.clearTimeout(pending.timer);
-    state.pendingDelete = null;
-    try {
-      fetch(`/api/cases/${pending.id}/delete`, {
-        method: "POST",
-        keepalive: true,
-        headers: {"Content-Type": "application/json", "X-CSRF-Token": csrfToken},
-        body: "{}"
-      }).catch(() => {});
-    } catch (_) {}
+  function scheduleCaseDelete(item) {
+    const id = Number(item.id);
+    if (state.pendingDeletes.has(id)) return;
+    const pending = {id, title: item.title, committed: false, toast: null};
+    state.pendingDeletes.set(id, pending);
+    state.cases = state.cases.filter((caseItem) => caseItem.id !== id);
+    if (state.selectedCaseId === id) clearCaseDetail();
+    renderCases();
+    renderCaseCount();
+    // Уведомление — сразу, не дожидаясь следующего кейса: его загрузка может и не удаться.
+    // Фокус переходит на «Отменить», чтобы отмена была доступна и с клавиатуры.
+    const title = String(item.title || `#${id}`);
+    const shortTitle = title.length > 48 ? `${title.slice(0, 47).trimEnd()}…` : title;
+    pending.toast = toast(`Кейс «${shortTitle}» удалён`, {
+      actionLabel: "Отменить",
+      duration: deleteUndoMs,
+      focusAction: true,
+      onAction: () => undoCaseDelete(pending),
+      onDismiss: (reason) => {
+        if (reason !== "action") commitCaseDelete(pending).catch(handleError);
+      }
+    });
+    loadActionQueue().catch(() => {});
+    if (!state.selectedCaseId && state.cases.length) selectCase(state.cases[0].id).catch(handleError);
+  }
+
+  function uncommittedDeletes() {
+    return Array.from(state.pendingDeletes.values()).filter((pending) => !pending.committed);
+  }
+
+  // Если вкладку закрыли до истечения срока, удаление всё равно должно дойти до сервера.
+  function flushPendingDeletes() {
+    uncommittedDeletes().forEach((pending) => {
+      pending.committed = true;
+      try {
+        fetch(`/api/cases/${pending.id}/delete`, {
+          method: "POST",
+          keepalive: true,
+          headers: {"Content-Type": "application/json", "X-CSRF-Token": csrfToken},
+          body: "{}"
+        }).catch(() => {});
+      } catch (_) {}
+    });
   }
 
   function setupActions() {
@@ -788,6 +848,8 @@
     document.getElementById("userLabel").textContent = user.email || "";
     if (user.role === "admin") document.getElementById("adminLink").classList.remove("hidden");
     document.getElementById("logoutButton").addEventListener("click", async () => {
+      // После выхода сессия недействительна: отложенные удаления отправляем до него.
+      await Promise.all(uncommittedDeletes().map((pending) => commitCaseDelete(pending).catch(handleError)));
       const response = await api("/api/logout", {method: "POST", body: "{}"});
       window.location.href = response.redirect || "/login";
     });
@@ -859,16 +921,22 @@
     });
     nodes.deleteCase.addEventListener("click", () => {
       if (!state.selectedCaseId || !state.selectedCase) return;
-      scheduleCaseDelete({id: state.selectedCaseId, title: state.selectedCase.title}).catch(handleError);
+      scheduleCaseDelete({id: state.selectedCaseId, title: state.selectedCase.title});
     });
-    window.addEventListener("pagehide", flushPendingDelete);
+    window.addEventListener("pagehide", flushPendingDeletes);
   }
 
   async function initialize() {
     setupActions();
     document.addEventListener("cvd:interface-mode", () => {
       applyModeVisibility();
-      renderResults();
+      // Скрытый фильтр по модели не должен продолжать сужать список врача.
+      if (isDoctorMode() && nodes.resultModel.value) {
+        nodes.resultModel.value = "";
+        loadResults().catch(handleError);
+      } else {
+        renderResults();
+      }
     });
     const requestedView = new URLSearchParams(window.location.search).get("view");
     if (["cases", "results", "imports", "preparations"].includes(requestedView)) {

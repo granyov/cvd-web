@@ -1,7 +1,8 @@
 /*
  * Визуальный язык Apple HIG (UI Kit iOS/iPadOS 27 и macOS 27): системная палитра,
- * grouped-фон, материалы и типографика SF. Цвета текста статусов взяты из
- * Increase Contrast-вариантов системной палитры, чтобы мелкий текст проходил WCAG AA.
+ * grouped-фон, материалы и типографика SF. Системные оттенки (--tint-*) — только для
+ * заливок и значков; текст статусов и белый текст на красном используют затемнённые
+ * варианты (--accent, --ok, --warning, --danger, --danger-fill) с контрастом от 4,5:1 (WCAG AA).
  */
 :root {
   --bg: #f2f2f7;
@@ -10,13 +11,14 @@
   --border: rgba(60, 60, 67, 0.14);
   --text: #1d1d1f;
   --muted: #6e6e73;
-  --accent: #0071e3;
-  --accent-dark: #0062c4;
+  --accent: #0062c4;
+  --accent-dark: #00539f;
   --accent-fill: #0071e3;
   --accent-soft: rgba(0, 113, 227, 0.12);
-  --danger: #d70015;
-  --ok: #248a3d;
-  --warning: #c93400;
+  --danger: #c00013;
+  --danger-fill: #d70015;
+  --ok: #1a7230;
+  --warning: #b02e00;
   --tint-red: #ff3b30;
   --tint-green: #34c759;
   --tint-orange: #ff9500;
@@ -36,6 +38,10 @@
   --button-hover: rgba(118, 118, 128, 0.2);
   --button-hover-border: transparent;
   --focus-ring: rgba(0, 113, 227, 0.32);
+  --focus-color: #0071e3;
+  --topbar-h: 56px;
+  --cockpit-h: 74px;
+  --sticky-offset: 154px;
   --font-text: -apple-system, BlinkMacSystemFont, "SF Pro Text", "SF Pro", "Inter", "Segoe UI", Roboto, sans-serif;
   --font-rounded: ui-rounded, "SF Pro Rounded", -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", sans-serif;
   --font-mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, "JetBrains Mono", Consolas, monospace;
@@ -52,11 +58,12 @@ body[data-theme="dark"] {
   --border: rgba(84, 84, 88, 0.42);
   --text: #f5f5f7;
   --muted: #98989d;
-  --accent: #2997ff;
-  --accent-dark: #5eb0ff;
+  --accent: #5eb0ff;
+  --accent-dark: #8cc8ff;
   --accent-fill: #0071e3;
   --accent-soft: rgba(10, 132, 255, 0.2);
   --danger: #ff6961;
+  --danger-fill: #b3141a;
   --ok: #30db5b;
   --warning: #ffb340;
   --tint-red: #ff453a;
@@ -74,6 +81,7 @@ body[data-theme="dark"] {
   --pre-text: #f5f5f7;
   --button-hover: rgba(118, 118, 128, 0.34);
   --focus-ring: rgba(41, 151, 255, 0.45);
+  --focus-color: #2997ff;
   --emoji-opacity: 0.12;
   --emoji-mid-opacity: 0.1;
   --emoji-soft-opacity: 0.07;
@@ -105,9 +113,10 @@ h3 {
   letter-spacing: -0.012em;
 }
 
+/* Непрозрачная обводка фокуса: полупрозрачное кольцо давало около 1,6:1 к фону (нужно от 3:1). */
 :focus-visible {
-  outline: 3px solid var(--focus-ring);
-  outline-offset: 1px;
+  outline: 2px solid var(--focus-color);
+  outline-offset: 2px;
 }
 
 button,
@@ -447,10 +456,10 @@ a {
 
 .workflow-cockpit {
   position: sticky;
-  top: 68px;
+  top: calc(var(--topbar-h) + 12px);
   z-index: 8;
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto auto;
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 10px 12px;
   align-items: center;
   margin: 0 0 16px;
@@ -683,7 +692,7 @@ a {
 .red-flag-badge {
   padding: 4px 11px;
   border-radius: 999px;
-  background: var(--tint-red);
+  background: var(--danger-fill);
   color: #fff;
   font-size: 0.8125rem;
   font-weight: 600;
@@ -848,14 +857,26 @@ details.section[open] > .section-body {
   padding: 0;
 }
 
-.layout > .panel:first-child > .panel-header button:not(.primary) {
+/* Только собственные кнопки шапки: пункты выпадающего меню «Ещё» оформляются как меню. */
+.layout > .panel:first-child > .panel-header > .workflow-actions > button:not(.primary),
+.layout > .panel:first-child > .panel-header .more-menu > [data-menu-toggle],
+.layout > .panel:first-child > .panel-header > .palette-trigger {
   background: var(--panel);
   box-shadow: 0 0.5px 1.5px rgba(0, 0, 0, 0.12), 0 0 0 0.5px rgba(0, 0, 0, 0.04);
 }
 
-body[data-theme="dark"] .layout > .panel:first-child > .panel-header button:not(.primary) {
+body[data-theme="dark"] .layout > .panel:first-child > .panel-header > .workflow-actions > button:not(.primary),
+body[data-theme="dark"] .layout > .panel:first-child > .panel-header .more-menu > [data-menu-toggle],
+body[data-theme="dark"] .layout > .panel:first-child > .panel-header > .palette-trigger {
   background: var(--panel-2);
   box-shadow: none;
+}
+
+/* «Ещё» стоит у левого края: меню раскрывается вправо, а не за край окна. */
+.workflow-actions .dropdown-menu {
+  right: auto;
+  left: 0;
+  min-width: 280px;
 }
 
 @media (min-width: 1001px) {
@@ -1717,8 +1738,8 @@ select:focus {
 button:focus-visible,
 .button:focus-visible,
 summary:focus-visible {
-  outline: 3px solid var(--focus-ring);
-  outline-offset: 1px;
+  outline: 2px solid var(--focus-color);
+  outline-offset: 2px;
 }
 
 textarea {
@@ -3315,12 +3336,25 @@ body[data-theme="dark"] .modal {
   background: var(--danger);
 }
 
-/* Тост — тёмная стеклянная капсула по центру снизу, как системный HUD. */
-.toast {
+/* Тосты — тёмные стеклянные капсулы по центру снизу, как системный HUD. Область выше модальных
+   окон и диалогов: результат AI открыт на весь экран, и подтверждения под ним были бы не видны. */
+.toast-region {
   position: fixed;
   left: 50%;
   bottom: 24px;
+  z-index: 100;
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+  width: max-content;
+  max-width: calc(100vw - 32px);
+  transform: translateX(-50%);
+  pointer-events: none;
+}
+
+.toast {
   max-width: min(480px, calc(100vw - 32px));
+  pointer-events: auto;
   border-radius: 999px;
   padding: 10px 20px;
   background: rgba(28, 28, 30, 0.86);
@@ -3330,8 +3364,6 @@ body[data-theme="dark"] .modal {
   font-size: 0.875rem;
   font-weight: 500;
   box-shadow: 0 8px 30px rgba(0, 0, 0, 0.22);
-  transform: translateX(-50%);
-  z-index: 50;
 }
 
 body[data-theme="dark"] .toast {
@@ -3534,9 +3566,15 @@ body[data-theme="dark"] .toast {
     flex-direction: column;
   }
 
+  /* Без ширины колонка flex отдаёт навигации её полную ширину, и вкладки растягивают страницу. */
   .nav {
     justify-content: flex-start;
     flex-wrap: wrap;
+    width: 100%;
+  }
+
+  .nav-tabs {
+    min-width: 0;
   }
 
   .topbar > div:first-child .muted {
@@ -4213,7 +4251,7 @@ hr.menu-separator {
 }
 
 .dropdown-menu .menu-danger:hover {
-  background: var(--tint-red);
+  background: var(--danger-fill);
   color: #fff;
 }
 
@@ -4277,7 +4315,7 @@ hr.menu-separator {
   white-space: nowrap;
 }
 
-.workflow-cockpit #openTaskCenterButton {
+#openTaskCenterButton {
   white-space: nowrap;
 }
 
@@ -4400,10 +4438,11 @@ hr.menu-separator {
   min-width: 0;
 }
 
+/* Отступы берутся из реальной высоты шапки и строки статуса (app.js измеряет их). */
 .section-sidebar {
   position: sticky;
-  top: 156px;
-  max-height: calc(100vh - 172px);
+  top: calc(var(--topbar-h) + var(--cockpit-h) + 26px);
+  max-height: calc(100vh - var(--topbar-h) - var(--cockpit-h) - 42px);
   overflow-y: auto;
   padding: 2px 0 12px;
   scrollbar-width: thin;
@@ -4724,7 +4763,7 @@ hr.menu-separator {
 }
 
 .rating-segments .is-danger input:checked + span {
-  background: var(--tint-red);
+  background: var(--danger-fill);
 }
 
 .rating-segments input:focus-visible + span {
@@ -4883,9 +4922,19 @@ hr.menu-separator {
   gap: 14px;
 }
 
+.toast.has-action {
+  border-radius: 20px;
+}
+
+.toast > span {
+  min-width: 0;
+}
+
 .toast-action {
+  flex: 0 0 auto;
   min-height: 0;
   padding: 4px 12px;
+  white-space: nowrap;
   background: rgba(255, 255, 255, 0.16);
   color: #fff;
   font-size: 0.8125rem;
@@ -4901,6 +4950,16 @@ hr.menu-separator {
   z-index: 90;
 }
 
+/* Переход к разделу из оглавления, поиска или палитры: заголовок не уходит под шапку и строку статуса. */
+details.section,
+.extra-sections {
+  scroll-margin-top: calc(var(--sticky-offset) + 8px);
+}
+
+.toast-action:focus-visible {
+  outline-color: #fff;
+}
+
 .dialog-card {
   width: min(420px, 100%);
 }
@@ -4909,9 +4968,13 @@ hr.menu-separator {
   width: min(640px, 100%);
 }
 
+/* Длинный текст прокручивается внутри, а кнопки всегда остаются на экране. */
 .dialog-body {
   display: grid;
   gap: 10px;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
   padding: 24px 24px 8px;
 }
 
@@ -4946,6 +5009,7 @@ hr.menu-separator {
 
 .dialog-actions {
   display: flex;
+  flex: 0 0 auto;
   justify-content: flex-end;
   gap: 8px;
   padding: 16px 24px 22px;
@@ -4956,13 +5020,13 @@ hr.menu-separator {
 }
 
 button.danger-fill {
-  background: var(--tint-red);
+  background: var(--danger-fill);
   color: #fff;
   font-weight: 600;
 }
 
 button.danger-fill:hover {
-  background: color-mix(in srgb, var(--tint-red) 88%, black);
+  background: color-mix(in srgb, var(--danger-fill) 88%, black);
 }
 
 /* Архив: метрики — для аналитики, врачу они не нужны; стадии работают как фильтр. */

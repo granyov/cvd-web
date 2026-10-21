@@ -10,8 +10,19 @@ const context = {
     setItem: (key, value) => storage.set(key, String(value)),
     removeItem: (key) => storage.delete(key)
   },
-  document: {querySelectorAll: () => []},
-  window: {CURRENT_USER: {role: "user"}},
+  document: {
+    querySelectorAll: () => [],
+    addEventListener: () => {},
+    dispatchEvent: () => true,
+    body: {dataset: {}}
+  },
+  window: {CURRENT_USER: {id: 7, role: "user"}, setInterval: () => 0},
+  CustomEvent: class {
+    constructor(type, init = {}) {
+      this.type = type;
+      this.detail = init.detail;
+    }
+  },
   Intl,
   Date
 };
@@ -45,10 +56,23 @@ assert.ok(/Нет связи с сервером/.test(ui.humanizeError("Failed 
 assert.strictEqual(ui.interfaceMode(), "doctor");
 storage.set("cvd:interface-mode", "researcher");
 assert.strictEqual(ui.interfaceMode(), "researcher");
-storage.set("cvd:technical-data", "0");
+// Режим «admin» из прежних версий не даёт врачу технических данных.
+storage.set("cvd:interface-mode", "admin");
 assert.strictEqual(ui.interfaceMode(), "doctor");
+storage.set("cvd:technical-data:7", "1");
+assert.strictEqual(ui.interfaceMode(), "researcher");
 storage.clear();
-context.window.CURRENT_USER = {role: "admin"};
+context.window.CURRENT_USER = {id: 1, role: "admin"};
+assert.strictEqual(ui.interfaceMode(), "admin");
+
+// Выбор хранится для каждой учётной записи: включённый у администратора режим не переходит к врачу.
+ui.setTechnicalData(true);
+assert.strictEqual(storage.get("cvd:technical-data:1"), "1");
+assert.ok(!storage.has("cvd:interface-mode"));
+context.window.CURRENT_USER = {id: 7, role: "user"};
+assert.strictEqual(ui.interfaceMode(), "doctor");
+ui.setTechnicalData(false);
+context.window.CURRENT_USER = {id: 1, role: "admin"};
 assert.strictEqual(ui.interfaceMode(), "admin");
 
 const qualityContext = {window: {CVD_SCHEMA: []}};
